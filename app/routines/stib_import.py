@@ -8,12 +8,14 @@ if __name__ == "__main__":
 
 import requests
 from sqlalchemy.orm import Session
+import sqlalchemy as sa
 from shared.models import Line, Agency, Stop, Trip, TripStop
 from shared.db import get_db
 import json
 import csv
 import time
 from io import StringIO
+from collections import defaultdict
 
 
 headers_julien = {
@@ -239,105 +241,95 @@ def import_trips():
 # to all trip stops with stop id or stopid + "something" (like A, 1A, AB, etc.) . For a more precise match, we could
 # use the stop_id + "A" or stop_id + "1A" etc. but this would require a more complex logic.
 def get_all_incoming_buses_export():
+    tic = time.time()
+
     export_url = "https://data.stib-mivb.brussels/api/explore/v2.1/catalog/datasets/vehicle-position-rt-production/exports/json"
 
     try:
         response = requests.get(export_url, headers=headers_antoine)
         response.encoding = 'utf-8'
-
         if response.status_code != 200:
             print(f"HTTP error {response.status_code}: {response.text}")
             return
 
         data = response.json()
-        tic = time.time()
         for entry in data:
             entry['vehiclepositions'] = json.loads(entry['vehiclepositions'])
-        with get_db() as session:  # Use the context manager to handle the session  
-            # Step 1: Reset all STIB TripStop.vehicle_incoming flags
+
+        with get_db() as session:
+            # 1. Reset all flags in one go
             session.query(TripStop).filter(TripStop.stop_agency_name == "STIB").update(
                 {TripStop.vehicle_incoming: False}, synchronize_session=False
             )
             session.commit()
 
-            # Step 2: Build line short_name to route_id map
+            # 2. Load all relevant TripStops
+            tripstops = (
+                session.query(
+                    TripStop.id,
+                    TripStop.trip_id,
+                    TripStop.sequence,
+                    TripStop.stop_stop_id,
+                    TripStop.stop_agency_name,
+                    TripStop.id.label("ts_id"),
+                    Trip.line_route_id,
+                    Trip.terminus_stop_id,
+                    Trip.line_agency_name,
+                    Trip.terminus_agency_name,
+                )
+                .join(Trip)
+                .filter(Trip.line_agency_name == "STIB", Trip.terminus_agency_name == "STIB", TripStop.stop_agency_name == "STIB")
+                .all()
+            )
+
+            # Build mapping: (route_id, terminus_stop_id, stop_stop_id) → [TripStop(ts_id, trip_id, seq)]
+            from collections import defaultdict
+            ts_map = defaultdict(list)
+            tripstop_next_map = {}  # (trip_id, sequence) → ts_id
+
+            for ts in tripstops:
+                key = (ts.line_route_id, ts.terminus_stop_id, ts.stop_stop_id)
+                ts_map[key].append((ts.ts_id, ts.trip_id, ts.sequence))
+                tripstop_next_map[(ts.trip_id, ts.sequence)] = ts.ts_id
+
+            # 3. Precompute line map
             line_map = {
                 line.short_name: line.route_id
                 for line in session.query(Line).filter(Line.agency_name == "STIB").all()
             }
 
-            updated = 0
-            # Step 3: Handle both distanceFromPoint == 0 and > 0
-            for entry in data:
-                line_short_name = entry['lineid']
-                route_id = line_map.get(line_short_name)
-                if route_id is None:
-                    continue  # Skip unknown lines
+            # 4. Collect IDs to update
+            incoming_ids = set()
 
+            for entry in data:
+                route_id = line_map.get(entry['lineid'])
+                if not route_id:
+                    continue
                 for pos in entry['vehiclepositions']:
-                    direction_id = pos['directionId']
-                    stop_id = pos['pointId']
+                    dir_ids = [pos['directionId']] + [f"{pos['directionId']}{x}" for x in "ABFGH"]
+                    stop_ids = [pos['pointId']] + [f"{pos['pointId']}{x}" for x in "ABFGH"]
                     distance = pos['distanceFromPoint']
 
-                    # Common base filter to identify the current TripStop
-                    # use matching lists rather than like to save performance (2times faster)
-                    matching_stop_ids = [
-                        stop_id,
-                        f"{stop_id}A",
-                        f"{stop_id}B",
-                        f"{stop_id}F",
-                        f"{stop_id}G",
-                        f"{stop_id}H",
-                    ]
+                    for d_id in dir_ids:
+                        for s_id in stop_ids:
+                            for ts_id, trip_id, sequence in ts_map.get((route_id, d_id, s_id), []):
+                                if distance == 0:
+                                    incoming_ids.add(ts_id)
+                                else:
+                                    next_ts_id = tripstop_next_map.get((trip_id, sequence + 1))
+                                    if next_ts_id:
+                                        incoming_ids.add(next_ts_id)
 
-                    matching_dir_ids = [
-                        direction_id,
-                        f"{direction_id}A",
-                        f"{direction_id}B",
-                        f"{direction_id}F",
-                        f"{direction_id}G",
-                        f"{direction_id}H",
-                    ]
+            
 
-                    matching_tripstops = (
-                        session.query(TripStop)
-                        .join(Trip)
-                        .filter(
-                            Trip.line_route_id == route_id,
-                            Trip.line_agency_name == "STIB",
-                            Trip.terminus_stop_id.in_(matching_dir_ids),
-                            Trip.terminus_agency_name == "STIB",
-                            TripStop.stop_stop_id.in_(matching_stop_ids),
-                            TripStop.stop_agency_name == "STIB"
-                        )
-                        .all()
-                    )
-
-                    if distance == 0:
-                        for ts in matching_tripstops:
-                            ts.vehicle_incoming = True
-                            updated += 1
-                    else:
-                        # print(f"{line_short_name} dir: {direction_id} at stop {stop_id}, distance: {distance}")
-                        for ts in matching_tripstops:
-                            # Look for the next TripStop in the same trip
-                            next_ts = (
-                                session.query(TripStop)
-                                .filter(
-                                    TripStop.trip_id == ts.trip_id,
-                                    TripStop.sequence == ts.sequence + 1,
-                                    TripStop.stop_agency_name == "STIB"
-                                )
-                                .first()
-                            )
-                            if next_ts:
-                                next_ts.vehicle_incoming = True
-                                updated += 1
-
-            session.commit()
-            toc = time.time()
-            print(f"Updated {updated} TripStop.vehicle_incoming entries (including next stops) in {toc - tic:.2f} seconds.")
-
+            # 5. Bulk update using raw SQL or SQLAlchemy Core
+            if incoming_ids:
+                ts_table = TripStop.__table__
+                stmt = ts_table.update().where(ts_table.c.id.in_(incoming_ids)).values(vehicle_incoming=True)
+                session.execute(stmt)
+                session.commit()
+        toc = time.time()
+        print(f"Matched {len(incoming_ids)} incoming TripStops in {toc - tic:.2f} seconds")
     except ValueError as e:
         print("JSON decode error:", e)
         print("Response content:", response.text)
@@ -351,8 +343,8 @@ def import_stib_gtfs():
 
     
 if __name__ == "__main__":
-    get_all_incoming_buses_export()
     #import_stib_lines()
     #import_stib_stops()
     #import_trips()
+    get_all_incoming_buses_export()
 

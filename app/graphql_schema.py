@@ -1,6 +1,6 @@
 import strawberry
 from typing import List, Optional
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from shared.db import get_db
 from strawberry.types import Info
 from datetime import datetime
@@ -134,6 +134,7 @@ class TripType:
     terminus: StopType
     line: LineType
     trip_count: int
+    
 @strawberry.type
 class TemporaryTokenType:
     id: int
@@ -146,64 +147,65 @@ class TemporaryTokenType:
 class Query:
     @strawberry.field
     def users(self, info: Info) -> List[UserType]:
-        db: Session = next(get_db())
-        return db.query(User).all()
+        with get_db() as db:
+            return db.query(User).all()
 
     @strawberry.field
     def devices(self, info: Info) -> List[DeviceType]:
-        db: Session = next(get_db())
-        return db.query(Device).all()
+        with get_db() as db:
+            return db.query(Device).all()
 
     @strawberry.field
     def led_strips(self, info: Info) -> List[LedStripType]:
-        db: Session = next(get_db())
-        return db.query(LedStrip).all()
+        with get_db() as db:
+            return db.query(LedStrip).all()
 
     @strawberry.field
     def leds(self, info: Info) -> List[LedType]:
-        db: Session = next(get_db())
-        return db.query(Led).all()
+        with get_db() as db:
+            return db.query(Led).all()
 
     @strawberry.field
     def lines(self, info: Info) -> List[LineType]:
-        db: Session = next(get_db())
-        return db.query(Line).all()
+        with get_db() as db:
+            return db.query(Line).options(joinedload(Line.agency)).all()
 
     @strawberry.field
     def stops(self, info: Info, name: Optional[str] = None) -> List[StopType]:
-        db: Session = next(get_db())
-        query = db.query(Stop)
-        if name:
-            query = query.filter(Stop.name == name)
-        return query.all()
+        with get_db() as db:
+            query = db.query(Stop).options(joinedload(Stop.agency))
+            if name:
+                query = query.filter(Stop.name == name)
+            return query.all()
 
     @strawberry.field
     def companies(self, info: Info) -> List[AgencyType]:
-        db: Session = next(get_db())
-        return db.query(Agency).all()
+        with get_db() as db:
+            return db.query(Agency).all()
 
     @strawberry.field
     def roles(self, info: Info) -> List[RoleType]:
-        db: Session = next(get_db())
-        return db.query(Role).all()
+        with get_db() as db:
+            return db.query(Role).all()
     
     @strawberry.field
     def trips(self, info: Info) -> List[TripType]:
-        db: Session = next(get_db())
-        return db.query(Trip).all()
+        with get_db() as db:
+            return db.query(Trip).all()
     
     @strawberry.field
     def trip_stops(self, info: Info, vehicle_incoming: Optional[bool] = None) -> List[TripStopType]:
-        db: Session = next(get_db())
-        query = db.query(TripStop)
-        if vehicle_incoming is not None:
-            query = query.filter(TripStop.vehicle_incoming == vehicle_incoming)
-        return query.all()
+        with get_db() as db:
+            query = db.query(TripStop)
+            if vehicle_incoming is not None:
+                query = query.filter(TripStop.vehicle_incoming == vehicle_incoming)
+            return query.all()
     
     @strawberry.field
     def temporary_tokens(self, info: Info) -> List[TemporaryTokenType]:
-        db: Session = next(get_db())
-        return db.query(TemporaryToken).all()
+        with get_db() as db:
+            return db.query(TemporaryToken).all()
+
 
 
 # --- Schema ---
