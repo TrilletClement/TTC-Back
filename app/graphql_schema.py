@@ -6,7 +6,7 @@ from strawberry.types import Info
 from datetime import datetime
 from shared.models import (
     User, Role, Device, LedStrip, Led,
-    Stop, Line, Agency, Trip, TripStop, TemporaryToken
+    Stop, Line, Agency, Trip, TripStop, TemporaryToken, ESP32Device
 )
 
 # --- Strawberry Types ---
@@ -103,12 +103,24 @@ class DeviceType:
     name: str
     owner_id: int
     led_strips: List[LedStripType]
-    permanent_token: Optional[str]
 
-    @strawberry.field
-    def temporary_token(self) -> Optional['TemporaryTokenType']:
-        return self.temporary_token
+@strawberry.type
+class ESP32DeviceType:
+    id: int
+    mac_address: str
+    name: Optional[str]
+    registered_at: datetime
+    owner: 'UserType'
 
+@strawberry.type
+class TemporaryTokenType:
+    id: int
+    token: str
+    created_at: datetime
+    expires_at: Optional[datetime]
+
+
+# Update the UserType to include ESP32 devices
 @strawberry.type
 class UserType:
     id: int
@@ -117,6 +129,8 @@ class UserType:
     fs_uniquifier: str
     roles: List[RoleType]
     devices: List[DeviceType]
+    esp32_devices: List[ESP32DeviceType]  # Add this line
+    temporary_tokens: List[TemporaryTokenType]  # Add this line
 
 @strawberry.type
 class TripStopType:
@@ -130,17 +144,12 @@ class TripStopType:
 @strawberry.type
 class TripType:
     id: int
+    direction: int
     start: StopType
     terminus: StopType
     line: LineType
     trip_count: int
     
-@strawberry.type
-class TemporaryTokenType:
-    id: int
-    token: str
-    created_at: datetime
-    expires_at: Optional[datetime]
 
 # --- Query Root ---
 @strawberry.type
@@ -153,7 +162,9 @@ class Query:
     @strawberry.field
     def devices(self, info: Info) -> List[DeviceType]:
         with get_db() as db:
-            return db.query(Device).all()
+            return db.query(Device).options(
+                joinedload(Device.led_strips).joinedload(LedStrip.line)
+            ).all()
 
     @strawberry.field
     def led_strips(self, info: Info) -> List[LedStripType]:
@@ -202,9 +213,19 @@ class Query:
             return query.all()
     
     @strawberry.field
-    def temporary_tokens(self, info: Info) -> List[TemporaryTokenType]:
+    def esp32_devices(self, info: Info) -> List[ESP32DeviceType]:
         with get_db() as db:
-            return db.query(TemporaryToken).all()
+            return db.query(ESP32Device).options(
+                joinedload(ESP32Device.owner)
+            ).all()
+
+    @strawberry.field
+    def temporary_tokens(self, info: Info, user_id: Optional[int] = None) -> List[TemporaryTokenType]:
+        with get_db() as db:
+            query = db.query(TemporaryToken)
+            if user_id is not None:
+                query = query.filter(TemporaryToken.user_id == user_id)
+            return query.all()
 
 
 

@@ -5,12 +5,10 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
 sys.path.insert(0, BASE_DIR)
 from fastapi import FastAPI
 from strawberry.fastapi import GraphQLRouter
-from app.routers import users
+from app.routers import users, esp, testAPIRest
 from app.graphql_schema import schema
 from app.routines import scheduler
 from apscheduler.schedulers.background import BackgroundScheduler
-
-
 
 from shared.db import Base, engine
 
@@ -25,6 +23,7 @@ def startup():
 
 # Include routers
 app.include_router(users.router)
+app.include_router(esp.router)
 
 @app.get("/")
 def read_root():

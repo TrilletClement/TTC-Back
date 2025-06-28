@@ -147,17 +147,21 @@ def import_trips():
     stop_times_url = "https://data.stib-mivb.brussels/api/explore/v2.1/catalog/datasets/gtfs-files-production/files/3cc9124c230b72e07df09e27c59eba88"
 
     tic = time.time()
-    # Fetch the CSV files
+
+    # Fetch CSVs
     trips_csv = requests.get(trips_url).content.decode("utf-8")
     stop_times_csv = requests.get(stop_times_url).content.decode("utf-8")
-
 
     trips_reader = csv.DictReader(StringIO(trips_csv))
     stop_times_reader = csv.DictReader(StringIO(stop_times_csv))
 
+    # Map trip_id -> [route_id, direction_id, {stop_id, stop_sequence}, ...]
     trip_info = {}
     for row in trips_reader:
-        trip_info[row["trip_id"]] = [int(row["route_id"])]
+        trip_id = row["trip_id"]
+        route_id = int(row["route_id"])
+        direction_id = int(row.get("direction_id", 0))  # Default to 0 if not present
+        trip_info[trip_id] = [route_id, direction_id]
 
     for row in stop_times_reader:
         trip_id = row.get("trip_id")
@@ -165,14 +169,14 @@ def import_trips():
         stop_sequence = int(row.get("stop_sequence"))
 
         if trip_id not in trip_info:
-            trip_info[trip_id] = []
+            continue  # Skip stop_times without corresponding trip
 
         trip_info[trip_id].append({
             "stop_id": stop_id,
             "stop_sequence": stop_sequence
         })
 
-    with get_db() as session:  # Use the context manager to handle the session  
+    with get_db() as session:
         agency = session.query(Agency).filter_by(name="STIB").first()
         if not agency:
             raise Exception("Agency 'STIB' not found.")
@@ -180,33 +184,42 @@ def import_trips():
         grouped_trips = {}
 
         for trip_id, info in trip_info.items():
-            route_id = info[0]
-            stops = info[1:]
+            route_id, direction_id = info[0], info[1]
+            stops = info[2:]
 
             if not stops:
                 continue  # Skip trips without stops
-        
+
             ordered_stops = sorted(stops, key=lambda x: x["stop_sequence"])
             start_stop_id = ordered_stops[0]["stop_id"]
             terminus_stop_id = ordered_stops[-1]["stop_id"]
-            key = (start_stop_id, terminus_stop_id, route_id)
-            
+            key = (start_stop_id, terminus_stop_id, route_id, direction_id)
+
             if key not in grouped_trips:
                 grouped_trips[key] = []
             grouped_trips[key].append(ordered_stops)
 
-        for (start_id, terminus_id, line_id), trips_list in grouped_trips.items():
-            # Check if the start and terminus stops exist
-            trip = session.query(Trip).filter_by(start_stop_id=start_id, start_agency_name=agency.name, terminus_stop_id=terminus_id, line_route_id=line_id).first()
-            
+        for (start_id, terminus_id, line_id, direction_id), trips_list in grouped_trips.items():
+            # Look for an existing Trip with the same start, terminus, route, direction
+            trip = session.query(Trip).filter_by(
+                start_stop_id=start_id,
+                start_agency_name=agency.name,
+                terminus_stop_id=terminus_id,
+                terminus_agency_name=agency.name,
+                line_route_id=line_id,
+                line_agency_name=agency.name,
+                direction=direction_id,
+            ).first()
+
             if not trip:
                 trip = Trip(
                     start_stop_id=start_id,
                     start_agency_name=agency.name,
-                    terminus_agency_name=agency.name,
                     terminus_stop_id=terminus_id,
+                    terminus_agency_name=agency.name,
                     line_route_id=line_id,
                     line_agency_name=agency.name,
+                    direction=direction_id,
                     trip_count=len(trips_list)
                 )
                 session.add(trip)
@@ -215,10 +228,12 @@ def import_trips():
                 trip.trip_count = len(trips_list)
                 session.flush()
 
+            # Skip if TripStops already exist
             existing_trip_stops = session.query(TripStop).filter_by(trip_id=trip.id).first()
             if existing_trip_stops:
                 continue
 
+            # Use the first trip's stop list as representative
             best_stops = trips_list[0]
 
             for idx, stop_data in enumerate(best_stops):
@@ -234,7 +249,6 @@ def import_trips():
         session.commit()
         toc = time.time()
         print("Trips and TripStops imported successfully in {:.2f} seconds.".format(toc - tic))
-
 
 # note 1: ifdistance from stopp is 0: put current triop stop to true else put the next trip stop in trip to true
 # note 2: STIb returnbs stops without the extra letters that are in gtfs actual stop id. so i propose here to put true 
@@ -343,8 +357,8 @@ def import_stib_gtfs():
 
     
 if __name__ == "__main__":
-    #import_stib_lines()
-    #import_stib_stops()
-    #import_trips()
+    import_stib_lines()
+    import_stib_stops()
+    import_trips()
     get_all_incoming_buses_export()
 
