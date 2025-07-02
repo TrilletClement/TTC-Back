@@ -1,30 +1,33 @@
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy.orm import joinedload, subqueryload
+from sqlalchemy.orm import subqueryload
 from shared.db import get_db
-from shared.models import Device, LedStrip, Led
-from .schemas import LedStripStatusResponse, LedStripCompact  # Update this schema accordingly if needed
+from shared.models import Device, LedStrip, Led, ESP32Device  # Added ESP32Device
+from .schemas import LedStripStatusResponse, LedStripCompact
 
 router = APIRouter(prefix="/esp", tags=["esp"])
 
 @router.get("/ledstrips", response_model=LedStripStatusResponse)
-def get_ledstrip_status(token: str = Query(..., description="Permanent token for device auth")):
+def get_ledstrip_status(mac: str = Query(..., description="MAC address of the ESP32 device")):
     with get_db() as db:
-        # Dynamically joinload led1_obj to led12_obj with trip_stops
+        # Find ESP32Device by MAC
+        esp = db.query(ESP32Device).filter(ESP32Device.mac_address == mac).first()
+        if not esp or not esp.device:
+            raise HTTPException(status_code=401, detail="Invalid or unlinked ESP32 device")
+
+        # Fetch the Device with all its led_strips and related LEDs + trip stops
         led_options = [
             subqueryload(getattr(LedStrip, f"led{i}_obj")).subqueryload(Led.trip_stops)
             for i in range(1, 13)
         ]
-        #print(f"LED options: {led_options}")
         device = db.query(Device).options(
             subqueryload(Device.led_strips).options(*led_options)
-        ).filter(Device.permanent_token == token).first()
+        ).filter(Device.id == esp.device_id).first()
 
         if not device:
-            raise HTTPException(status_code=401, detail="Invalid or unknown device token")
+            raise HTTPException(status_code=404, detail="Linked device not found")
 
         response_data = []
         for strip in device.led_strips:
-            #print(f"Processing strip ID: {strip.id}")
             bool_array = []
             for i in range(1, 13):
                 led_obj = getattr(strip, f"led{i}_obj")
