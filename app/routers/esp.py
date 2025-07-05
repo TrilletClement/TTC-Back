@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy.orm import subqueryload
 from shared.db import get_db
-from shared.models import Device, LedStrip, Led, ESP32Device  # Added ESP32Device
+from shared.models import Board, LedStrip, Led, ESP32Device  # Added ESP32Device
 from .schemas import LedStripStatusResponse, LedStripCompact
 
 router = APIRouter(prefix="/esp", tags=["esp"])
@@ -11,23 +11,23 @@ def get_ledstrip_status(mac: str = Query(..., description="MAC address of the ES
     with get_db() as db:
         # Find ESP32Device by MAC
         esp = db.query(ESP32Device).filter(ESP32Device.mac_address == mac).first()
-        if not esp or not esp.device:
+        if not esp or not esp.board:
             raise HTTPException(status_code=401, detail="Invalid or unlinked ESP32 device")
 
-        # Fetch the Device with all its led_strips and related LEDs + trip stops
+        # Fetch the Board with all its led_strips and related LEDs + trip stops
         led_options = [
             subqueryload(getattr(LedStrip, f"led{i}_obj")).subqueryload(Led.trip_stops)
             for i in range(1, 13)
         ]
-        device = db.query(Device).options(
-            subqueryload(Device.led_strips).options(*led_options)
-        ).filter(Device.id == esp.device_id).first()
+        board = db.query(Board).options(
+            subqueryload(Board.led_strips).options(*led_options)
+        ).filter(Board.id == esp.board_id).first()
 
-        if not device:
-            raise HTTPException(status_code=404, detail="Linked device not found")
+        if not board:
+            raise HTTPException(status_code=404, detail="Linked board not found")
 
         response_data = []
-        for strip in device.led_strips:
+        for strip in board.led_strips:
             bool_array = []
             for i in range(1, 13):
                 led_obj = getattr(strip, f"led{i}_obj")

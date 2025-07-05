@@ -6,7 +6,6 @@ sys.path.insert(0, BASE_DIR)
 from fastapi import FastAPI
 from strawberry.fastapi import GraphQLRouter
 from app.routers import users, esp
-from app.graphql_schema import schema
 from app.routines import scheduler
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -29,7 +28,7 @@ app.include_router(esp.router)
 def read_root():
     return {"message": "Welcome to the FastAPI Starter!"}
 
-# Add GraphQL router
-graphql_app = GraphQLRouter(schema)
-app.include_router(graphql_app, prefix="/graphql")
+# # Add GraphQL router
+# graphql_app = GraphQLRouter(schema)
+# app.include_router(graphql_app, prefix="/graphql")
 
