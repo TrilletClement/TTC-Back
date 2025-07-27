@@ -3,3 +3,5 @@ sqlite-accounts/
 __pycache__/
 d2/*.db
 d2/*.sql
+flask-web-server/logs/*.log
+flask-web-server/logs/*.err
