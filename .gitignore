@@ -7,3 +7,4 @@ flask-web-server/logs/*.log
 flask-web-server/logs/*.err
 fastapi-server/logs/*.log
 fastapi-server/logs/*.err
+flask-web-server/app/api/packages/*.bin
