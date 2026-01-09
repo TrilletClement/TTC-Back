@@ -2,32 +2,37 @@ module.exports = {
   apps: [
     {
       name: 'stib-frontend',
-      cwd: '/home/c.trillet/server-STIB/stibFront',
-      script: '/usr/bin/ng',
-      args: 'serve --port 4200',
-      interpreter: 'node',
-      watch: false
+      cwd: '/home/clement/projets/server-STIB/stibFront',
+      script: 'ng',
+      args: 'serve --port 4200 --proxy-config proxy.conf.json',
+      interpreter: 'none',
+      watch: false,
+      env: {
+        PATH: '/home/clement/projets/server-STIB/stibFront/node_modules/.bin:' + process.env.PATH
+      }
     },
     {
       name: 'stib-api',
-      script: '/home/c.trillet/server-STIB/venv/bin/gunicorn',
+      script: '/home/clement/projets/server-STIB/venv/bin/gunicorn',
       args: ['-w', '4', '-b', '0.0.0.0:5000', 'app:create_app()'],
-      interpreter: 'python3',  // or 'bash' to run the gunicorn script directly if executable
-      cwd: '/home/c.trillet/server-STIB/flask-web-server',
+      interpreter: 'none',
+      cwd: '/home/clement/projets/server-STIB/flask-web-server',
       watch: false,
       env: {
-        PATH: '/home/c.trillet/server-STIB/venv/bin'
+        PATH: '/home/clement/projets/server-STIB/venv/bin:' + process.env.PATH,
+        VIRTUAL_ENV: '/home/clement/projets/server-STIB/venv'
       }
     },
     {
       name: 'stib-imports',
-      script: '/home/c.trillet/server-STIB/venv/bin/uvicorn',
+      script: '/home/clement/projets/server-STIB/venv/bin/uvicorn',
       args: ['app.main:app', '--host', '127.0.0.1', '--port', '8001', '--workers', '2'],
-      interpreter: 'python3', // or 'bash'
-      cwd: '/home/c.trillet/server-STIB/fastapi-server',
+      interpreter: 'none',
+      cwd: '/home/clement/projets/server-STIB/fastapi-server',
       watch: false,
       env: {
-        PATH: '/home/c.trillet/server-STIB/venv/bin'
+        PATH: '/home/clement/projets/server-STIB/venv/bin:' + process.env.PATH,
+        VIRTUAL_ENV: '/home/clement/projets/server-STIB/venv'
       }
     }
   ]
