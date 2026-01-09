@@ -17,7 +17,9 @@ import time
 import re
 from io import StringIO
 from collections import defaultdict
-
+import os
+import sys
+from app.routines import tec_import
 
 headers_julien = {
     "Authorization": "Apikey d93b118966fc799fc52d8f63f936478f4b88dbed35370559a7d961f7"
@@ -46,7 +48,7 @@ def import_stib_lines(response):
 
             previous_rows = []
             for row in reader:
-                route_id = int(row.get("route_id"))
+                route_id = row.get("route_id")
                 short_name = row.get("route_short_name")
                 long_name = row.get("route_long_name")
                 route_type = row.get("route_type")
@@ -180,7 +182,7 @@ def import_trips(trips_reader, stop_times_reader):
     trip_info = {}
     for row in trips_reader:
         trip_id = row["trip_id"]
-        route_id = int(row["route_id"])
+        route_id = row.get("route_id")
         direction_id = int(row.get("direction_id", 0))  # Default to 0 if not present
         trip_info[trip_id] = [route_id, direction_id]
 
@@ -419,7 +421,10 @@ def import_trips(trips_reader, stop_times_reader):
 #         print("General error:", str(e))
 
 def normalize_stib_id(stop_id):
-    return re.sub(r'[A-Z]+$', '', str(stop_id))
+    digits = re.sub(r'[A-Z]+$', '', str(stop_id))
+    if len(digits) < 4:
+        digits = digits.zfill(4)
+    return digits
 
 def get_all_incoming_buses_export():
     tic = time.time()
@@ -437,15 +442,22 @@ def get_all_incoming_buses_export():
         data = response.json()
         for entry in data:
             entry['vehiclepositions'] = json.loads(entry['vehiclepositions'])
+            
+        with open("/home/c.trillet/server-STIB/fastapi-server/app/routines/missed_buses/mapping.json", "r") as f:
+                mapping_data = json.load(f)
+
+        # Extract the mapping data into a dictionary for quick lookup
+        mapping_dict = {row[0]: row[1] for row in mapping_data}
+        
+        def mapping(value):
+            if value in mapping_dict:
+                print(f"Mapping terminus ID {value} to {mapping_dict[value]}")
+                return mapping_dict[value]
+            else:
+                return value
 
         with get_db() as session:
-            # 1. Reset all vehicle_incoming flags for STIB
-            session.query(TripStop).filter(TripStop.stop_agency_name == "STIB").update(
-                {TripStop.vehicle_incoming: False}, synchronize_session=False
-            )
-            session.commit()
-
-            # 2. Load TripStops for STIB
+            # 1. Load TripStops for STIB
             tripstops = (
                 session.query(
                     TripStop.id,
@@ -468,7 +480,7 @@ def get_all_incoming_buses_export():
                 .all()
             )
 
-            # 3. Build tripstop mapping: (line_id, terminus_id, stop_id) → [TripStop]
+            # 2. Build tripstop mapping: (line_id, terminus_id, stop_id) → [TripStop]
             ts_map = defaultdict(list)
             tripstop_next_map = {}
 
@@ -476,30 +488,33 @@ def get_all_incoming_buses_export():
                 key = (ts.line_id, normalize_stib_id(ts.terminus_stop_id), normalize_stib_id(ts.stop_stop_id))
                 ts_map[key].append((ts.ts_id, ts.trip_id, ts.sequence))
                 tripstop_next_map[(ts.trip_id, ts.sequence)] = ts.ts_id
-            print("Total ts_map keys:", len(ts_map))
-            for k in list(ts_map.keys())[:10]:
-                print("Sample ts_map key:", k)
                 
-            serializable_ts_map = {
-                str(key): value
-                for key, value in ts_map.items()
-            }
 
-            # Output to file
-            with open("ts_map_debug.json", "w", encoding="utf-8") as f:
-                json.dump(serializable_ts_map, f, indent=2)
-
-            # 4. Build short_name → [line.id] mapping
+            # 3. Build short_name → [line.id] mapping
             line_map = defaultdict(list)
             for line in session.query(Line).filter(Line.agency_name == "STIB").all():
                 line_map[line.short_name].append(line.id)
-            print(line_map)
 
-            # 5. Find all incoming trip stop IDs
+            # 4. Find all incoming trip stop IDs
             incoming_ids = set()
             missed = 0
             matched = 0
+            no_terminus = 0
+            no_last_stop = 0
+            no_trips = 0
+            unknown = 0
             found = {}
+            missed_lines = set()
+            matched_lines = set()
+            missed_lines_shornames = set()
+            matched_lines_shornames = set()
+            missed_terminus = set()
+            missed_buses = []
+            missed_no_terminus = []
+            missed_no_last_stop = []
+            missed_no_trips = []
+            missed_unknown = []
+
             for entry in data:
                 line_ids = line_map.get(entry['lineid'])  # entry['lineid'] is short_name
                 
@@ -507,24 +522,76 @@ def get_all_incoming_buses_export():
                     continue
 
                 for pos in entry['vehiclepositions']:
-                    terminus_id = pos['directionId']  # already normalized
-                    last_stop_id = pos['pointId']     # already normalized
+                    terminus_id = normalize_stib_id(pos['directionId'])  # already normalized
+                    last_stop_id = normalize_stib_id(pos['pointId'])    # already normalized
                     distance = pos['distanceFromPoint']
 
                     for line_id in line_ids:
+                        terminus_id = mapping(terminus_id)
                         key = (line_id, terminus_id, last_stop_id)
                         if key in ts_map:
                             matched += 1
+                            matched_lines.add(line_id)
                             # Query the line short_name for this line_id
                             line_short_name = session.query(Line.short_name).filter_by(id=line_id).scalar()
                             found.setdefault(line_short_name, 0)
                             found[line_short_name] += 1
+                            matched_lines_shornames.add(line_short_name)
                         else:
-                            missed += 1
+                            # Collect missed bus details
                             line_short_name = session.query(Line.short_name).filter_by(id=line_id).scalar()
-                            print(f"Missed terminus_id: {terminus_id} for line {line_short_name} STOP {last_stop_id}") if not any((line_id, terminus_id, s) in ts_map for s in [last_stop_id]) else None
-                            print(f"Missed last_stop_id: {last_stop_id} for line {line_short_name} terminus {terminus_id}") if not any((line_id, t, last_stop_id) in ts_map for t in [terminus_id]) else None
-                            #print(f"Missed key: {key}")
+                            missed_buses.append((line_short_name, terminus_id))
+                            missed += 1
+                            missed_lines.add(line_id)
+                            missed_lines_shornames.add(line_short_name)
+                            missed_terminus.add(terminus_id)
+                            
+                            # Investigate the problem origins
+                            stop_exists = session.query(Stop).filter_by(
+                                stop_id=terminus_id, 
+                                agency_name="STIB"
+                            ).first()
+                            if not stop_exists:
+                                #print(f"Terminus stop ID {terminus_id} not found in database for line {line_short_name}")
+                                no_terminus += 1
+                                missed_no_terminus.append((line_short_name, terminus_id))
+                                continue
+                            else:
+                                # last stop id does not exist in the db
+                                stop_exists = session.query(Stop).filter_by(
+                                    stop_id=last_stop_id, 
+                                    agency_name="STIB"
+                                ).first()
+                                if not stop_exists:
+                                    #print(f"Last stop ID {last_stop_id} not found in database for line {line_short_name} with terminus ID {terminus_id}")
+                                    no_last_stop += 1
+                                    missed_no_last_stop.append((line_short_name, last_stop_id))
+                                    continue
+                                # line does not have any trip with this terminus
+                                trips_with_terminus = session.query(Trip).filter_by(
+                                    terminus_stop_id=terminus_id,
+                                    terminus_agency_name="STIB",
+                                    line_id=line_id,
+                                    line_agency_name="STIB"
+                                ).first()
+                                if not trips_with_terminus:
+                                    #print(f"No trips found for line {line_short_name} with terminus ID {terminus_id}")
+                                    no_trips += 1
+                                    missed_no_trips.append((line_short_name, terminus_id))
+                                    continue
+                                
+                                # Log unknown problem details
+                                print(f"Unknown problem for line {line_short_name} with:")
+                                print(f"  Terminus ID: {terminus_id}")
+                                print(f"  Last Stop ID: {last_stop_id}")
+                                print(f"  Line ID: {line_id}")
+                                print(f"  Key: {key}")
+                                print(f"  Vehicle Position Data: {pos}")
+                                missed_unknown.append((line_short_name, terminus_id))
+                                #print("ts_map keys sample for this short:",)
+                                unknown += 1
+                                
+
                         for ts_id, trip_id, seq in ts_map.get(key, []):
                             # Also mark the next stop in sequence for this trip
                             next_ts_id = tripstop_next_map.get((trip_id, seq + 1))
@@ -534,18 +601,75 @@ def get_all_incoming_buses_export():
                             elif next_ts_id:
                                 incoming_ids.add(next_ts_id)
 
-            # 6. Update TripStops
-            if incoming_ids:
+            # Print missed buses as tuples
+            # print("Missed buses (short_name, terminus_id):", list(set(missed_buses)))
+
+                
+            # Save missed buses to separate JSON files
+            missed_buses_dir = "/home/c.trillet/server-STIB/fastapi-server/app/routines/missed_buses/"
+            os.makedirs(missed_buses_dir, exist_ok=True)
+
+            missed_files = {
+                "no_terminus.json": missed_no_terminus,
+                "no_last_stop.json": missed_no_last_stop,
+                "no_trips.json": missed_no_trips,
+                "unknown.json": missed_unknown,
+            }
+
+            for filename, missed_list in missed_files.items():
+                file_path = os.path.join(missed_buses_dir, filename)
+                if os.path.exists(file_path):
+                    with open(file_path, "r") as f:
+                        existing_missed = set(tuple(item) for item in json.load(f))
+                else:
+                    existing_missed = set()
+
+                new_missed = set(missed_list)
+                updated_missed = existing_missed.union(new_missed)
+
+                with open(file_path, "w") as f:
+                    json.dump(list(updated_missed), f, indent=4)
+
+            if not hasattr(get_all_incoming_buses_export, "emptycounter"):
+                get_all_incoming_buses_export.emptycounter = 0
+
+            if incoming_ids or get_all_incoming_buses_export.emptycounter >= 3:
+                # 5. Reset all vehicle_incoming flags for STIB
+                session.query(TripStop).filter(TripStop.stop_agency_name == "STIB").update(
+                    {TripStop.vehicle_incoming: False}, synchronize_session=False
+                )
+                # 6. Update TripStops
                 ts_table = TripStop.__table__
                 stmt = ts_table.update().where(ts_table.c.id.in_(incoming_ids)).values(vehicle_incoming=True)
                 session.execute(stmt)
                 session.commit()
-            print(f"Total missed: {missed}, matched: {matched}")
-            print(f"Updated {len(incoming_ids)} trip stops with incoming vehicles.")
+                get_all_incoming_buses_export.emptycounter = 0
+            else : 
+                get_all_incoming_buses_export.emptycounter += 1
+                print(f"No incoming IDs found. Empty counter: {get_all_incoming_buses_export.emptycounter}")
+                
+                
+                
+            print()
+            print()
+            print()
+            print()
+            print()
+            print("---------------------------------------------")
+            # Compute percentage of lines with missed buses
+            total_lines = len(matched_lines.union(missed_lines))
+            missed_lines_percentage = (len(missed_lines) / total_lines * 100) if total_lines > 0 else 0
+            print(f"Percentage of lines with missed buses: {missed_lines_percentage:.2f}%")
             print(f"Took {round(time.time() - tic, 2)} seconds.")
-            # Sort found by value before printing
-            print("Found per lines with incoming vehicles:", found)
-
+            #print(f"Total missed: {missed}, matched: {matched}, percentage missed: {missed / (missed + matched) * 100:.2f}%")
+            print("number of missed terminus: ", len(missed_terminus))
+            print("number of no terminus: ", no_terminus)
+            print("number of no last stop: ", no_last_stop)
+            print("number of no trips: ", no_trips)
+            print("unknown problems ", missed - (no_terminus + no_last_stop + no_trips))
+            print("unkonwn problems counted separately: ", unknown)
+            print("---------------------------------------------")
+   
     except ValueError as e:
         print("JSON decode error:", e)
         print("Response content:", response.text)
@@ -585,8 +709,17 @@ def import_stib_gtfs():
     import_stib_stops(stop_response)
     import_trips(trips_reader, stop_times_reader)
 
+if __name__ == "__main__":    
+    if "--tec" in sys.argv:
+        tec_import.import_tec_gtfs(clean=True)
+    elif "--stib" in sys.argv:
+        import_stib_gtfs()
+    else:
+        get_all_incoming_buses_export()
+        import_stib_gtfs()
+        
+
     
-if __name__ == "__main__":
-    import_stib_gtfs()
-    #get_all_incoming_buses_export()
+
+
 
