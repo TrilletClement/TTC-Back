@@ -12,3 +12,4 @@ flask-web-server/app/api/packages/*.bin
 stibFront/node_modules/*
 node_modules/
 **/node_modules/
+ecosystem.config.js
