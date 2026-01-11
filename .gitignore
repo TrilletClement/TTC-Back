@@ -13,3 +13,4 @@ stibFront/node_modules/*
 node_modules/
 **/node_modules/
 ecosystem.config.js
+.vscode/
