@@ -13,3 +13,4 @@ stibFront/node_modules/*
 node_modules/
 **/node_modules/
 .vscode/
+stibFront/src/environements/environment.ts
