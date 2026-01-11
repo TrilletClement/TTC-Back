@@ -14,7 +14,7 @@ def start():
     scheduler.add_job(tec_import.import_tec_gtfs, 'cron', hour=2, minute=30, id='import_tec_gtfs')
 
     # STIB - Frequent routine (every 20 seconds)
-    scheduler.add_job(stib_import.get_all_incoming_buses_export, 'interval', seconds=20, id='fetch_stib_vehicles')
+    scheduler.add_job(stib_import.get_all_incoming_buses_export_test, 'interval', seconds=20, id='fetch_stib_vehicles')
     
     # TEC - Frequent routine (every 20 seconds)
     scheduler.add_job(tec_import.get_all_incoming_buses_tec, 'interval', seconds=20, id='fetch_tec_vehicles')
