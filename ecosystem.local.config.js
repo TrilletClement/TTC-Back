@@ -7,7 +7,7 @@ const frontendEnv = {
 };
 const backendEnv = {
   DATABASE_URL: 'postgresql+psycopg2://myappuser:mypassword@192.168.14.13:5432/myappdb',
-  SQL_HEAVY_LOGS: 'true',
+  SQL_HEAVY_LOGS: 'false',
   SECRET_KEY: 'a_default_secret_key',
   SECURITY_PASSWORD_SALT: 'a_default_salt',
   STIB_API_KEY: '36109cef239270c05417ed2b4001d76f7b160a0824c2caa87fce5966',
@@ -26,10 +26,7 @@ module.exports = {
       env: {
         ...frontendEnv,
         PATH: path.join(projectRoot, 'stibFront', 'node_modules', '.bin') + path.delimiter + process.env.PATH
-      },
-      log_file: path.join(projectRoot, 'logs', 'stib-frontend.log'),
-      out_file: path.join(projectRoot, 'logs', 'stib-frontend.out.log'),
-      error_file: path.join(projectRoot, 'logs', 'stib-frontend.err.log')
+      }
     },
     {
       name: 'stib-api',
@@ -42,10 +39,7 @@ module.exports = {
         ...backendEnv,
         PATH: venvBin + path.delimiter + process.env.PATH,
         VIRTUAL_ENV: path.join(projectRoot, 'venv')
-      },
-      log_file: path.join(projectRoot, 'logs', 'stib-api.log'),
-      out_file: path.join(projectRoot, 'logs', 'stib-api.out.log'),
-      error_file: path.join(projectRoot, 'logs', 'stib-api.err.log')
+      }
     },
     {
       name: 'stib-imports',
@@ -58,10 +52,7 @@ module.exports = {
         ...backendEnv,
         PATH: venvBin + path.delimiter + process.env.PATH,
         VIRTUAL_ENV: path.join(projectRoot, 'venv')
-      },
-      log_file: path.join(projectRoot, 'logs', 'stib-imports.log'),
-      out_file: path.join(projectRoot, 'logs', 'stib-imports.out.log'),
-      error_file: path.join(projectRoot, 'logs', 'stib-imports.err.log')
+      }
     }
   ]
 };

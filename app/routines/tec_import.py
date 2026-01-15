@@ -31,7 +31,8 @@ import sqlalchemy as sa
 # CONFIGURATION
 # =============================================================================
 GTFS_ZIP_URL = "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip"
-REALTIME_URL = "https://gtfsrt.tectime.be/proto/RealTime/vehicles?key=36497DD5F3AD4262B24981633E73EF33"
+TEC_API_KEY = os.environ.get("TEC_API_KEY", "").strip()
+REALTIME_URL = "https://gtfsrt.tectime.be/proto/RealTime/vehicles"
 AGENCY_NAME = "TEC"
 
 headers = {
@@ -373,7 +374,8 @@ def get_all_incoming_buses_tec():
     tic = time.time()
     
     try:
-        response = requests.get(REALTIME_URL, timeout=10)
+        params = {"key": TEC_API_KEY} if TEC_API_KEY else None
+        response = requests.get(REALTIME_URL, params=params, timeout=10)
         if response.status_code != 200:
             print(f"TEC: HTTP error {response.status_code}")
             return
@@ -552,7 +554,8 @@ def inspect_realtime_feed(max_entities: int = 3):
     """
     print("\nInspecting TEC realtime feed...")
     try:
-        response = requests.get(REALTIME_URL, timeout=30)
+        params = {"key": TEC_API_KEY} if TEC_API_KEY else None
+        response = requests.get(REALTIME_URL, params=params, timeout=30)
         if response.status_code != 200:
             print(f"HTTP error {response.status_code}")
             return
@@ -613,7 +616,8 @@ def test_realtime_vehicles():
     print("\nTesting realtime vehicle positions...")
     
     try:
-        response = requests.get(REALTIME_URL, timeout=30)
+        params = {"key": TEC_API_KEY} if TEC_API_KEY else None
+        response = requests.get(REALTIME_URL, params=params, timeout=30)
         
         if response.status_code != 200:
             print(f"HTTP error {response.status_code}")

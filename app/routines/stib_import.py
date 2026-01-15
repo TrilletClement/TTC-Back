@@ -21,13 +21,8 @@ import os
 import sys
 from app.routines import tec_import
 
-headers_julien = {
-    "Authorization": "Apikey d93b118966fc799fc52d8f63f936478f4b88dbed35370559a7d961f7"
-}
-
-headers_antoine = {
-    'Authorization': 'Apikey 36109cef239270c05417ed2b4001d76f7b160a0824c2caa87fce5966'
-}
+STIB_API_KEY = os.environ.get("STIB_API_KEY", "").strip()
+STIB_HEADERS = {"Authorization": f"Apikey {STIB_API_KEY}"} if STIB_API_KEY else {}
 
 
 def import_stib_lines(response):
@@ -432,7 +427,7 @@ def get_all_incoming_buses_export():
     export_url = "https://data.stib-mivb.brussels/api/explore/v2.1/catalog/datasets/vehicle-position-rt-production/exports/json"
 
     try:
-        response = requests.get(export_url, headers=headers_antoine)
+        response = requests.get(export_url, headers=STIB_HEADERS)
         response.encoding = 'utf-8'
 
         if response.status_code != 200:
@@ -675,7 +670,7 @@ def get_all_incoming_buses_export_test():
     export_url = "https://data.stib-mivb.brussels/api/explore/v2.1/catalog/datasets/vehicle-position-rt-production/exports/json"
 
     try:
-        response = requests.get(export_url, headers=headers_antoine)
+        response = requests.get(export_url, headers=STIB_HEADERS)
         response.encoding = 'utf-8'
 
         if response.status_code != 200:
@@ -846,6 +841,5 @@ if __name__ == "__main__":
         
 
     
-
 
 
