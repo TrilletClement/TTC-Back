@@ -20,7 +20,7 @@ module.exports = {
       name: 'stib-frontend',
       cwd: path.join(projectRoot, 'stibFront'),
       script: path.join('scripts', 'start-frontend.js'),
-      args: ['serve', '--port', '4201', '--proxy-config', 'proxy.conf.json'],
+      args: ['serve', '--port', '4200', '--proxy-config', 'proxy.conf.json'],
       interpreter: 'node',
       watch: false,
       env: {
@@ -34,7 +34,7 @@ module.exports = {
     {
       name: 'stib-api',
       script: path.join('..', 'venv', 'bin', 'gunicorn'),
-      args: ['-w', '4', '-b', '0.0.0.0:5001', 'app:create_app()'],
+      args: ['-w', '4', '-b', '0.0.0.0:5000', 'app:create_app()'],
       interpreter: 'none',
       cwd: path.join(projectRoot, 'flask-web-server'),
       watch: false,
@@ -50,7 +50,7 @@ module.exports = {
     {
       name: 'stib-imports',
       script: path.join('..', 'venv', 'bin', 'uvicorn'),
-      args: ['app.main:app', '--host', '127.0.0.1', '--port', '8002', '--workers', '2'],
+      args: ['app.main:app', '--host', '127.0.0.1', '--port', '8001', '--workers', '2'],
       interpreter: 'none',
       cwd: path.join(projectRoot, 'fastapi-server'),
       watch: false,

@@ -7,9 +7,10 @@ if __name__ == "__main__":
     sys.path.insert(0, FASTAPI_DIR)
 
 import requests
+import hashlib
 from sqlalchemy.orm import Session
 import sqlalchemy as sa
-from shared.models import Line, Agency, Stop, Trip, TripStop
+from shared.models import Line, Agency, Stop, Trip, TripStop, GTFSTrip
 from shared.db import get_db
 import json
 import csv
@@ -172,6 +173,9 @@ def import_stib_stops(response):
 def import_trips(trips_reader, stop_times_reader):
 
     tic = time.time()
+    def build_signature(line_id, direction, stop_ids):
+        payload = f"{line_id}:{direction}|" + "|".join(stop_ids)
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
     # Map trip_id -> [route_id, direction_id, {stop_id, stop_sequence}, ...]
     trip_info = {}
@@ -199,75 +203,177 @@ def import_trips(trips_reader, stop_times_reader):
         if not agency:
             raise Exception("Agency 'STIB' not found.")
 
-        grouped_trips = {}
         route_id_to_line_id = {
             line.route_id: line.id
             for line in session.query(Line).filter_by(agency_name=agency.name).all()
         }
-        for trip_id, info in trip_info.items():
+
+        trip_rows = []
+        signature_counts = defaultdict(int)
+        signature_meta = {}
+
+        for gtfs_trip_id, info in trip_info.items():
             route_id, direction_id = info[0], info[1]
             stops = info[2:]
 
             if not stops:
                 continue  # Skip trips without stops
 
-            ordered_stops = sorted(stops, key=lambda x: x["stop_sequence"])
-            start_stop_id = ordered_stops[0]["stop_id"]
-            terminus_stop_id = ordered_stops[-1]["stop_id"]
-            
-            key = (start_stop_id, terminus_stop_id, route_id_to_line_id[route_id], direction_id)
-
-            if key not in grouped_trips:
-                grouped_trips[key] = []
-            grouped_trips[key].append(ordered_stops)
-
-        for (start_id, terminus_id, line_id, direction_id), trips_list in grouped_trips.items():
-            # Look for an existing Trip with the same start, terminus, line, direction
-            trip = session.query(Trip).filter_by(
-                start_stop_id=start_id,
-                start_agency_name=agency.name,
-                terminus_stop_id=terminus_id,
-                terminus_agency_name=agency.name,
-                line_id=line_id,
-                line_agency_name=agency.name,
-                direction=direction_id,
-            ).first()
-
-            if not trip:
-                trip = Trip(
-                    start_stop_id=start_id,
-                    start_agency_name=agency.name,
-                    terminus_stop_id=terminus_id,
-                    terminus_agency_name=agency.name,
-                    line_id=line_id,
-                    line_agency_name=agency.name,
-                    direction=direction_id,
-                    trip_count=len(trips_list)
-                )
-                session.add(trip)
-                session.flush()
-            else:
-                trip.trip_count = len(trips_list)
-                session.flush()
-
-            # Skip if TripStops already exist
-            existing_trip_stops = session.query(TripStop).filter_by(trip_id=trip.id).first()
-            if existing_trip_stops:
+            line_id = route_id_to_line_id.get(route_id)
+            if not line_id:
                 continue
 
-            # Use the first trip's stop list as representative
-            best_stops = trips_list[0]
+            ordered_stops = sorted(stops, key=lambda x: x["stop_sequence"])
+            stop_ids = [s["stop_id"] for s in ordered_stops]
+            signature = build_signature(line_id, direction_id, stop_ids)
+            signature_counts[signature] += 1
+            if signature not in signature_meta:
+                signature_meta[signature] = {
+                    "line_id": line_id,
+                    "direction": direction_id,
+                    "start_stop_id": stop_ids[0],
+                    "terminus_stop_id": stop_ids[-1],
+                    "stop_ids": stop_ids,
+                }
+            trip_rows.append({
+                "gtfs_trip_id": gtfs_trip_id,
+                "signature": signature,
+            })
 
-            # Add TripStops for this trip
-            for idx, stop_data in enumerate(best_stops):
-                stop_id = stop_data["stop_id"]
-                trip_stop = TripStop(
-                    trip_id=trip.id,
-                    stop_stop_id=stop_id,
-                    stop_agency_name=agency.name,
-                    sequence=idx,
-                )
-                session.add(trip_stop)
+        # Build signature map from existing trips
+        existing_signature_map = {
+            trip.signature: trip.id
+            for trip in session.query(Trip.id, Trip.signature)
+            .filter(Trip.line_agency_name == agency.name, Trip.signature.isnot(None))
+        }
+        signature_updates = []
+        trip_stop_rows = (
+            session.query(
+                TripStop.trip_id,
+                TripStop.stop_stop_id,
+                TripStop.sequence,
+                Trip.line_id,
+                Trip.direction,
+                Trip.signature,
+            )
+            .join(Trip, TripStop.trip_id == Trip.id)
+            .filter(Trip.line_agency_name == agency.name)
+            .order_by(TripStop.trip_id, TripStop.sequence)
+            .all()
+        )
+
+        current_trip_id = None
+        current_stop_ids = []
+        current_line_id = None
+        current_direction = None
+        current_signature = None
+        for row in trip_stop_rows:
+            if current_trip_id is None:
+                current_trip_id = row.trip_id
+                current_line_id = row.line_id
+                current_direction = row.direction
+                current_signature = row.signature
+            if row.trip_id != current_trip_id:
+                signature = build_signature(current_line_id, current_direction, current_stop_ids)
+                existing_signature_map.setdefault(signature, current_trip_id)
+                if not current_signature:
+                    signature_updates.append({"id": current_trip_id, "signature": signature})
+                current_trip_id = row.trip_id
+                current_line_id = row.line_id
+                current_direction = row.direction
+                current_signature = row.signature
+                current_stop_ids = []
+            current_stop_ids.append(row.stop_stop_id)
+
+        if current_trip_id is not None:
+            signature = build_signature(current_line_id, current_direction, current_stop_ids)
+            existing_signature_map.setdefault(signature, current_trip_id)
+            if not current_signature:
+                signature_updates.append({"id": current_trip_id, "signature": signature})
+
+        # Create missing trips
+        new_trip_items = []
+        for signature, meta in signature_meta.items():
+            if signature in existing_signature_map:
+                continue
+            trip = Trip(
+                start_stop_id=meta["start_stop_id"],
+                start_agency_name=agency.name,
+                terminus_stop_id=meta["terminus_stop_id"],
+                terminus_agency_name=agency.name,
+                line_id=meta["line_id"],
+                line_agency_name=agency.name,
+                direction=meta["direction"],
+                trip_count=signature_counts[signature],
+                signature=signature,
+            )
+            new_trip_items.append((signature, trip))
+
+        if new_trip_items:
+            session.add_all([trip for _, trip in new_trip_items])
+            session.flush()
+            for signature, trip in new_trip_items:
+                existing_signature_map[signature] = trip.id
+
+            trip_stop_rows = []
+            for signature, trip in new_trip_items:
+                stop_ids = signature_meta[signature]["stop_ids"]
+                for idx, stop_id in enumerate(stop_ids):
+                    trip_stop_rows.append({
+                        "trip_id": trip.id,
+                        "stop_stop_id": stop_id,
+                        "stop_agency_name": agency.name,
+                        "sequence": idx,
+                    })
+            if trip_stop_rows:
+                session.bulk_insert_mappings(TripStop, trip_stop_rows)
+
+        if signature_updates:
+            session.bulk_update_mappings(Trip, signature_updates)
+
+        # Update trip counts
+        update_rows = []
+        for signature, count in signature_counts.items():
+            trip_id = existing_signature_map.get(signature)
+            if trip_id:
+                update_rows.append({
+                    "id": trip_id,
+                    "trip_count": count,
+                })
+        if update_rows:
+            session.bulk_update_mappings(Trip, update_rows)
+
+        # Sync GTFS trip mappings
+        existing_gtfs = {
+            row.id: row.trip_id
+            for row in session.query(GTFSTrip.id, GTFSTrip.trip_id).all()
+        }
+        ids_to_delete = []
+        gtfs_rows = []
+        seen_gtfs = set()
+        for row in trip_rows:
+            gtfs_trip_id = row["gtfs_trip_id"]
+            if gtfs_trip_id in seen_gtfs:
+                continue
+            seen_gtfs.add(gtfs_trip_id)
+            trip_id = existing_signature_map.get(row["signature"])
+            if not trip_id:
+                continue
+            existing_trip_id = existing_gtfs.get(gtfs_trip_id)
+            if existing_trip_id is not None:
+                if existing_trip_id == trip_id:
+                    continue
+                ids_to_delete.append(gtfs_trip_id)
+            gtfs_rows.append({
+                "id": gtfs_trip_id,
+                "trip_id": trip_id,
+            })
+        if ids_to_delete:
+            session.query(GTFSTrip).filter(GTFSTrip.id.in_(ids_to_delete)).delete(
+                synchronize_session=False
+            )
+        if gtfs_rows:
+            session.bulk_insert_mappings(GTFSTrip, gtfs_rows)
 
         # After all trips are created, assign best_trip_0_id for each line
         # For each line, find the trip with direction 0 that has the highest (max sequence * trip_count)
@@ -841,5 +947,3 @@ if __name__ == "__main__":
         
 
     
-
-
