@@ -6,8 +6,8 @@ const frontendEnv = {
   API_BASE_URL: 'http://localhost:5000/'
 };
 const backendEnv = {
-  DATABASE_URL: 'postgresql+psycopg2://mylocaldb:mylocaldb@localhost:5432/mylocaldb',
-  SQL_HEAVY_LOGS: 'true',
+  DATABASE_URL: 'postgresql+psycopg2://mylocaldb:clement@localhost:5432/mylocaldb',
+  SQL_HEAVY_LOGS: 'false',
   SECRET_KEY: 'a_default_secret_key',
   SECURITY_PASSWORD_SALT: 'a_default_salt',
   STIB_API_KEY: 'd93b118966fc799fc52d8f63f936478f4b88dbed35370559a7d961f7',
@@ -50,7 +50,7 @@ module.exports = {
     {
       name: 'stib-imports',
       script: path.join('..', 'venv', 'bin', 'uvicorn'),
-      args: ['app.main:app', '--host', '127.0.0.1', '--port', '8001', '--workers', '2'],
+      args: ['app.main:app', '--host', '127.0.0.1', '--port', '8000', '--workers', '1'],
       interpreter: 'none',
       cwd: path.join(projectRoot, 'fastapi-server'),
       watch: false,

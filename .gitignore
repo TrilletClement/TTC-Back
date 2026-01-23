@@ -17,3 +17,5 @@ logs/
 
 stibFront/public/runtime-env.js
 test-data/
+ecosystem.local.config.js
+flask-web-server/alembic.ini
