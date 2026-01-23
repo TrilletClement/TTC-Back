@@ -202,7 +202,8 @@ def get_all_incoming_buses_export():
         
         data = response.json()
         
-        map_path = "/home/c.trillet/server-STIB/fastapi-server/app/routines/missed_buses/mapping.json"
+        #SPOILER BEN FAUT CHANGER CA
+        map_path = "/home/c.trillet/server-STIB/fastapi-server/app/routines/missed_buses/mapping.json" 
         mapping_dict = {}
         if os.path.exists(map_path):
             with open(map_path, "r") as f:

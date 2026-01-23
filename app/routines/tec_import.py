@@ -88,12 +88,12 @@ def download_gtfs_zip(max_retries=3) -> bool:
                             if total_size > 0:
                                 progress = (downloaded / total_size) * 100
                                 print(f"\r  Progress: {progress:.1f}% ({downloaded / 1024 / 1024:.1f} MB)", end='')
-                print(f"\n✓ Downloaded successfully ({downloaded / 1024 / 1024:.1f} MB)")
+                print(f"\nDownloaded successfully ({downloaded / 1024 / 1024:.1f} MB)")
                 return True
             else:
-                print(f"✗ HTTP {response.status_code}")
+                print(f"HTTP {response.status_code}")
         except Exception as e:
-            print(f"✗ Download failed: {e}")
+            print(f"Download failed: {e}")
             if attempt < max_retries - 1:
                 print("  Retrying in 2s...")
                 time.sleep(2)
@@ -225,7 +225,7 @@ class TECGtfsImporter:
                 session.bulk_save_objects(to_add)
             
             session.commit()
-            print(f"  ✓ Added {len(to_add)}, updated {updated_count}, skipped {skipped}")
+            print(f"Added {len(to_add)}, updated {updated_count}, skipped {skipped}")
 
     def import_stops(self, stops_reader):
         """Import stops with bulk operations"""
@@ -261,7 +261,7 @@ class TECGtfsImporter:
                 session.bulk_save_objects(to_add)
             
             session.commit()
-            print(f"  ✓ Added {len(to_add)}, updated {updated}")
+            print(f"Added {len(to_add)}, updated {updated}")
 
     def import_trips(self, trips_reader, stop_times_reader):
         """Optimized trip import with minimal DB queries"""
@@ -269,7 +269,7 @@ class TECGtfsImporter:
         tic = time.time()
         
         # PHASE 1: Load data from CSV (memory-efficient streaming)
-        print("  Loading GTFS data...")
+        print("Loading GTFS data...")
         trip_info = {}
         trips_count = 0
         
@@ -284,7 +284,7 @@ class TECGtfsImporter:
             if trips_count % 10000 == 0:
                 print(f"\r    Loaded {trips_count:,} trips...", end='')
         
-        print(f"\r  ✓ Loaded {trips_count:,} trips")
+        print(f"\r Loaded {trips_count:,} trips")
         
         # Load stop_times
         stops_count = 0
@@ -299,7 +299,7 @@ class TECGtfsImporter:
                 if stops_count % 50000 == 0:
                     print(f"\r    Loaded {stops_count:,} stop_times...", end='')
         
-        print(f"\r  ✓ Loaded {stops_count:,} stop_times")
+        print(f"\r Loaded {stops_count:,} stop_times")
         
         # PHASE 2: Database operations
         with get_db() as session:
@@ -414,7 +414,7 @@ class TECGtfsImporter:
                 for batch in chunked(trip_stop_rows, BATCH_SIZE):
                     session.bulk_insert_mappings(TripStop, batch)
                 
-                print(f"  ✓ Created {len(trip_stop_rows):,} trip stops")
+                print(f"Created {len(trip_stop_rows):,} trip stops")
             
             # Update trip counts in bulk
             print("  Updating trip counts...")
@@ -451,10 +451,10 @@ class TECGtfsImporter:
             for batch in chunked(gtfs_rows, BATCH_SIZE):
                 session.bulk_insert_mappings(GTFSTrip, batch)
             
-            print(f"  ✓ Created {len(gtfs_rows):,} GTFS mappings")
+            print(f"Created {len(gtfs_rows):,} GTFS mappings")
             
             # Update best trips
-            print("  Updating best trips...")
+            print("Updating best trips...")
             lines = session.query(Line).filter_by(agency_name=self.agency_name).all()
             
             for line in lines:
@@ -485,7 +485,7 @@ class TECGtfsImporter:
             session.commit()
             
         elapsed = time.time() - tic
-        print(f"  ✓ Completed in {elapsed:.1f}s")
+        print(f"Completed in {elapsed:.1f}s")
 
 # =============================================================================
 # REAL-TIME UPDATES
@@ -605,12 +605,12 @@ def import_tec_gtfs(clean: bool = False, steps: Iterable[str] | None = None):
             session.execute(text("DELETE FROM stop WHERE agency_name = 'TEC'"))
             session.execute(text("DELETE FROM sub_agency WHERE agency_name = 'TEC'"))
             session.commit()
-        print("✓ Cleaned")
+        print("Cleaned")
     
     # Download if needed
     if not os.path.exists("tec_gtfs.zip"):
         if not download_gtfs_zip():
-            print("✗ Failed to download GTFS")
+            print("Failed to download GTFS")
             return
     else:
         print("Using existing tec_gtfs.zip")
@@ -641,10 +641,10 @@ def import_tec_gtfs(clean: bool = False, steps: Iterable[str] | None = None):
                     )
         
         total = time.time() - start_time
-        print(f"\n✓ Import completed in {total:.1f}s ({total/60:.1f} minutes)")
+        print(f"\nImport completed in {total:.1f}s ({total/60:.1f} minutes)")
     
     except Exception as e:
-        print(f"\n✗ Import error: {e}")
+        print(f"\nImport error: {e}")
         import traceback
         traceback.print_exc()
 
