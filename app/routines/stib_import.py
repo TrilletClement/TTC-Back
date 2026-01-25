@@ -187,108 +187,142 @@ def normalize_stib_id(stop_id):
     if len(digits) < 4:
         digits = digits.zfill(4)
     return digits
+        
+_STIB_TS_CACHE = {"ts_map": None, "line_map": None, "loaded_at": 0.0}
+_STIB_EMPTY_MATCHES = 0
+
+
+def _base4_stib_id(value):
+    digits = re.sub(r"[^0-9]", "", str(value))
+    return digits[:4].zfill(4) if digits else ""
+
+
+def _load_stib_tripstop_cache(session, ttl_seconds=600):
+    now = time.time()
+    if _STIB_TS_CACHE["ts_map"] and now - _STIB_TS_CACHE["loaded_at"] < ttl_seconds:
+        return _STIB_TS_CACHE["line_map"], _STIB_TS_CACHE["ts_map"]
+
+    line_map = defaultdict(list)
+    for line_id, short_name in session.query(Line.id, Line.short_name).filter_by(agency_name="STIB"):
+        line_map[short_name].append(line_id)
+
+    rows = session.execute(
+        sa.text(
+            """
+            SELECT
+                ts.id AS ts_id,
+                ts.stop_stop_id AS stop_id,
+                t.line_id AS line_id,
+                t.terminus_stop_id AS terminus_id,
+                LEAD(ts.id) OVER (PARTITION BY ts.trip_id ORDER BY ts.sequence) AS next_ts_id
+            FROM trip_stop ts
+            JOIN trip t ON t.id = ts.trip_id
+            WHERE t.line_agency_name = :agency
+            """
+        ),
+        {"agency": "STIB"},
+    ).all()
+
+    ts_map = defaultdict(list)
+    for row in rows:
+        base_term = _base4_stib_id(row.terminus_id)
+        base_stop = _base4_stib_id(row.stop_id)
+        key = (row.line_id, base_term, base_stop)
+        ts_map[key].append((row.ts_id, row.next_ts_id))
+
+    _STIB_TS_CACHE["line_map"] = line_map
+    _STIB_TS_CACHE["ts_map"] = ts_map
+    _STIB_TS_CACHE["loaded_at"] = now
+    return line_map, ts_map
+
 
 def get_all_incoming_buses_export():
     tic = time.time()
     export_url = "https://data.stib-mivb.brussels/api/explore/v2.1/catalog/datasets/vehicle-position-rt-production/exports/json"
-    
-    print(f"[{time.strftime('%H:%M:%S')}] Démarrage mise à jour Temps Réel STIB...")
-    
+
+    print(f"[{time.strftime('%H:%M:%S')}] Démarrage mise à jour Temps Réel STIB (fast)...")
+
     try:
         response = requests.get(export_url, headers=STIB_HEADERS, timeout=15)
         if response.status_code != 200:
             print(f"ERREUR API: Code {response.status_code}")
             return
-        
+
         data = response.json()
-        
-        #SPOILER BEN FAUT CHANGER CA
-        map_path = "/home/c.trillet/server-STIB/fastapi-server/app/routines/missed_buses/mapping.json" 
+        if not data:
+            print("Aucune donnée RT reçue, mise à jour ignorée.")
+            return
+
+        map_path = os.path.join(os.path.dirname(__file__), "missed_buses", "mapping.json")
         mapping_dict = {}
         if os.path.exists(map_path):
             with open(map_path, "r") as f:
                 mapping_dict = {row[0]: row[1] for row in json.load(f)}
         print(f"DEBUG: Mapping chargé pour {len(mapping_dict)} terminus.")
 
+        incoming_ids = set()
+        matched_positions = 0
+
         with get_db() as session:
-            # 1. Chargement Références
-            all_stib_lines = session.query(Line).filter_by(agency_name="STIB").all()
-            line_map = defaultdict(list)
-            for l in all_stib_lines: 
-                line_map[l.short_name].append(l.id)
-
-            tripstops = (session.query(TripStop.id, TripStop.trip_id, TripStop.sequence, TripStop.stop_stop_id, 
-                                     Trip.line_id, Trip.terminus_stop_id).join(Trip)
-                         .filter(Trip.line_agency_name == "STIB").all())
-
-            ts_map = defaultdict(list)
-            tripstop_next_map = {}
-            suffixes = ['', 'A', 'B', 'F', 'G', 'H']
-
-            for ts in tripstops:
-                n_term, n_stop = normalize_stib_id(ts.terminus_stop_id), normalize_stib_id(ts.stop_stop_id)
-                for t_suf in suffixes:
-                    for s_suf in suffixes:
-                        key = (ts.line_id, f"{n_term}{t_suf}" if t_suf else n_term, f"{n_stop}{s_suf}" if s_suf else n_stop)
-                        ts_map[key].append((ts.id, ts.trip_id, ts.sequence))
-                tripstop_next_map[(ts.trip_id, ts.sequence)] = ts.id
-
-            # 2. Traitement des positions
-            incoming_ids = set()
-            count_per_line = defaultdict(int)
+            line_map, ts_map = _load_stib_tripstop_cache(session)
 
             for entry in data:
-                l_short = entry.get('lineid')
+                l_short = entry.get("lineid")
                 l_ids = line_map.get(l_short)
-                if not l_ids: continue
-                
-                v_pos = json.loads(entry['vehiclepositions']) if isinstance(entry['vehiclepositions'], str) else entry['vehiclepositions']
-                
+                if not l_ids:
+                    continue
+
+                v_pos = entry.get("vehiclepositions")
+                if isinstance(v_pos, str):
+                    v_pos = json.loads(v_pos)
+
                 for pos in v_pos:
-                    # Normalisation Direction et Point
-                    raw_dir = normalize_stib_id(pos['directionId'])
+                    raw_dir = _base4_stib_id(pos.get("directionId"))
                     t_id = mapping_dict.get(raw_dir, raw_dir)
-                    s_id = normalize_stib_id(pos['pointId'])
-                    
-                    found_match = False
+                    t_id = _base4_stib_id(t_id)
+                    s_id = _base4_stib_id(pos.get("pointId"))
+
                     for lid in l_ids:
-                        # Test de correspondance exacte ou partielle (4 premiers chiffres)
-                        match_keys = [(lid, t_id, s_id)]
-                        # Si pas de match direct, on tente le t_id sans suffixe
-                        if len(t_id) > 4: match_keys.append((lid, t_id[:4], s_id))
+                        key = (lid, t_id, s_id)
+                        matches = ts_map.get(key)
+                        if not matches:
+                            continue
+                        for tsid, next_id in matches:
+                            if pos.get("distanceFromPoint") in ("0", 0):
+                                incoming_ids.add(tsid)
+                            else:
+                                if next_id:
+                                    incoming_ids.add(next_id)
+                        matched_positions += 1
 
-                        for key in match_keys:
-                            if key in ts_map:
-                                for tsid, tid, seq in ts_map[key]:
-                                    found_match = True
-                                    if pos['distanceFromPoint'] == "0" or pos['distanceFromPoint'] == 0:
-                                        incoming_ids.add(tsid)
-                                    else:
-                                        nxt = tripstop_next_map.get((tid, seq + 1))
-                                        if nxt: incoming_ids.add(nxt)
-                    
-                    if found_match:
-                        count_per_line[l_short] += 1
+            global _STIB_EMPTY_MATCHES
+            if matched_positions == 0:
+                _STIB_EMPTY_MATCHES += 1
+                if _STIB_EMPTY_MATCHES < 3:
+                    print("Aucune position appariée, mise à jour ignorée.")
+                    return
+                print("Aucune position appariée (x3), reset incoming.")
+            else:
+                _STIB_EMPTY_MATCHES = 0
 
-            # 3. Persistence
-            session.query(TripStop).filter(TripStop.stop_agency_name == "STIB").update({TripStop.vehicle_incoming: False}, synchronize_session=False)
+            session.execute(
+                sa.text("UPDATE trip_stop SET vehicle_incoming = false WHERE stop_agency_name = 'STIB'")
+            )
             if incoming_ids:
-                session.query(TripStop).filter(TripStop.id.in_(list(incoming_ids))).update({TripStop.vehicle_incoming: True}, synchronize_session=False)
-            
+                session.execute(
+                    sa.text("UPDATE trip_stop SET vehicle_incoming = true WHERE id = ANY(:ids)"),
+                    {"ids": list(incoming_ids)},
+                )
             session.commit()
-            
-            print(f"Résultat: {len(incoming_ids)} TripStops marqués 'incoming'.")
-            for line, count in count_per_line.items():
-                if count > 0: print(f" - Ligne {line}: {count} positions appariées")
-            
-            print(f"Update STIB RT terminée en {time.time()-tic:.2f}s")
+
+        print(f"Résultat: {len(incoming_ids)} TripStops marqués 'incoming'.")
+        print(f"Update STIB RT (fast) terminée en {time.time() - tic:.2f}s")
 
     except Exception as e:
-        print(f"ERREUR CRITIQUE RT: {e}")
+        print(f"ERREUR CRITIQUE RT (fast): {e}")
         import traceback
         traceback.print_exc()
-        
-        
+
 def import_stib_gtfs():
     # lines
     routes_url = "https://data.stib-mivb.brussels/api/explore/v2.1/catalog/datasets/gtfs-files-production/files/92c45d9df99624d7e05e9ade35ba0ce8"
@@ -327,6 +361,10 @@ if __name__ == "__main__":
         tec_import.import_tec_gtfs(clean=True)
     elif "--stib" in sys.argv:
         import_stib_gtfs()
+    elif "--stib-rt" in sys.argv:
+        get_all_incoming_buses_export_fast()
+        get_all_incoming_buses_export_fast()
+        get_all_incoming_buses_export_fast()
     else:
         get_all_incoming_buses_export()
         import_stib_gtfs()
