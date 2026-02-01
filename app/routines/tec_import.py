@@ -23,7 +23,7 @@ from google.transit import gtfs_realtime_pb2
 
 # Adjust path to find shared modules
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
@@ -119,7 +119,8 @@ class TECGtfsImporter:
     def import_agency(self, agency_reader):
         """Import agency and sub-agencies"""
         print("\n[1/4] Importing agencies...")
-        with get_db() as session:
+        session = next(get_db())
+        try:
             self.ensure_agency(session)
             
             # Load all existing sub-agencies at once
@@ -152,12 +153,16 @@ class TECGtfsImporter:
                 session.bulk_save_objects(to_add)
             
             session.commit()
-            print(f"  ✓ Added {len(to_add)}, updated {updated}")
+            print(f"Added {len(to_add)}, updated {updated}")
+        finally:
+            session.close()
+
 
     def import_routes(self, routes_reader):
         """Import routes/lines with bulk operations"""
         print("\n[2/4] Importing routes...")
-        with get_db() as session:
+        session = next(get_db())
+        try:
             self.ensure_agency(session)
             
             # Load existing lines efficiently
@@ -226,11 +231,15 @@ class TECGtfsImporter:
             
             session.commit()
             print(f"Added {len(to_add)}, updated {updated_count}, skipped {skipped}")
+        finally:
+            session.close()
+
 
     def import_stops(self, stops_reader):
         """Import stops with bulk operations"""
         print("\n[3/4] Importing stops...")
-        with get_db() as session:
+        session = next(get_db())
+        try:
             self.ensure_agency(session)
             
             # Load all existing stops at once
@@ -262,6 +271,8 @@ class TECGtfsImporter:
             
             session.commit()
             print(f"Added {len(to_add)}, updated {updated}")
+        finally:
+            session.close()
 
     def import_trips(self, trips_reader, stop_times_reader):
         """Optimized trip import with minimal DB queries"""
@@ -302,7 +313,8 @@ class TECGtfsImporter:
         print(f"\r Loaded {stops_count:,} stop_times")
         
         # PHASE 2: Database operations
-        with get_db() as session:
+        session = next(get_db())
+        try:
             self.ensure_agency(session)
             
             # Get route mapping once
@@ -351,7 +363,7 @@ class TECGtfsImporter:
                 if processed % 10000 == 0:
                     print(f"\r    Processed {processed:,} trips...", end='')
             
-            print(f"\r  ✓ Generated {len(signature_meta):,} unique patterns")
+            print(f"\rGenerated {len(signature_meta):,} unique patterns")
             
             # Load existing signatures in one query
             existing_sigs = {
@@ -483,6 +495,9 @@ class TECGtfsImporter:
                             line.best_trip_1_id = best.id
             
             session.commit()
+        finally:
+            session.close()
+
             
         elapsed = time.time() - tic
         print(f"Completed in {elapsed:.1f}s")
@@ -505,7 +520,8 @@ def get_all_incoming_buses_tec():
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(response.content)
         
-        with get_db() as session:
+        session = next(get_db())
+        try:
             # Load mappings efficiently
             gtfs_mapping = {
                 m.id: m.trip_id 
@@ -575,10 +591,13 @@ def get_all_incoming_buses_tec():
                         )
                 
                 session.commit()
+  
                 get_all_incoming_buses_tec.emptycounter = 0
                 print(f"TEC RT: {len(incoming_ids)} active stops ({time.time()-tic:.2f}s)")
             else:
                 get_all_incoming_buses_tec.emptycounter += 1
+        finally:
+            session.close()
     
     except Exception as e:
         print(f"TEC RT Error: {e}")

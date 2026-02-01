@@ -10,8 +10,8 @@ import requests
 import hashlib
 from sqlalchemy.orm import Session
 import sqlalchemy as sa
-from shared.models import Line, Agency, Stop, Trip, TripStop, GTFSTrip
 from shared.db import get_db
+from shared.models import Line, Agency, Stop, Trip, TripStop, GTFSTrip
 import json
 import csv
 import time
@@ -24,7 +24,6 @@ from app.routines import tec_import
 
 STIB_API_KEY = os.environ.get("STIB_API_KEY", "").strip()
 STIB_HEADERS = {"Authorization": f"Apikey {STIB_API_KEY}"} if STIB_API_KEY else {}
-
 
 def normalize_stib_id(stop_id):
     digits = re.sub(r'[A-Z]+$', '', str(stop_id))
@@ -43,7 +42,8 @@ def import_stib_lines(response):
     tic = time.time()
     reader = csv.DictReader(StringIO(response.content.decode('utf-8')))
     
-    with get_db() as session:
+    session = next(get_db())
+    try:
         get_stib_agency(session)
         for row in reader:
             short_name = row.get("route_short_name")
@@ -72,12 +72,15 @@ def import_stib_lines(response):
                 session.add(Line(**data))
         
         session.commit()
-    print(f"STIB Lines updated in {time.time() - tic:.2f}s")
+        print(f"STIB Lines updated in {time.time() - tic:.2f}s")
+    finally:
+        session.close()
 
 def import_stib_stops(response):
     tic = time.time()
     reader = csv.DictReader(StringIO(response.content.decode('utf-8')))
-    with get_db() as session:
+    session = next(get_db())
+    try:
         get_stib_agency(session)
         for row in reader:
             sid, name = row.get("stop_id"), row.get("stop_name")
@@ -86,7 +89,9 @@ def import_stib_stops(response):
             if stop: stop.name = name
             else: session.add(Stop(stop_id=sid, name=name, agency_name="STIB"))
         session.commit()
-    print(f"STIB Stops updated in {time.time() - tic:.2f}s")
+        print(f"STIB Stops updated in {time.time() - tic:.2f}s")
+    finally:
+        session.close()
     
 def import_trips(trips_reader, stop_times_reader):
     tic = time.time()
@@ -103,7 +108,8 @@ def import_trips(trips_reader, stop_times_reader):
         if row["trip_id"] in trip_data:
             trip_data[row["trip_id"]]["stops"].append((int(row["stop_sequence"]), row["stop_id"]))
 
-    with get_db() as session:
+    session = next(get_db())
+    try:
         agency_name = "STIB"
         
         # Mapping route_id (GTFS) -> line_id (DB)
@@ -181,6 +187,8 @@ def import_trips(trips_reader, stop_times_reader):
 
         session.commit()
         print(f"Import terminé en {time.time() - tic:.2f}s")
+    finally:
+        session.close()
 
 def normalize_stib_id(stop_id):
     digits = re.sub(r'[A-Z]+$', '', str(stop_id))
@@ -263,7 +271,8 @@ def get_all_incoming_buses_export():
         incoming_ids = set()
         matched_positions = 0
 
-        with get_db() as session:
+        session = next(get_db())
+        try:
             line_map, ts_map = _load_stib_tripstop_cache(session)
 
             for entry in data:
@@ -314,6 +323,8 @@ def get_all_incoming_buses_export():
                     {"ids": list(incoming_ids)},
                 )
             session.commit()
+        finally:
+            session.close()
 
         print(f"Résultat: {len(incoming_ids)} TripStops marqués 'incoming'.")
         print(f"Update STIB RT (fast) terminée en {time.time() - tic:.2f}s")
@@ -362,9 +373,10 @@ if __name__ == "__main__":
     elif "--stib" in sys.argv:
         import_stib_gtfs()
     elif "--stib-rt" in sys.argv:
-        get_all_incoming_buses_export_fast()
-        get_all_incoming_buses_export_fast()
-        get_all_incoming_buses_export_fast()
+        print("Lancement mise à jour Temps Réel STIB (rapide)...")
+        #get_all_incoming_buses_export_fast()
+        #get_all_incoming_buses_export_fast()
+        #get_all_incoming_buses_export_fast()
     else:
         get_all_incoming_buses_export()
         import_stib_gtfs()
