@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.api.services.orderService import OrderService
+from app.services.orderService import OrderService
 from app.core.security.jwt import get_current_user
-from shared.db import get_db
-from shared.models import User
+from app.orm_models.db import get_db
+from app.orm_models.auth import User
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 
@@ -51,3 +51,4 @@ def get_order_svg(
 ):
     user_id = current_user.id if current_user else None
     return OrderService.get_order_svg(order_id, user_id, db)
+

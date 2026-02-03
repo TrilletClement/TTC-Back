@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.api.services.ledStripService import LedStripService
-from shared.db import get_db
+from app.services.ledStripService import LedStripService
+from app.orm_models.db import get_db
 
 router = APIRouter(prefix="/api", tags=["ledstrips"])
 

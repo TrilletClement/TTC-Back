@@ -1,5 +1,5 @@
-from shared.db import engine, Base
-from shared import models
+from app.orm_models.db import engine, Base
+from app.orm_models import models
 
 # BE CAREFUL: This script will drop all tables in the database!
 # Make sure you have backups if necessary before running this script.

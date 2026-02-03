@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from app.api.services.deviceService import DeviceService
+from app.services.deviceService import DeviceService
 from app.core.security.jwt import get_current_user
-from shared.db import get_db
-from shared.models import User
+from app.orm_models.db import get_db
+from app.orm_models.auth import User
 import re
 
 router = APIRouter(prefix="/api", tags=["devices"])
@@ -33,3 +33,4 @@ def get_ledstrip_status(
         mac = ":".join(mac[i:i+2] for i in range(0, 12, 2)).lower()
 
     return DeviceService.get_ledstrip_status(mac, db)
+

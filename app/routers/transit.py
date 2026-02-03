@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.api.services.transitService import TransitService
+from app.services.transitService import TransitService
 from app.core.security.jwt import get_current_user
-from shared.db import get_db
-from shared.models import User
+from app.orm_models.db import get_db
+from app.orm_models.auth import User
 
 router = APIRouter(prefix="/api/transit", tags=["transit"])
 
@@ -41,3 +41,4 @@ def get_line_stops(
     if isinstance(result, tuple):
         raise HTTPException(status_code=result[1], detail=result[0])
     return result
+

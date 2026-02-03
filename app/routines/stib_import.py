@@ -10,8 +10,8 @@ import requests
 import hashlib
 from sqlalchemy.orm import Session
 import sqlalchemy as sa
-from shared.db import get_db
-from shared.models import Line, Agency, Stop, Trip, TripStop, GTFSTrip
+from app.orm_models.db import get_db
+from app.orm_models.gtfs import Agency, GTFSTrip, Line, Stop, Trip, TripStop
 import json
 import csv
 import time
@@ -383,3 +383,4 @@ if __name__ == "__main__":
         
 
     
+

@@ -1,7 +1,7 @@
 import re
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from shared.models import Agency, Line, Stop, Trip, TripStop
+from app.orm_models.gtfs import Agency, Line, Stop, Trip, TripStop
 
 class TransitService:
 
@@ -105,3 +105,4 @@ class TransitService:
             if match:
                 return (0, int(match.group(1)), short_name)
         return (1, short_name)
+

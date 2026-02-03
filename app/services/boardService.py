@@ -1,7 +1,9 @@
 from sqlalchemy.orm import joinedload, Session
 from fastapi import Depends, HTTPException, status
-from shared.db import get_db
-from shared.models import Board, User, LedStrip, Led, Trip, Stop, Line
+from app.orm_models.db import get_db
+from app.orm_models.auth import User
+from app.orm_models.board import Board, Led, LedStrip
+from app.orm_models.gtfs import Line, Stop, Trip
 
 class BoardService:
     @staticmethod
@@ -174,3 +176,4 @@ class BoardService:
             'type': led_obj.type,
             'tripStops': trip_stops_data
         }
+

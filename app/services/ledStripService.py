@@ -1,7 +1,8 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 import sqlalchemy as sa
-from shared.models import Board, Trip, TripStop, Stop, LedStrip, Led, Line
+from app.orm_models.board import Board, Led, LedStrip
+from app.orm_models.gtfs import Line, Stop, Trip, TripStop
 
 class LedStripService:
     ALLOWED_COLORS = {'red', 'blue', 'white', 'green', 'yellow'}

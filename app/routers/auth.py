@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.api.services.authService import AuthService
+from app.services.authService import AuthService
 from app.core.security.jwt import create_access_token, get_current_user
-from shared.db import get_db
-from shared.models import User
+from app.orm_models.db import get_db
+from app.orm_models.auth import User
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
@@ -26,3 +26,4 @@ def current_user(
     db: Session = Depends(get_db)
 ):
     return AuthService.get_user_by_email(current_user, db) 
+

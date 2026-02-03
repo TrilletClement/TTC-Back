@@ -1,6 +1,8 @@
 from sqlalchemy.orm import subqueryload, Session
 from fastapi import HTTPException, status
-from shared.models import Board, ESP32Device, LedStrip, Led, User
+from app.orm_models.auth import User
+from app.orm_models.board import Board, Led, LedStrip
+from app.orm_models.device import ESP32Device
 import re
 
 class DeviceService:

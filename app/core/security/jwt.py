@@ -6,8 +6,8 @@ from fastapi import Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from shared.db import get_db
-from shared.models import User
+from app.orm_models.db import get_db
+from app.orm_models.auth import User
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

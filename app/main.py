@@ -3,11 +3,10 @@ from fastapi.responses import Response
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import users, esp
 from app.routines import scheduler
-from app.api.routers import auth, boards, devices, ledstrips, orders, transit
+from app.routers import auth, boards, devices, ledstrips, orders, transit
 from app.core.config import settings
-from shared.db import Base, engine
+from app.orm_models.db import Base, engine
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -51,9 +50,6 @@ app.add_middleware(
 )
 
 # Routers
-app.include_router(users.router)
-app.include_router(esp.router)
-
 app.include_router(auth.router)
 app.include_router(boards.router)
 app.include_router(devices.router)

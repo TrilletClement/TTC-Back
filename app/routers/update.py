@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from app.api.services.updateService import UpdateService
+from app.services.updateService import UpdateService
 
 router = APIRouter(prefix="/api/update", tags=["update"])
 
@@ -31,3 +31,4 @@ def get_update_versions(payload: UpdateRequest):
 @router.get("/package/{filename}")
 def get_package(filename: str):
     return UpdateService.get_package_file(filename)
+

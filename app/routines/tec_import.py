@@ -27,8 +27,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-from shared.db import get_db
-from shared.models import Agency, Line, Stop, Trip, TripStop, SubAgency, GTFSTrip
+from app.orm_models.db import get_db
+from app.orm_models.gtfs import Agency, GTFSTrip, Line, Stop, SubAgency, Trip, TripStop
 from sqlalchemy import text
 import sqlalchemy as sa
 

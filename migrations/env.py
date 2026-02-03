@@ -10,7 +10,8 @@ import sys
 # Ensure project root on path
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from shared.db import Base, engine  # noqa: E402
+from app.orm_models.db import Base, engine  # noqa: E402
+from app.orm_models import models  # noqa: F401,E402
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -55,3 +56,4 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
+

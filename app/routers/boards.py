@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.api.services.boardService import BoardService
+from app.services.boardService import BoardService
 from app.core.security.jwt import get_current_user
-from shared.db import get_db
-from shared.models import User
+from app.orm_models.db import get_db
+from app.orm_models.auth import User
 
 router = APIRouter(prefix="/api/boards", tags=["boards"])
 
@@ -41,3 +41,4 @@ def get_board_details(
     db: Session = Depends(get_db)
 ):
     return BoardService.get_board_details(board_id, current_user, db)
+
