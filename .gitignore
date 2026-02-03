@@ -26,4 +26,5 @@ ecosystem.antoinepc.config.js
 
 fastapi-server/static/orders/
 fastapi-server/static/packages/
-fastapi-server/app/routines/tec-gtfs.zip/
+# Large downloaded artifact (must not be committed)
+fastapi-server/**/tec_gtfs.zip
