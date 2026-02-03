@@ -3,7 +3,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.orm_models.gtfs import Agency, Line, Stop, Trip, TripStop
 
-class TransitService:
+class LineService:
 
     @staticmethod
     def get_agencies(db: Session):
@@ -13,7 +13,7 @@ class TransitService:
     @staticmethod
     def get_lines(agency_name: str, db: Session):
         lines = db.query(Line).filter_by(agency_name=agency_name).all()
-        lines = sorted(lines, key=TransitService._line_sort_key)
+        lines = sorted(lines, key=LineService._line_sort_key)
 
         return [{
             'id': str(line.id),
@@ -46,7 +46,7 @@ class TransitService:
             if not trips:
                 raise HTTPException(status_code=404, detail="No trips found")
 
-            stops_by_direction = TransitService._build_stops_by_direction(db, trips)
+            stops_by_direction = LineService._build_stops_by_direction(db, trips)
 
             return {
                 'line': {

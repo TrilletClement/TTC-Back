@@ -15,7 +15,7 @@ class LedStripCreate(BaseModel):
     led_color: str
 
 #Exception en transit avec Angular pour l'ajout d'une led strip (Clément 02/01/2026)
-@router.post("/transit/{board_id}/add_led_strip")
+@router.post("/line/{board_id}/add_led_strip")
 def add_led_strip(
     board_id: int,
     payload: LedStripCreate,
