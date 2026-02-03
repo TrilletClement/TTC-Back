@@ -1,6 +1,8 @@
 import re
+from typing import Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from app.orm_models.gtfs import Agency, Line, Stop, Trip, TripStop
 
 class LineService:
@@ -10,9 +12,22 @@ class LineService:
         agencies = db.query(Agency).all()
         return [{'id': a.id, 'name': a.name} for a in agencies]
 
+
     @staticmethod
-    def get_lines(agency_name: str, db: Session):
-        lines = db.query(Line).filter_by(agency_name=agency_name).all()
+    def get_lines(agency_name: str, search: Optional[str], db: Session):
+        query = db.query(Line).filter_by(agency_name=agency_name)
+        
+        # Si un terme de recherche est fourni, filtrer les résultats
+        if search:
+            search_pattern = f"%{search}%"
+            query = query.filter(
+                or_(
+                    Line.short_name.ilike(search_pattern),
+                    Line.long_name.ilike(search_pattern)
+                )
+            )
+        
+        lines = query.all()
         lines = sorted(lines, key=LineService._line_sort_key)
 
         return [{

@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.services.lineService import LineService
@@ -19,10 +20,11 @@ def get_agencies(
 @router.get("/{agency_name}/lines")
 def get_lines(
     agency_name: str,
+    search: Optional[str] = None,  # Paramètre de recherche optionnel
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return LineService.get_lines(agency_name, db)
+    return LineService.get_lines(agency_name, search, db)
 
 @router.get("/stops")
 def get_stops(
