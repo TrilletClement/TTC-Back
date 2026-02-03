@@ -21,6 +21,7 @@ from collections import defaultdict
 import os
 import sys
 from app.routines import tec_import
+from app.routines.missed_bus_store import get_stib_missed_bus_store
 
 STIB_API_KEY = os.environ.get("STIB_API_KEY", "").strip()
 STIB_HEADERS = {"Authorization": f"Apikey {STIB_API_KEY}"} if STIB_API_KEY else {}
@@ -196,7 +197,13 @@ def normalize_stib_id(stop_id):
         digits = digits.zfill(4)
     return digits
         
-_STIB_TS_CACHE = {"ts_map": None, "line_map": None, "loaded_at": 0.0}
+_STIB_TS_CACHE = {
+    "ts_map": None,
+    "line_map": None,
+    "stops_base4": None,
+    "terminus_by_line": None,
+    "loaded_at": 0.0,
+}
 _STIB_EMPTY_MATCHES = 0
 
 
@@ -208,11 +215,28 @@ def _base4_stib_id(value):
 def _load_stib_tripstop_cache(session, ttl_seconds=600):
     now = time.time()
     if _STIB_TS_CACHE["ts_map"] and now - _STIB_TS_CACHE["loaded_at"] < ttl_seconds:
-        return _STIB_TS_CACHE["line_map"], _STIB_TS_CACHE["ts_map"]
+        return (
+            _STIB_TS_CACHE["line_map"],
+            _STIB_TS_CACHE["ts_map"],
+            _STIB_TS_CACHE["stops_base4"],
+            _STIB_TS_CACHE["terminus_by_line"],
+        )
 
     line_map = defaultdict(list)
     for line_id, short_name in session.query(Line.id, Line.short_name).filter_by(agency_name="STIB"):
         line_map[short_name].append(line_id)
+
+    stops_base4 = set()
+    for (stop_id,) in session.query(Stop.stop_id).filter_by(agency_name="STIB").all():
+        b = _base4_stib_id(stop_id)
+        if b:
+            stops_base4.add(b)
+
+    terminus_by_line = defaultdict(set)
+    for line_id, terminus_id in session.query(Trip.line_id, Trip.terminus_stop_id).filter_by(line_agency_name="STIB"):
+        b = _base4_stib_id(terminus_id)
+        if b:
+            terminus_by_line[line_id].add(b)
 
     rows = session.execute(
         sa.text(
@@ -240,8 +264,10 @@ def _load_stib_tripstop_cache(session, ttl_seconds=600):
 
     _STIB_TS_CACHE["line_map"] = line_map
     _STIB_TS_CACHE["ts_map"] = ts_map
+    _STIB_TS_CACHE["stops_base4"] = stops_base4
+    _STIB_TS_CACHE["terminus_by_line"] = terminus_by_line
     _STIB_TS_CACHE["loaded_at"] = now
-    return line_map, ts_map
+    return line_map, ts_map, stops_base4, terminus_by_line
 
 
 def get_all_incoming_buses_export():
@@ -261,24 +287,21 @@ def get_all_incoming_buses_export():
             print("Aucune donnée RT reçue, mise à jour ignorée.")
             return
 
-        map_path = os.path.join(os.path.dirname(__file__), "missed_buses", "mapping.json")
-        mapping_dict = {}
-        if os.path.exists(map_path):
-            with open(map_path, "r") as f:
-                mapping_dict = {row[0]: row[1] for row in json.load(f)}
-        print(f"DEBUG: Mapping chargé pour {len(mapping_dict)} terminus.")
+        missed = get_stib_missed_bus_store()
+        now_ts = time.time()
 
         incoming_ids = set()
         matched_positions = 0
 
         session = next(get_db())
         try:
-            line_map, ts_map = _load_stib_tripstop_cache(session)
+            line_map, ts_map, stops_base4, terminus_by_line = _load_stib_tripstop_cache(session)
 
             for entry in data:
                 l_short = entry.get("lineid")
                 l_ids = line_map.get(l_short)
                 if not l_ids:
+                    # Unknown line in DB (not in GTFS routes)
                     continue
 
                 v_pos = entry.get("vehiclepositions")
@@ -287,9 +310,55 @@ def get_all_incoming_buses_export():
 
                 for pos in v_pos:
                     raw_dir = _base4_stib_id(pos.get("directionId"))
-                    t_id = mapping_dict.get(raw_dir, raw_dir)
-                    t_id = _base4_stib_id(t_id)
+                    # NOTE: do NOT apply any local terminus mapping here; we want to surface
+                    # raw mismatches to report them upstream to STIB.
+                    t_id = raw_dir
                     s_id = _base4_stib_id(pos.get("pointId"))
+
+                    sample = {
+                        "line": l_short,
+                        "terminus_raw": pos.get("directionId"),
+                        "terminus": t_id,
+                        "stop_raw": pos.get("pointId"),
+                        "stop": s_id,
+                        "distanceFromPoint": pos.get("distanceFromPoint"),
+                    }
+
+                    # (1) direction/terminus not in GTFS stops
+                    if t_id and t_id not in stops_base4:
+                        missed.record(
+                            "direction_not_in_gtfs",
+                            line=l_short,
+                            terminus=t_id,
+                            stop=s_id or "????",
+                            sample=sample,
+                            seen_at=now_ts,
+                        )
+                        continue
+
+                    # (2) realtime stop not in GTFS stops
+                    if s_id and s_id not in stops_base4:
+                        missed.record(
+                            "stop_not_in_gtfs",
+                            line=l_short,
+                            terminus=t_id or "????",
+                            stop=s_id,
+                            sample=sample,
+                            seen_at=now_ts,
+                        )
+                        continue
+
+                    # (3) line + terminus matches no trip
+                    if t_id and not any(t_id in terminus_by_line.get(lid, set()) for lid in l_ids):
+                        missed.record(
+                            "no_trips",
+                            line=l_short,
+                            terminus=t_id,
+                            stop=s_id or "????",
+                            sample=sample,
+                            seen_at=now_ts,
+                        )
+                        continue
 
                     for lid in l_ids:
                         key = (lid, t_id, s_id)
@@ -303,6 +372,17 @@ def get_all_incoming_buses_export():
                                 if next_id:
                                     incoming_ids.add(next_id)
                         matched_positions += 1
+
+                    # (4) line + terminus + stop matches no trip_stop
+                    if t_id and s_id and not any(ts_map.get((lid, t_id, s_id)) for lid in l_ids):
+                        missed.record(
+                            "no_tripstop",
+                            line=l_short,
+                            terminus=t_id,
+                            stop=s_id,
+                            sample=sample,
+                            seen_at=now_ts,
+                        )
 
             global _STIB_EMPTY_MATCHES
             if matched_positions == 0:
@@ -325,6 +405,8 @@ def get_all_incoming_buses_export():
             session.commit()
         finally:
             session.close()
+
+        missed.flush()
 
         print(f"Résultat: {len(incoming_ids)} TripStops marqués 'incoming'.")
         print(f"Update STIB RT (fast) terminée en {time.time() - tic:.2f}s")

@@ -333,6 +333,15 @@ rm -rf node_modules
 npm ci
 ```
 
+### STIB realtime ↔ GTFS mismatch files
+
+When the scheduler fetches STIB realtime (`vehicle-position-rt-production`) and cannot match it to a GTFS trip/stop, it writes deduplicated mismatch entries to:
+
+- `server-STIB/logs/missed_buses/direction_not_in_gtfs.json`
+- `server-STIB/logs/missed_buses/stop_not_in_gtfs.json`
+- `server-STIB/logs/missed_buses/no_trips.json`
+- `server-STIB/logs/missed_buses/no_tripstop.json`
+
 ### psycopg2 Installation Error
 
 ```bash

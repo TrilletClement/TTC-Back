@@ -8,7 +8,7 @@ from app.orm_models.board import Board, Order, OrderDetails
 
 ORDER_SVG_DIR = os.path.join(
     os.path.dirname(__file__),
-    "..", "..", "..", "static", "orders"
+    "..", "..", "static", "orders"
 )
 os.makedirs(ORDER_SVG_DIR, exist_ok=True)
 

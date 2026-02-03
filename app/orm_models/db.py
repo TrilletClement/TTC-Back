@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker, declarative_base
 from sqlalchemy.orm import Session
@@ -37,6 +38,15 @@ def get_db(request: Request = None):
         return
     
     db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@contextmanager
+def db_session():
+    db: Session = SessionLocal()
     try:
         yield db
     finally:

@@ -21,6 +21,9 @@ ecosystem.local.config.js
 flask-web-server/alembic.ini
 fastapi-server/app/routines/missed_buses/
 ecosystem.antoinelaptop.config.js
+ecosystem.antoinepc.config.js
 .ven/
 
 fastapi-server/static/orders/
+fastapi-server/static/packages/
+fastapi-server/app/routines/tec-gtfs.zip/

@@ -5,8 +5,10 @@ from fastapi.responses import FileResponse
 
 
 class UpdateService:
-    PACKAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../packages"))
-    PACKAGE_VERSION_FILE = os.path.join(PACKAGE_DIR, "package-version.json")
+    # Paths moved to fastapi-server/static/*
+    _FASTAPI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    PACKAGE_DIR = os.path.join(_FASTAPI_ROOT, "static", "packages")
+    PACKAGE_VERSION_FILE = os.path.join(_FASTAPI_ROOT, "static", "package-version.json")
 
     @staticmethod
     def get_version_info(hardware: str, mac: str):

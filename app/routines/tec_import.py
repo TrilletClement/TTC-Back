@@ -27,7 +27,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-from app.orm_models.db import get_db
+from app.orm_models.db import db_session, get_db
 from app.orm_models.gtfs import Agency, GTFSTrip, Line, Stop, SubAgency, Trip, TripStop
 from sqlalchemy import text
 import sqlalchemy as sa
@@ -615,7 +615,7 @@ def import_tec_gtfs(clean: bool = False, steps: Iterable[str] | None = None):
     
     if clean:
         print("\nCleaning existing TEC data...")
-        with get_db() as session:
+        with db_session() as session:
             # Order matters for foreign keys
             session.execute(text("DELETE FROM trip_stop WHERE stop_agency_name = 'TEC'"))
             session.execute(text("DELETE FROM gtfs_trip"))
