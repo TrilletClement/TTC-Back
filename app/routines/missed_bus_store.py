@@ -2,62 +2,63 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
-
-
-def _utc_iso(ts: Optional[float] = None) -> str:
-    if ts is None:
-        ts = time.time()
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+from typing import Any, Dict, Optional, Set, Tuple
 
 
 class MissedBusStore:
     """
     Persist unique mismatch keys to per-category JSON files.
 
-    Files are JSON arrays of objects with:
-      - line, terminus, stop
-      - first_seen, last_seen, count
-      - samples (small list for debugging)
+    Output format: JSON arrays of triplets:
+      [[line, terminus, stop], ...]
+
+    This is intended for upstream reporting; we purposely keep it minimal
+    (no samples, no per-hit counters) to avoid noisy duplicates.
     """
 
-    def __init__(self, base_dir: Path, flush_interval_seconds: int = 60, max_samples: int = 3):
+    def __init__(self, base_dir: Path, flush_interval_seconds: int = 60):
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.flush_interval_seconds = flush_interval_seconds
-        self.max_samples = max_samples
 
-        self._data: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._data: Dict[str, Set[Tuple[str, str, str]]] = {}
         self._dirty = False
         self._last_flush_at = 0.0
 
     def _file_path(self, category: str) -> Path:
         return self.base_dir / f"{category}.json"
 
-    def _load_category(self, category: str) -> Dict[str, Dict[str, Any]]:
+    def _load_category(self, category: str) -> Set[Tuple[str, str, str]]:
         if category in self._data:
             return self._data[category]
 
+        items: Set[Tuple[str, str, str]] = set()
         path = self._file_path(category)
-        items: Dict[str, Dict[str, Any]] = {}
 
         if path.exists():
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(raw, list):
-                    for obj in raw:
-                        if not isinstance(obj, dict):
-                            continue
-                        line = str(obj.get("line", ""))
-                        terminus = str(obj.get("terminus", ""))
-                        stop = str(obj.get("stop", ""))
-                        if not line or not terminus or not stop:
-                            continue
-                        key = f"{line}|{terminus}|{stop}"
-                        items[key] = obj
+                    for entry in raw:
+                        line = terminus = stop = ""
+
+                        # Legacy format (dict with extra keys)
+                        if isinstance(entry, dict):
+                            line = str(entry.get("line", "")).strip()
+                            terminus = str(entry.get("terminus", "")).strip()
+                            stop = str(entry.get("stop", "")).strip()
+
+                        # New minimal format
+                        elif isinstance(entry, (list, tuple)) and len(entry) >= 3:
+                            line = str(entry[0]).strip()
+                            terminus = str(entry[1]).strip()
+                            stop = str(entry[2]).strip()
+
+                        if line and terminus and stop:
+                            items.add((line, terminus, stop))
             except Exception:
                 # Corrupt/partial file: ignore (we'll rewrite on next flush)
-                items = {}
+                items = set()
 
         self._data[category] = items
         return items
@@ -78,35 +79,12 @@ class MissedBusStore:
         if not (line and terminus and stop):
             return
 
-        if seen_at is None:
-            seen_at = time.time()
-
-        key = f"{line}|{terminus}|{stop}"
+        # sample/seen_at are accepted for backward compatibility but ignored
         bucket = self._load_category(category)
-
-        if key not in bucket:
-            bucket[key] = {
-                "line": line,
-                "terminus": terminus,
-                "stop": stop,
-                "first_seen": _utc_iso(seen_at),
-                "last_seen": _utc_iso(seen_at),
-                "count": 1,
-                "samples": [sample] if sample else [],
-            }
-        else:
-            obj = bucket[key]
-            obj["last_seen"] = _utc_iso(seen_at)
-            obj["count"] = int(obj.get("count", 0)) + 1
-            if sample:
-                samples = obj.get("samples")
-                if not isinstance(samples, list):
-                    samples = []
-                if len(samples) < self.max_samples:
-                    samples.append(sample)
-                obj["samples"] = samples
-
-        self._dirty = True
+        before = len(bucket)
+        bucket.add((line, terminus, stop))
+        if len(bucket) != before:
+            self._dirty = True
 
     def flush(self, force: bool = False) -> None:
         now = time.time()
@@ -117,8 +95,7 @@ class MissedBusStore:
 
         for category, items in self._data.items():
             path = self._file_path(category)
-            payload = list(items.values())
-            payload.sort(key=lambda x: (str(x.get("line", "")), str(x.get("terminus", "")), str(x.get("stop", ""))))
+            payload = [[l, t, s] for (l, t, s) in sorted(items)]
 
             tmp = Path(str(path) + ".tmp")
             tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -153,4 +130,3 @@ def get_stib_missed_bus_store() -> MissedBusStore:
     out_dir = Path(os.environ.get("MISSED_BUSES_DIR", str(default_dir)))
     _STIB_STORE = MissedBusStore(out_dir)
     return _STIB_STORE
-

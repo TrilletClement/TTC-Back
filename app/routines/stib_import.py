@@ -288,8 +288,6 @@ def get_all_incoming_buses_export():
             return
 
         missed = get_stib_missed_bus_store()
-        now_ts = time.time()
-
         incoming_ids = set()
         matched_positions = 0
 
@@ -314,15 +312,8 @@ def get_all_incoming_buses_export():
                     # raw mismatches to report them upstream to STIB.
                     t_id = raw_dir
                     s_id = _base4_stib_id(pos.get("pointId"))
-
-                    sample = {
-                        "line": l_short,
-                        "terminus_raw": pos.get("directionId"),
-                        "terminus": t_id,
-                        "stop_raw": pos.get("pointId"),
-                        "stop": s_id,
-                        "distanceFromPoint": pos.get("distanceFromPoint"),
-                    }
+                    if not t_id or not s_id:
+                        continue
 
                     # (1) direction/terminus not in GTFS stops
                     if t_id and t_id not in stops_base4:
@@ -330,9 +321,7 @@ def get_all_incoming_buses_export():
                             "direction_not_in_gtfs",
                             line=l_short,
                             terminus=t_id,
-                            stop=s_id or "????",
-                            sample=sample,
-                            seen_at=now_ts,
+                            stop=s_id,
                         )
                         continue
 
@@ -341,10 +330,8 @@ def get_all_incoming_buses_export():
                         missed.record(
                             "stop_not_in_gtfs",
                             line=l_short,
-                            terminus=t_id or "????",
+                            terminus=t_id,
                             stop=s_id,
-                            sample=sample,
-                            seen_at=now_ts,
                         )
                         continue
 
@@ -354,9 +341,7 @@ def get_all_incoming_buses_export():
                             "no_trips",
                             line=l_short,
                             terminus=t_id,
-                            stop=s_id or "????",
-                            sample=sample,
-                            seen_at=now_ts,
+                            stop=s_id,
                         )
                         continue
 
@@ -380,8 +365,6 @@ def get_all_incoming_buses_export():
                             line=l_short,
                             terminus=t_id,
                             stop=s_id,
-                            sample=sample,
-                            seen_at=now_ts,
                         )
 
             global _STIB_EMPTY_MATCHES
