@@ -1,67 +1,49 @@
 const path = require('path');
 
-const projectRoot = __dirname;
-const venvBin = path.join(projectRoot, 'venv', 'bin');
-const frontendEnv = {
-  API_BASE_URL: 'https://transport.trillet.be/'
-};
-const backendEnv = {
-  DATABASE_URL: 'postgresql+psycopg2://myappuser:mypassword@192.168.14.13:5432/myappdb',
-  SQL_HEAVY_LOGS: 'true',
-  SECRET_KEY: 'a_default_secret_key',
-  SECURITY_PASSWORD_SALT: 'a_default_salt',
-  STIB_API_KEY: '36109cef239270c05417ed2b4001d76f7b160a0824c2caa87fce5966',
-  TEC_API_KEY: '36497DD5F3AD4262B24981633E73EF33'
-};
+// Chemins absolus pour éviter les erreurs de déploiement
+const PROJECT_ROOT = '/home/c.trillet/server-STIB';
+const FASTAPI_ROOT = path.join(PROJECT_ROOT, 'fastapi-server');
+const VENV_BIN = path.join(PROJECT_ROOT, 'venv/bin');
 
 module.exports = {
   apps: [
     {
-      name: 'stib-frontend',
-      cwd: path.join(projectRoot, 'stibFront'),
-      script: path.join('scripts', 'start-frontend.js'),
-      args: ['serve', '--port', '4200', '--proxy-config', 'proxy.conf.json'],
-      interpreter: 'node',
-      watch: false,
-      env: {
-        ...frontendEnv,
-        PATH: path.join(projectRoot, 'stibFront', 'node_modules', '.bin') + path.delimiter + process.env.PATH
-      },
-      log_file: path.join(projectRoot, 'logs', 'stib-frontend.log'),
-      out_file: path.join(projectRoot, 'logs', 'stib-frontend.out.log'),
-      error_file: path.join(projectRoot, 'logs', 'stib-frontend.err.log')
-    },
-    {
       name: 'stib-api',
-      script: path.join('..', 'venv', 'bin', 'gunicorn'),
-      args: ['-w', '4', '-b', '0.0.0.0:5000', 'app:create_app()'],
-      interpreter: 'none',
-      cwd: path.join(projectRoot, 'flask-web-server'),
-      watch: false,
+      cwd: FASTAPI_ROOT,
+      script: path.join(VENV_BIN, 'uvicorn'),
+      // On écoute sur 127.0.0.1 car Apache fait le pont (Reverse Proxy)
+      args: 'app.main:app --host 127.0.0.1 --port 8000 --workers 4',
+      interpreter: 'none', // Important: on utilise le chemin direct vers uvicorn du venv
+      autorestart: true,
+      max_memory_restart: '500M',
       env: {
-        ...backendEnv,
-        PATH: venvBin + path.delimiter + process.env.PATH,
-        VIRTUAL_ENV: path.join(projectRoot, 'venv')
+        PYTHONPATH: FASTAPI_ROOT,
+        VIRTUAL_ENV: path.join(PROJECT_ROOT, 'venv'),
+        PATH: `${VENV_BIN}:${process.env.PATH}`,
+        ENV: 'production',
+        // Ajoute ici tes variables sensibles ou via un fichier .env
+        DEPLOY_SECRET: "446334b8bd0a3addec75bccc25c9ec39202bab0f95a3a75db61c52760d9671501"
       },
-      log_file: path.join(projectRoot, 'logs', 'stib-api.log'),
-      out_file: path.join(projectRoot, 'logs', 'stib-api.out.log'),
-      error_file: path.join(projectRoot, 'logs', 'stib-api.err.log')
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
+      error_file: path.join(PROJECT_ROOT, 'logs/api-error.log'),
+      out_file: path.join(PROJECT_ROOT, 'logs/api-out.log'),
     },
     {
-      name: 'stib-imports',
-      script: path.join('..', 'venv', 'bin', 'uvicorn'),
-      args: ['app.main:app', '--host', '127.0.0.1', '--port', '8001', '--workers', '2'],
+      name: 'stib-scheduler',
+      cwd: FASTAPI_ROOT,
+      script: path.join(VENV_BIN, 'python'),
+      args: '-m app.routines.scheduler',
       interpreter: 'none',
-      cwd: path.join(projectRoot, 'fastapi-server'),
-      watch: false,
+      autorestart: true,
+      restart_delay: 5000, // Attendre 5s avant de redémarrer en cas de crash
       env: {
-        ...backendEnv,
-        PATH: venvBin + path.delimiter + process.env.PATH,
-        VIRTUAL_ENV: path.join(projectRoot, 'venv')
+        PYTHONPATH: FASTAPI_ROOT,
+        VIRTUAL_ENV: path.join(PROJECT_ROOT, 'venv'),
+        PATH: `${VENV_BIN}:${process.env.PATH}`
       },
-      log_file: path.join(projectRoot, 'logs', 'stib-imports.log'),
-      out_file: path.join(projectRoot, 'logs', 'stib-imports.out.log'),
-      error_file: path.join(projectRoot, 'logs', 'stib-imports.err.log')
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
+      error_file: path.join(PROJECT_ROOT, 'logs/scheduler-error.log'),
+      out_file: path.join(PROJECT_ROOT, 'logs/scheduler-out.log'),
     }
   ]
 };
