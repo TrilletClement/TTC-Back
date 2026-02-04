@@ -1,48 +1,49 @@
-name: Deploy to Server
+name: Build and Deploy
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
-  deploy:
+  build-and-trigger:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Trigger deployment via Webhook
-        id: trigger
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (Build Angular)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # ou ta version habituelle
+
+      - name: Install and Build Angular
         run: |
-          # On prépare le payload (vide ici car ton script ne l'utilise pas, mais requis pour la signature)
+          cd stibFront
+          npm install
+          npm run build -- --configuration production
+        # Cette étape génère un dossier 'dist/'
+
+      - name: Create Artifact
+        run: |
+          # On compresse le build pour l'envoi
+          tar -czf build-angular.tar.gz -C stibFront/dist/votre-nom-de-projet .
+
+      - name: Upload Build to Server via SSH
+        uses: appleboy/scp-action@master
+        with:
+          host: transport.trillet.be
+          username: c.trillet
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "build-angular.tar.gz"
+          target: "/home/c.trillet/"
+
+      - name: Trigger FastAPI Webhook
+        run: |
           PAYLOAD='{}'
-          # On calcule la signature HMAC SHA256 pour la sécurité
           SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "${{ secrets.DEPLOY_SECRET }}" | cut -d' ' -f2)
-          
           curl -X POST "https://transport.trillet.be/api/deploy/webhook" \
             -H "Content-Type: application/json" \
             -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
             -d "$PAYLOAD"
-
-      - name: Wait and Check Status
-        run: |
-          echo "Attente du début du déploiement..."
-          sleep 15
-          
-          # Boucle de vérification (max 5 minutes)
-          for i in {1..30}; do
-            RESPONSE=$(curl -s "https://transport.trillet.be/api/deploy/status")
-            # On vérifie si la dernière ligne du log contient un succès ou une erreur
-            if echo "$RESPONSE" | grep -q "Déploiement réussi!"; then
-              echo "Le serveur confirme le succès !"
-              exit 0
-            elif echo "$RESPONSE" | grep -q "Erreur"; then
-              echo "Le déploiement a échoué sur le serveur."
-              echo "$RESPONSE" | jq .last_lines
-              exit 1
-            fi
-            echo "Déploiement en cours... (essai $i/30)"
-            sleep 10
-          done
-          echo "Timeout atteint."
-          exit 1
