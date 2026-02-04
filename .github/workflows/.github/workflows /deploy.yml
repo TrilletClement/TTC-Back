@@ -3,14 +3,15 @@ name: Deploy to Server
 on:
   push:
     branches:
-      - main  # Se déclenche sur push vers main
-  workflow_dispatch:  # Permet aussi déclenchement manuel
+      - main  # Déclenche le workflow sur push vers main
+  workflow_dispatch: # Permet aussi déclenchement manuel
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
+      # Déclenche le déploiement sur ton serveur via le webhook
       - name: Trigger deployment on server
         run: |
           curl -X POST "https://votre-domaine.com/api/deploy/webhook" \
@@ -19,10 +20,12 @@ jobs:
             -d '{}'
         env:
           DEPLOY_SECRET: ${{ secrets.DEPLOY_SECRET }}
-      
+
+      # Attendre quelques secondes pour que le déploiement commence
       - name: Wait for deployment
         run: sleep 10
-      
+
+      # Vérifier le statut du déploiement via ton endpoint
       - name: Check deployment status
         run: |
-          curl -s "https://votre-domaine.com/api/deploy/status" | jq .
+          curl -s "https://transport.trillet.be/api/deploy/status" | jq .
