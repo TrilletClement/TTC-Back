@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.services.authService import AuthService
@@ -16,6 +17,10 @@ class LoginRequest(BaseModel):
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     return AuthService.login(payload.email, payload.password, db)
 
+@router.post("/token")
+def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    return AuthService.login(form_data.username, form_data.password, db)
+
 @router.post("/register")
 def register(payload: LoginRequest, db: Session = Depends(get_db)):
     return AuthService.register(payload.email, payload.password, db)
@@ -26,4 +31,3 @@ def current_user(
     db: Session = Depends(get_db)
 ):
     return AuthService.get_user_by_email(current_user, db) 
-

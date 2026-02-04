@@ -12,7 +12,8 @@ class AuthService:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                                 detail="Incorrect email or password",
                                 headers={"WWW-Authenticate": "Bearer"})
-        access_token = create_access_token(user.email)
+        roles = [role.name for role in user.roles]
+        access_token = create_access_token(user.email, roles=roles)
         return {"access_token": access_token, "token_type": "bearer"}
 
     @staticmethod

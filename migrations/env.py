@@ -7,8 +7,12 @@ from sqlalchemy import engine_from_config, pool
 import os
 import sys
 
-# Ensure project root on path
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
+# Ensure app package on path
+MIGRATIONS_DIR = os.path.dirname(__file__)
+FASTAPI_ROOT = os.path.abspath(os.path.join(MIGRATIONS_DIR, ".."))
+REPO_ROOT = os.path.abspath(os.path.join(MIGRATIONS_DIR, "..", ".."))
+sys.path.append(FASTAPI_ROOT)
+sys.path.append(REPO_ROOT)
 
 from app.orm_models.db import Base, engine  # noqa: E402
 from app.orm_models import models  # noqa: F401,E402
@@ -22,9 +26,13 @@ fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
 
+def _get_database_url() -> str:
+    env_url = os.getenv("DATABASE_URL")
+    return env_url or config.get_main_option("sqlalchemy.url")
+
 
 def run_migrations_offline():
-    url = config.get_main_option("sqlalchemy.url")
+    url = _get_database_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -37,6 +45,9 @@ def run_migrations_offline():
 
 
 def run_migrations_online():
+    database_url = _get_database_url()
+    if database_url:
+        config.set_main_option("sqlalchemy.url", database_url)
     connectable = engine_from_config(
         config.get_section(config.config_ini_section),
         prefix="sqlalchemy.",
@@ -56,4 +67,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-

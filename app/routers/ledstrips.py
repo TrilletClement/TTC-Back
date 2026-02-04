@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.services.ledStripService import LedStripService
+from app.core.security.jwt import get_current_user
 from app.orm_models.db import get_db
+from app.orm_models.auth import User
 
 router = APIRouter(prefix="/api", tags=["ledstrips"])
 
@@ -19,6 +21,7 @@ class LedStripCreate(BaseModel):
 def add_led_strip(
     board_id: int,
     payload: LedStripCreate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     return LedStripService.create_led_strip(
@@ -37,6 +40,7 @@ def add_led_strip(
 def get_led_strip(
     board_id: int,
     strip_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     return LedStripService.get_led_strip_by_id(board_id, strip_id, db)
@@ -55,6 +59,7 @@ def update_led_strip(
     board_id: int,
     strip_id: int,
     payload: LedStripUpdate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     return LedStripService.update_led_strip(
