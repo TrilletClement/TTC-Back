@@ -8,7 +8,7 @@ from fastapi import Request
 # PostgreSQL database URL
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql+psycopg2://mylocaldb:clement@localhost:5432/mylocaldb",
+    "postgresql+psycopg2://mylocaldb:mylocaldb@localhost:5432/mylocaldb",
 )
 SQL_ECHO = os.environ.get("SQL_HEAVY_LOGS", "false").strip().lower() in {"1", "true", "yes"}
 

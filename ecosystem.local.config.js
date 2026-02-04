@@ -11,7 +11,7 @@ const BACKEND_PORT = '8000';
 
 const backendEnv = {
   PORT: BACKEND_PORT,
-  DATABASE_URL: 'postgresql+psycopg2://mylocaldb:clement@localhost:5432/mylocaldb',
+  DATABASE_URL: 'postgresql+psycopg2://mylocaldb:mylocaldb@localhost:5432/mylocaldb',
 
   ACCESS_TOKEN_EXPIRE_MINUTES: '60',
 
@@ -64,7 +64,8 @@ module.exports = {
         ...backendEnv,
         PYTHONPATH: fastapiRoot,
         PATH: venvBin + path.delimiter + process.env.PATH,
-        VIRTUAL_ENV: projectVenv
+        VIRTUAL_ENV: projectVenv,
+        DEPLOY_SECRET: "446334b8bd0a3addec75bccc25c9ec39202bab0f95a3a75db61c52760d9671501"
       },
       log_file: path.join(logsDir, 'stib-api.log'),
       out_file: path.join(logsDir, 'stib-api.out.log'),
