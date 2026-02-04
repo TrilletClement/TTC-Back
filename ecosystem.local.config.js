@@ -1,14 +1,16 @@
 const path = require('path');
 
 const projectRoot = __dirname;
-const venvBin = path.join(projectRoot, 'venv', 'bin');
+const projectVenv = path.join(projectRoot, 'venv');
+const venvBin = path.join(projectVenv, 'bin');
 const fastapiRoot = path.join(projectRoot, 'fastapi-server');
+const logsDir = path.join(projectRoot, 'logs');
 
-const frontendEnv = {
-  API_BASE_URL: 'http://localhost:8000'  // Pointe vers FastAPI
-};
+const FRONTEND_PORT = '4200';
+const BACKEND_PORT = '8000';
 
 const backendEnv = {
+  PORT: BACKEND_PORT,
   DATABASE_URL: 'postgresql+psycopg2://mylocaldb:clement@localhost:5432/mylocaldb',
 
   ACCESS_TOKEN_EXPIRE_MINUTES: '60',
@@ -21,9 +23,14 @@ const backendEnv = {
   PROJECT_NAME: 'STIB Automation API',
   DEBUG: 'false',
   ENV: 'prod',
-  CORS_ORIGINS: '["http://localhost:4200","http://127.0.0.1:4200","http://localhost:8000","http://127.0.0.1:8000"]',
+  CORS_ORIGINS: '["*"]',
   STIB_API_KEY: 'd93b118966fc799fc52d8f63f936478f4b88dbed35370559a7d961f7',
   TEC_API_KEY: '36497DD5F3AD4262B24981633E73EF33'
+};
+
+const frontendEnv = {
+  PORT: FRONTEND_PORT,
+  API_BASE_URL: `http://localhost:${BACKEND_PORT}`  // Pointe vers FastAPI
 };
 
 module.exports = {
@@ -33,23 +40,23 @@ module.exports = {
       name: 'stib-frontend',
       cwd: path.join(projectRoot, 'stibFront'),
       script: path.join('scripts', 'start-frontend.js'),
-      args: ['serve', '--port', '4200', '--proxy-config', 'proxy.conf.json'],
+      args: ['serve', '--port', FRONTEND_PORT, '--proxy-config', 'proxy.conf.json'],
       interpreter: 'node',
       watch: false,
       env: {
         ...frontendEnv,
-        PATH: path.join(projectRoot, 'stibFront', 'node_modules', '.bin') + path.delimiter + process.env.PATH
       },
-      log_file: path.join(projectRoot, 'logs', 'stib-frontend.log'),
-      out_file: path.join(projectRoot, 'logs', 'stib-frontend.out.log'),
-      error_file: path.join(projectRoot, 'logs', 'stib-frontend.err.log')
+      log_file: path.join(logsDir, 'stib-frontend.log'),
+      out_file: path.join(logsDir, 'stib-frontend.out.log'),
+      error_file: path.join(logsDir, 'stib-frontend.err.log'),
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
     },
     
     // Backend FastAPI - Remplace Flask
     {
       name: 'stib-api',
-      script: path.join('..', 'venv', 'bin', 'uvicorn'),
-      args: ['app.main:app', '--host', '0.0.0.0', '--port', '8000', '--workers', '4'],
+      script: 'uvicorn',
+      args: ['app.main:app', '--host', '0.0.0.0', '--port', BACKEND_PORT, '--workers', '4'],
       interpreter: 'none',
       cwd: path.join(projectRoot, 'fastapi-server'),
       watch: false,
@@ -57,17 +64,18 @@ module.exports = {
         ...backendEnv,
         PYTHONPATH: fastapiRoot,
         PATH: venvBin + path.delimiter + process.env.PATH,
-        VIRTUAL_ENV: path.join(projectRoot, 'venv')
+        VIRTUAL_ENV: projectVenv
       },
-      log_file: path.join(projectRoot, 'logs', 'stib-api.log'),
-      out_file: path.join(projectRoot, 'logs', 'stib-api.out.log'),
-      error_file: path.join(projectRoot, 'logs', 'stib-api.err.log')
+      log_file: path.join(logsDir, 'stib-api.log'),
+      out_file: path.join(logsDir, 'stib-api.out.log'),
+      error_file: path.join(logsDir, 'stib-api.err.log'),
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
     },
     
     // Scheduler pour les imports automatiques
     {
       name: 'stib-scheduler',
-      script: path.join('..', 'venv', 'bin', 'python'),
+      script: 'python',
       args: ['-m', 'app.routines.scheduler'],
       interpreter: 'none',
       cwd: path.join(projectRoot, 'fastapi-server'),
@@ -79,11 +87,12 @@ module.exports = {
         ...backendEnv,
         PYTHONPATH: fastapiRoot,
         PATH: venvBin + path.delimiter + process.env.PATH,
-        VIRTUAL_ENV: path.join(projectRoot, 'venv')
+        VIRTUAL_ENV: projectVenv
       },
-      log_file: path.join(projectRoot, 'logs', 'stib-scheduler.log'),
-      out_file: path.join(projectRoot, 'logs', 'stib-scheduler.out.log'),
-      error_file: path.join(projectRoot, 'logs', 'stib-scheduler.err.log')
+      log_file: path.join(logsDir, 'stib-scheduler.log'),
+      out_file: path.join(logsDir, 'stib-scheduler.out.log'),
+      error_file: path.join(logsDir, 'stib-scheduler.err.log'),
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
     }
   ]
 };
