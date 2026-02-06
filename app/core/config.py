@@ -26,8 +26,10 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ORIGINS: List[str] = [
+        "http://localhost",         # Important pour le Front Docker
         "http://localhost:4200",
         "http://localhost:8000",
+        "http://127.0.0.1",
         "http://127.0.0.1:4200",
         "http://127.0.0.1:8000",
         "https://transport.trillet.be",

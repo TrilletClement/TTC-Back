@@ -1,0 +1,11 @@
+venv/
+stibFront/node_modules/
+stibFront/dist/
+.git/
+*.pdf
+logs/
+*.pyc
+__pycache__/
+node_modules
+.angular
+dist

@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:15-alpine
+    restart: always
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+
+  api:
+    image: clemzi/stib-api:1.0
+    restart: always
+    depends_on:
+      - db
+    env_file: .env
+    working_dir: /app/fastapi-server
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - PYTHONPATH=/app/fastapi-server
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+
+  scheduler:
+    image: clemzi/stib-api:1.0
+    restart: always
+    depends_on:
+      - db
+    env_file: .env
+    working_dir: /app/fastapi-server
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - PYTHONPATH=/app/fastapi-server
+    command: python -m app.routines.scheduler
+
+  frontend: # <-- Maintenant bien indenté sous "services"
+    build:
+      context: ./stibFront
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "4200:80"
+    depends_on:
+      - api
