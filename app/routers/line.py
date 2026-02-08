@@ -33,7 +33,7 @@ def get_stops(
 ):
     return LineService.get_stops(db)
 
-@router.get("/lines/{line_id}/stops")
+@router.get("/{line_id}/stops")
 def get_line_stops(
     line_id: str,
     current_user: User = Depends(get_current_user),
