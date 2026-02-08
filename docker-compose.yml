@@ -37,11 +37,14 @@ services:
     command: python -m app.routines.scheduler
 
   frontend: # <-- Maintenant bien indenté sous "services"
+    image: server-stib-frontend:latest
     build:
       context: ./stibFront
       dockerfile: Dockerfile
     restart: always
     ports:
       - "4200:80"
+    volumes:
+      - ./env.js:/usr/share/nginx/html/assets/env.js 
     depends_on:
       - api
