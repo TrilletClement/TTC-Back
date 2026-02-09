@@ -34,7 +34,5 @@ ssh -t $SERVER_USER@$SERVER_IP "su - root -c '
 # SI on fait cette merde c'est censé bien fonctionner :
 # cd ~/projets/server-STIB
 # docker-compose up -d --build
-# sudo apt  install docker-compose
-# docker-compose up -d --build
 # docker compose up
 # ./deploy.sh 
