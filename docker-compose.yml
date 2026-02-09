@@ -11,32 +11,33 @@ services:
       - ./postgres_data:/var/lib/postgresql/data
 
   api:
-    image: clemzi/stib-api:1.0
+    build:
+      context: ./fastapi-server  # ← Build depuis fastapi-server
+      dockerfile: Dockerfile
+    image: stib-api:latest
     restart: always
     depends_on:
       - db
     env_file: .env
-    working_dir: /app/fastapi-server
     environment:
       - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      - PYTHONPATH=/app/fastapi-server
+      - PYTHONPATH=/app
     ports:
       - "8000:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 
   scheduler:
-    image: clemzi/stib-api:1.0
+    image: stib-api:latest
     restart: always
     depends_on:
       - db
     env_file: .env
-    working_dir: /app/fastapi-server
     environment:
       - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      - PYTHONPATH=/app/fastapi-server
+      - PYTHONPATH=/app
     command: python -m app.routines.scheduler
 
-  frontend: # <-- Maintenant bien indenté sous "services"
+  frontend:
     image: server-stib-frontend:latest
     build:
       context: ./stibFront
