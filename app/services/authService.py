@@ -30,4 +30,4 @@ class AuthService:
 
     @staticmethod
     def get_user_by_email(user: User, db: Session):
-        return {"id": user.id, "email": user.email, "active": user.active}
+        return {"id": user.id, "email": user.email, "active": user.active, "roleId": [role.id for role in user.roles]}

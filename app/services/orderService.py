@@ -119,3 +119,9 @@ class OrderService:
             media_type="image/svg+xml",
             filename=filename
         )
+        
+    @staticmethod
+    def list_orders(db: Session):
+        orders = db.query(Order).all()
+        
+        return orders

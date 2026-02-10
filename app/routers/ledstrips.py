@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -12,8 +13,8 @@ router = APIRouter(prefix="/api", tags=["ledstrips"])
 class LedStripCreate(BaseModel):
     agency_name: str
     line_id: str
-    central_stop_left_name: str
-    central_stop_right_name: str
+    central_stop_left_name: Optional[str] = None
+    central_stop_right_name: Optional[str] = None
     led_color: str
 
 #Exception en transit avec Angular pour l'ajout d'une led strip (Clément 02/01/2026)

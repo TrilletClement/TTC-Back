@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routines import scheduler
-from app.routers import auth, boards, devices, ledstrips, orders, line
+from app.routers import auth, boards, devices, ledstrips, orders, line, blog
 from app.core.config import settings
 from app.core.security.jwt import get_current_user
 from app.orm_models.db import Base, engine
@@ -53,6 +53,7 @@ app.include_router(devices.router)
 app.include_router(ledstrips.router)
 app.include_router(orders.router)
 app.include_router(line.router)
+app.include_router(blog.router)
 
 @app.get("/")
 def root():
