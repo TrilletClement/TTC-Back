@@ -11,21 +11,27 @@ class UpdateRequest(BaseModel):
 
 
 @router.post("/versions")
-def get_update_versions(payload: UpdateRequest):
+async def get_update_versions(payload: UpdateRequest):
+    print(f"[DEBUG] Received OTA request: hardware={payload.hardware}, mac={payload.mac}")
+    
     version_info = UpdateService.get_version_info(payload.hardware, payload.mac)
-
+    
+    print(f"[DEBUG] Version info found: {version_info}")
+    
     if not version_info:
-        raise HTTPException(
-            status_code=404,
-            detail="No update info found for this hardware/mac"
-        )
-
-    package_url = f"https://transport.trillet.be/api/update/package/{version_info['package_file']}"
-
-    return {
-        "app_version": version_info["app_version"],
+        print("[DEBUG] No version info - returning 404")
+        raise HTTPException(status_code=404, detail="No update info found")
+    
+    filename = version_info.get("package_file")
+    package_url = f"https://transport.trillet.be/api/update/package/{filename}"
+    
+    result = {
+        "app_version": version_info.get("app_version"),  # Changed from "version"
         "app_url": package_url
     }
+    
+    print(f"[DEBUG] Returning: {result}")
+    return result
 
 
 @router.get("/package/{filename}")

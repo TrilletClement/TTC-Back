@@ -12,7 +12,7 @@ services:
 
   api:
     build:
-      context: ./fastapi-server  # ← Build depuis fastapi-server
+      context: ./fastapi-server # ← Build depuis fastapi-server
       dockerfile: Dockerfile
     image: stib-api:latest
     restart: always
@@ -46,6 +46,6 @@ services:
     ports:
       - "4200:80"
     volumes:
-      - ./env.js:/usr/share/nginx/html/assets/env.js 
+      - ./env.js:/usr/share/nginx/html/assets/env.js
     depends_on:
       - api

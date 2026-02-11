@@ -18,12 +18,17 @@ class UpdateService:
         except Exception:
             return None
 
-        mac = mac.upper()
+        # Force tout en minuscules pour comparer
+        mac = mac.lower() 
+        
+        # On vérifie les exceptions (avec les clés du JSON converties en minuscules pour être sûr)
+        exceptions = {k.lower(): v for k, v in data.get("exceptions", {}).items()}
+        if mac in exceptions:
+            return exceptions[mac]
 
-        if mac in data.get("exceptions", {}):
-            return data["exceptions"][mac]
-
-        return data.get("default", {}).get(hardware)
+        # Idem pour le hardware
+        defaults = {k: v for k, v in data.get("default", {}).items()}
+        return defaults.get(hardware)
 
     @staticmethod
     def get_package_file(filename: str):

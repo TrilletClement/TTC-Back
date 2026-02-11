@@ -31,7 +31,7 @@ class DeviceService:
             raise HTTPException(status_code=400, detail="MAC address is required.")
 
         mac_address = mac_address.lower().strip()
-        if not re.fullmatch(r'[0-9a-e]{12}', mac_address):
+        if not re.fullmatch(r'[0-9a-f]{12}', mac_address):
             raise HTTPException(status_code=400, detail="Invalid MAC address. Must be 12 hex characters (0-9, a-e).")
 
         formatted_mac = ':'.join(mac_address[i:i+2] for i in range(0, 12, 2))
