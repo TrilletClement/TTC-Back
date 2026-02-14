@@ -35,8 +35,8 @@ class LedStripService:
                                               .filter(LedStrip.board_id == board.id).scalar() or 0) + 1)
 
         trips = LedStripService._get_trips_by_direction(db, agency_name, line_id)
-        if not trips[0] or not trips[1]:
-            raise HTTPException(status_code=404, detail="Could not find trips in both directions")
+        if not trips[0] and not trips[1]:
+            raise HTTPException(status_code=404, detail="Could not find any trips for this line")
 
         trip_stops = LedStripService._get_trip_stops_by_direction(db, trips)
         central_indexes = LedStripService._find_central_indexes(db, trip_stops,
@@ -61,7 +61,6 @@ class LedStripService:
         db.commit()
         return {"message": "LED strip created successfully", "led_strip_id": led_strip.id}
 
-    # ----- fonctions internes conservées -----
     @staticmethod
     def _get_trips_by_direction(db, agency_name, line_id):
         line = db.query(Line).filter_by(id=line_id, agency_name=agency_name).first()
@@ -75,46 +74,86 @@ class LedStripService:
 
     @staticmethod
     def _get_trip_stops_by_direction(db, trips):
-        return {dir: db.query(TripStop).filter_by(trip_id=trips[dir].id)
-                .order_by(TripStop.sequence).all() for dir in [0, 1]}
+        result = {}
+        for dir in [0, 1]:
+            if trips[dir]:
+                result[dir] = db.query(TripStop).filter_by(trip_id=trips[dir].id).order_by(TripStop.sequence).all()
+            else:
+                result[dir] = []
+        return result
 
     @staticmethod
     def _find_central_indexes(db, trip_stops, central_stop_left_name, central_stop_right_name):
+        """
+        Trouve l'index du stop central dans les trip_stops.
+        Stratégie SIMPLE: On prend toujours le DERNIER match pour éviter les doublons.
+        """
         central_indexes = {}
+        
         for dir in [0, 1]:
-            if not central_stop_left_name and dir == 0:
-                central_indexes[0] = 0
+            if not trip_stops[dir]:
+                central_indexes[dir] = None
                 continue
-            if not central_stop_right_name and dir == 1:
-                central_indexes[1] = 0
+            
+            # Déterminer quel nom chercher
+            if dir == 0:
+                target_name = central_stop_left_name
+            else:
+                target_name = central_stop_right_name
+            
+            if not target_name:
+                central_indexes[dir] = None
                 continue
-            central_index = next((i for i, ts in enumerate(trip_stops[dir])
-                                  if (s := db.query(Stop).filter_by(
-                                        stop_id=ts.stop_stop_id,
-                                        agency_name=ts.stop_agency_name).first()) and
-                                  ((dir == 0 and s.name.strip().lower() == central_stop_left_name.strip().lower()) or
-                                   (dir == 1 and s.name.strip().lower() == central_stop_right_name.strip().lower()))), None)
+            
+            # Chercher le DERNIER arrêt avec ce nom (parcourir à l'envers)
+            central_index = None
+            for i in range(len(trip_stops[dir]) - 1, -1, -1):
+                ts = trip_stops[dir][i]
+                s = db.query(Stop).filter_by(
+                    stop_id=ts.stop_stop_id,
+                    agency_name=ts.stop_agency_name
+                ).first()
+                if s and s.name.strip().lower() == target_name.strip().lower():
+                    central_index = i
+                    break
+            
             if central_index is None:
                 raise HTTPException(status_code=404,
-                                    detail=f'Central stop name not found in trip direction {dir}')
+                                    detail=f'Central stop "{target_name}" not found in trip direction {dir}')
             central_indexes[dir] = central_index
+        
         return central_indexes
 
     @staticmethod
     def _select_stops_around_central(db, trip_stops, central_indexes):
         selected_stops = {}
+        
+        # Combien de stops on doit prendre?
+        only_one_direction = (central_indexes[0] is None) != (central_indexes[1] is None)
+        stops_to_take = 12 if only_one_direction else 6
+        
         for dir in [0, 1]:
-            if central_indexes[dir] == 0:
+            if central_indexes[dir] is None:
                 selected_stops[dir] = None
             else:
-                start = max(0, central_indexes[dir] - 5 if dir == 0 else central_indexes[dir] - 5)
-                selected = trip_stops[dir][start:central_indexes[dir]+1]
-                selected_stops[dir] = selected if dir == 0 else list(reversed(selected))
-        # Pad with None to 6 or 12 LEDs
-        for dir in [0, 1]:
-            if selected_stops[dir] is not None:
-                while len(selected_stops[dir]) < (12 if (selected_stops[1] is None or selected_stops[0] is None) else 6):
-                    selected_stops[dir].insert(0 if dir == 0 else len(selected_stops[dir]), None)
+                # Prendre jusqu'à stops_to_take arrêts AVANT le central (inclus)
+                start = max(0, central_indexes[dir] - (stops_to_take - 1))
+                selected = trip_stops[dir][start:central_indexes[dir] + 1]
+                
+                # Pour direction 1, inverser pour que le central soit à droite
+                if dir == 1:
+                    selected = list(reversed(selected))
+                
+                # Padding avec None au début si pas assez d'arrêts
+                while len(selected) < stops_to_take:
+                    selected.insert(0, None)
+                
+                # Si trop d'arrêts (ne devrait pas arriver), prendre les derniers
+                if len(selected) > stops_to_take:
+                    selected = selected[-stops_to_take:]
+                
+                selected_stops[dir] = selected
+        
         return selected_stops
 
     @staticmethod
@@ -124,26 +163,42 @@ class LedStripService:
         only1 = selected_stops[0] is None
 
         for i in range(12):
+            # Déterminer direction, index, et type
             if not only0 and not only1:
-                dir, stop_idx = (0, i) if i < 6 else (1, i - 6)
-                is_c_left = i == 5
-                is_c_right = i == 6
-                is_left = i < 5
-                is_right = i >= 7
+                # Double sens: 6 LEDs par direction
+                if i < 6:
+                    dir, stop_idx = 0, i
+                    is_c_left = (i == 5)
+                    is_c_right = False
+                    is_left = (i < 5)
+                    is_right = False
+                else:
+                    dir, stop_idx = 1, i - 6
+                    is_c_left = False
+                    is_c_right = (i == 6)
+                    is_left = False
+                    is_right = (i > 6)
+                    
             elif only0:
+                # Sens unique direction 0: 12 LEDs
                 dir, stop_idx = 0, i
-                is_c_left = i == 11
+                is_c_left = (i == 11)
                 is_c_right = False
-                is_left = i < 11
+                is_left = (i < 11)
                 is_right = False
-            else:
-                dir, stop_idx = 1, i - 12
+                
+            else:  # only1
+                # Sens unique direction 1: 12 LEDs
+                # Après reverse dans _select_stops, le central est à la fin (index 11)
+                dir, stop_idx = 1, i
                 is_c_left = False
-                is_c_right = i == 0
+                is_c_right = (i == 11)
                 is_left = False
-                is_right = i > 0
+                is_right = (i < 11)
 
-            ts = selected_stops[dir][stop_idx]
+            # Récupérer le TripStop
+            ts = selected_stops[dir][stop_idx] if selected_stops[dir] else None
+            
             custom_name = None
             if ts:
                 stop = db.query(Stop).filter_by(
@@ -151,11 +206,23 @@ class LedStripService:
                     agency_name=ts.stop_agency_name).first()
                 custom_name = stop.name if stop else ts.stop_stop_id
 
-            led = Led(custom_name=custom_name,
-                      type='c_left' if is_c_left else ('c_right' if is_c_right else ('left' if is_left else 'right')))
+            # Type de LED
+            if is_c_left:
+                led_type = 'c_left'
+            elif is_c_right:
+                led_type = 'c_right'
+            elif is_left:
+                led_type = 'left'
+            else:
+                led_type = 'right'
+
+            led = Led(custom_name=custom_name, type=led_type)
             db.add(led)
             db.flush()
+            
             if ts:
                 led.trip_stops.append(ts)
+                
             led_ids.append(led.id)
+            
         return led_ids
