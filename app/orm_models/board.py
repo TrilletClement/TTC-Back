@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table
-from sqlalchemy.orm import backref, relationship
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, UniqueConstraint
+from sqlalchemy.orm import relationship
 
 from app.orm_models.db import Base
 
@@ -32,38 +32,17 @@ class LedStrip(Base):
     line_id = Column(Integer, ForeignKey("line.id"), nullable=False)
     line_agency_name = Column(String(100), nullable=False)
     order_index = Column(Integer, nullable=False, default=1)
-    led_color = Column(String(50), nullable=False, default="red")
     line = relationship(
         "Line",
         backref="led_strips",
         primaryjoin="and_(LedStrip.line_id == Line.id, LedStrip.line_agency_name == Line.agency_name)",
     )
-
-    led1 = Column(Integer, ForeignKey("led.id"))
-    led2 = Column(Integer, ForeignKey("led.id"))
-    led3 = Column(Integer, ForeignKey("led.id"))
-    led4 = Column(Integer, ForeignKey("led.id"))
-    led5 = Column(Integer, ForeignKey("led.id"))
-    led6 = Column(Integer, ForeignKey("led.id"))
-    led7 = Column(Integer, ForeignKey("led.id"))
-    led8 = Column(Integer, ForeignKey("led.id"))
-    led9 = Column(Integer, ForeignKey("led.id"))
-    led10 = Column(Integer, ForeignKey("led.id"))
-    led11 = Column(Integer, ForeignKey("led.id"))
-    led12 = Column(Integer, ForeignKey("led.id"))
-
-    led1_obj = relationship("Led", foreign_keys=[led1], backref=backref("ledstrip1", uselist=False))
-    led2_obj = relationship("Led", foreign_keys=[led2], backref=backref("ledstrip2", uselist=False))
-    led3_obj = relationship("Led", foreign_keys=[led3], backref=backref("ledstrip3", uselist=False))
-    led4_obj = relationship("Led", foreign_keys=[led4], backref=backref("ledstrip4", uselist=False))
-    led5_obj = relationship("Led", foreign_keys=[led5], backref=backref("ledstrip5", uselist=False))
-    led6_obj = relationship("Led", foreign_keys=[led6], backref=backref("ledstrip6", uselist=False))
-    led7_obj = relationship("Led", foreign_keys=[led7], backref=backref("ledstrip7", uselist=False))
-    led8_obj = relationship("Led", foreign_keys=[led8], backref=backref("ledstrip8", uselist=False))
-    led9_obj = relationship("Led", foreign_keys=[led9], backref=backref("ledstrip9", uselist=False))
-    led10_obj = relationship("Led", foreign_keys=[led10], backref=backref("ledstrip10", uselist=False))
-    led11_obj = relationship("Led", foreign_keys=[led11], backref=backref("ledstrip11", uselist=False))
-    led12_obj = relationship("Led", foreign_keys=[led12], backref=backref("ledstrip12", uselist=False))
+    leds = relationship(
+        "Led",
+        back_populates="led_strip",
+        cascade="all, delete-orphan",
+        order_by="Led.ledstrip_index",
+    )
 
 
 class Order(Base):
@@ -100,9 +79,18 @@ class OrderDetails(Base):
 
 class Led(Base):
     __tablename__ = "led"
+    __table_args__ = (
+        UniqueConstraint("ledstrip_id", "ledstrip_index", name="uq_led_ledstrip_id_index"),
+    )
+
     id = Column(Integer, primary_key=True)
+    ledstrip_id = Column(Integer, ForeignKey("led_strip.id"), nullable=False)
+    ledstrip_index = Column(Integer, nullable=False, index=True)
     custom_name = Column(String(100))
     type = Column(String(10), nullable=False)  # left/right/central
+    led_color = Column(String(50), nullable=False, default="#00FF00")
+
+    led_strip = relationship("LedStrip", back_populates="leds")
     trip_stops = relationship(
         "TripStop",
         secondary="trip_stop_led_link",

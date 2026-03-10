@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.services.deviceService import DeviceService
 from app.core.security.jwt import get_current_user
 from app.orm_models.db import get_db
@@ -16,6 +16,28 @@ class DeviceRegister(BaseModel):
 class DeviceLink(BaseModel):
     esp_id: int
     board_id: int
+
+
+class LedStripStatusRow(BaseModel):
+    id: int
+    h: int = Field(..., description="Row index/order")
+    v: list[list[int]] = Field(
+        ...,
+        description="Per-LED RGB states for this row, e.g. [[0,255,0],[0,0,0],...]",
+    )
+
+
+class LedStripStatusResponse(BaseModel):
+    strips: list[LedStripStatusRow]
+
+
+def _normalize_mac(mac: str) -> str:
+    mac = (mac or "").strip()
+    if re.fullmatch(r"[0-9a-fA-F]{12}", mac):
+        return ":".join(mac[i : i + 2] for i in range(0, 12, 2)).lower()
+    if re.fullmatch(r"[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}", mac):
+        return mac.lower()
+    raise HTTPException(status_code=400, detail="Invalid MAC format")
 
 @router.post("/register_device_mac")
 def register_device_by_mac(
@@ -67,12 +89,14 @@ def unlink_device_from_board(
 ):
     return DeviceService.unlink_device_from_board(esp_id, current_user, db)
 
-@router.get("/esp/ledstrips")
+@router.get(
+    "/esp/ledstrips",
+    response_model=LedStripStatusResponse,
+    summary="Get LED strips state for ESP (RGB per LED)",
+)
 def get_ledstrip_status(
-    mac: str = Query(...),
+    mac: str = Query(..., description="ESP MAC address, 12-hex or colon-separated"),
     db: Session = Depends(get_db)
 ):
-    if re.fullmatch(r"[0-9a-fA-F]{12}", mac):
-        mac = ":".join(mac[i:i+2] for i in range(0, 12, 2)).lower()
-
-    return DeviceService.get_ledstrip_status(mac, db)
+    normalized_mac = _normalize_mac(mac)
+    return DeviceService.get_ledstrip_status(normalized_mac, db)

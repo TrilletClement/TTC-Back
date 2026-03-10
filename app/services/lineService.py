@@ -33,7 +33,10 @@ class LineService:
         return [{
             'id': str(line.id),
             'longName': line.long_name,
-            'name': line.short_name
+            'name': line.short_name,
+            'color': line.color,
+            'textColor': line.text_color,
+            'text_color': line.text_color,
         } for line in lines]
 
     @staticmethod
@@ -69,7 +72,10 @@ class LineService:
                     'route_id': line.route_id,
                     'agency_name': line.agency_name,
                     'short_name': line.short_name,
-                    'long_name': line.long_name
+                    'long_name': line.long_name,
+                    'color': line.color,
+                    'text_color': line.text_color,
+                    'textColor': line.text_color,
                 },
                 'stops_by_direction': stops_by_direction
             }
@@ -120,4 +126,3 @@ class LineService:
             if match:
                 return (0, int(match.group(1)), short_name)
         return (1, short_name)
-

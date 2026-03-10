@@ -1,6 +1,6 @@
 from typing import Optional
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.services.ledStripService import LedStripService
 from app.core.security.jwt import get_current_user
@@ -15,7 +15,7 @@ class LedStripCreate(BaseModel):
     line_id: str
     central_stop_left_name: Optional[str] = None
     central_stop_right_name: Optional[str] = None
-    led_color: str
+    led_color: str = Field(..., pattern=r"^#?[0-9a-fA-F]{6}$")
 
 #Exception en transit avec Angular pour l'ajout d'une led strip (Clément 02/01/2026)
 @router.post("/lines/{board_id}/add_led_strip")
@@ -52,7 +52,7 @@ class LedStripUpdate(BaseModel):
     line_id: str
     central_stop_left_name: str
     central_stop_right_name: str
-    led_color: str
+    led_color: str = Field(..., pattern=r"^#?[0-9a-fA-F]{6}$")
 
 
 @router.put("/boards/{board_id}/led_strips/{strip_id}")

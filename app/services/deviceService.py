@@ -1,20 +1,33 @@
-from sqlalchemy.orm import subqueryload, Session
-from fastapi import HTTPException, status
+import re
+
+from fastapi import HTTPException
+from sqlalchemy.orm import Session, subqueryload
+
 from app.orm_models.auth import User
 from app.orm_models.board import Board, Led, LedStrip
 from app.orm_models.device import ESP32Device
-import re
+
 
 class DeviceService:
+    @staticmethod
+    def _parse_color_to_rgb(color: str | None) -> list[int]:
+        if not color:
+            return [0, 255, 0]
+
+        value = color.strip().lower()
+        if value.startswith("#") and len(value) == 7:
+            try:
+                return [int(value[1:3], 16), int(value[3:5], 16), int(value[5:7], 16)]
+            except ValueError:
+                return [0, 255, 0]
+
+        return [0, 255, 0]
 
     @staticmethod
     def get_connected_devices(current_user: User, db: Session):
         esp = db.query(ESP32Device).filter_by(owner_id=current_user.id).all()
         boards = db.query(Board).filter_by(owner_id=current_user.id).all()
-        return {
-            'esp_devices': esp,
-            'boards': boards
-        }
+        return {"esp_devices": esp, "boards": boards}
 
     @staticmethod
     def delete_esp_device(esp_id: int, current_user: User, db: Session):
@@ -31,10 +44,10 @@ class DeviceService:
             raise HTTPException(status_code=400, detail="MAC address is required.")
 
         mac_address = mac_address.lower().strip()
-        if not re.fullmatch(r'[0-9a-f]{12}', mac_address):
+        if not re.fullmatch(r"[0-9a-f]{12}", mac_address):
             raise HTTPException(status_code=400, detail="Invalid MAC address. Must be 12 hex characters (0-9, a-e).")
 
-        formatted_mac = ':'.join(mac_address[i:i+2] for i in range(0, 12, 2))
+        formatted_mac = ":".join(mac_address[i : i + 2] for i in range(0, 12, 2))
 
         if name:
             name = name.strip()
@@ -88,12 +101,24 @@ class DeviceService:
         if not mac:
             raise HTTPException(status_code=400, detail="MAC address is required.")
 
+        mac = mac.strip().lower()
+        if re.fullmatch(r"[0-9a-f]{12}", mac):
+            mac = ":".join(mac[i : i + 2] for i in range(0, 12, 2))
+
         esp = db.query(ESP32Device).filter(ESP32Device.mac_address == mac).first()
         if not esp or not esp.board:
             raise HTTPException(status_code=401, detail="Invalid or unlinked ESP32 device.")
 
-        led_options = [subqueryload(getattr(LedStrip, f"led{i}_obj")).subqueryload(Led.trip_stops) for i in range(1, 13)]
-        board = db.query(Board).options(subqueryload(Board.led_strips).options(*led_options)).filter(Board.id == esp.board_id).first()
+        board = (
+            db.query(Board)
+            .options(
+                subqueryload(Board.led_strips)
+                .subqueryload(LedStrip.leds)
+                .subqueryload(Led.trip_stops)
+            )
+            .filter(Board.id == esp.board_id)
+            .first()
+        )
 
         if not board:
             raise HTTPException(status_code=404, detail="Linked board not found")
@@ -102,18 +127,18 @@ class DeviceService:
         response_data = []
 
         for idx, strip in enumerate(strips_sorted, start=1):
-            bool_array = []
-            for i in range(1, 13):
-                led_obj = getattr(strip, f"led{i}_obj")
-                if not led_obj:
-                    bool_array.append(0)
-                    continue
-                vehicle_incoming = any(ts.vehicle_incoming for ts in led_obj.trip_stops)
-                bool_array.append(1 if vehicle_incoming else 0)
-            response_data.append({
-                'id': strip.id,
-                'h': strip.order_index if strip.order_index is not None else idx,
-                'v': bool_array
-            })
+            leds_sorted = sorted(strip.leds, key=lambda led: (led.ledstrip_index or 0, led.id or 0))
+            rgb_array = []
+            for led in leds_sorted:
+                vehicle_incoming = any(ts.vehicle_incoming for ts in led.trip_stops)
+                rgb_array.append(DeviceService._parse_color_to_rgb(led.led_color) if vehicle_incoming else [0, 0, 0])
 
-        return {'strips': response_data}
+            response_data.append(
+                {
+                    "id": strip.id,
+                    "h": strip.order_index if strip.order_index is not None else idx,
+                    "v": rgb_array,
+                }
+            )
+
+        return {"strips": response_data}
