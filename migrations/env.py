@@ -8,11 +8,14 @@ import os
 import sys
 
 # Ensure app package on path
+
 MIGRATIONS_DIR = os.path.dirname(__file__)
 FASTAPI_ROOT = os.path.abspath(os.path.join(MIGRATIONS_DIR, ".."))
 REPO_ROOT = os.path.abspath(os.path.join(MIGRATIONS_DIR, "..", ".."))
-sys.path.append(FASTAPI_ROOT)
-sys.path.append(REPO_ROOT)
+
+sys.path.insert(0, "/app")        # Docker
+sys.path.insert(0, FASTAPI_ROOT)  # Local
+sys.path.insert(0, REPO_ROOT)
 
 from app.orm_models.db import Base, engine  # noqa: E402
 from app.orm_models import models  # noqa: F401,E402
