@@ -19,14 +19,12 @@ echo "3. Installation sur le serveur..."
 ssh -t $SERVER_USER@$SERVER_IP "su - root -c '
     mv /tmp/front.tar.gz /tmp/api.tar.gz /tmp/docker-compose.yml /tmp/.env /root/
     cd /root/
-    echo \"--- Chargement des images ---\"
+    echo \"--- Chargement des images --- \"
     docker load < front.tar.gz
     docker load < api.tar.gz
-    echo \"--- Migrations Alembic ---\"
-    docker compose run --rm api alembic upgrade head
-    echo \"--- Relance des services ---\"
+    echo \"--- Relance des services --- \"
     docker compose up -d
-    echo \"--- Nettoyage ---\"
+    echo \"--- Nettoyage --- \"
     rm front.tar.gz api.tar.gz
     docker image prune -f
     echo \"Deploiement termine avec succes !\"
