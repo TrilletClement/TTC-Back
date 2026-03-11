@@ -71,6 +71,7 @@ async def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(
 @router.post("/reset-password")
 def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.reset_token == payload.token).first()
+    
     if not user or user.reset_token_expiry < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Token invalide ou expiré")
     user.password = AuthService.hash_password(payload.password)
