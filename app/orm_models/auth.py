@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime
 from sqlalchemy.orm import relationship
 from flask_security import UserMixin, RoleMixin
 
@@ -20,6 +20,8 @@ class User(Base, UserMixin):
     active = Column(Boolean, default=True)
     fs_uniquifier = Column(String(255), unique=True, nullable=False)
     roles = relationship("Role", secondary="user_roles", backref="users")
+    reset_token = Column(String(100), nullable=True)         
+    reset_token_expiry = Column(DateTime, nullable=True)      
 
 
 class UserRoles(Base):

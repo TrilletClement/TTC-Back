@@ -24,6 +24,16 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 60 * 24
 
+    # Mail
+    MAIL_USERNAME: str = "admin@trillet.be"
+    MAIL_PASSWORD: str = "aUrbol,28,;"
+    MAIL_FROM: str = "admin@trillet.be"
+    MAIL_SERVER: str = "mail.b-kaiser.be"
+    MAIL_PORT: int = 465
+    MAIL_SSL_TLS: bool = True
+    MAIL_STARTTLS: bool = False
+    FRONTEND_URL: str = "https://transport.trillet.be"
+
     # CORS
     CORS_ORIGINS: List[str] = [
         "http://localhost",         # Important pour le Front Docker
