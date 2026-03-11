@@ -10,9 +10,9 @@ from app.orm_models.db import get_db
 from app.orm_models.auth import User
 from app.core.mail import send_reset_email
 from app.core.config import settings
+from app.core.security.jwt import hash_password
 
 import logging
-import os
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -74,7 +74,7 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
     
     if not user or user.reset_token_expiry < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Token invalide ou expiré")
-    user.password = AuthService.hash_password(payload.password)
+    user.password = hash_password(payload.password)
     user.reset_token = None
     user.reset_token_expiry = None
     db.commit()
