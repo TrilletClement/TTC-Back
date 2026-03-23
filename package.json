@@ -1,5 +1,9 @@
 {
   "dependencies": {
-    "pm2": "^6.0.14"
+    "pm2": "^6.0.14",
+    "three": "^0.183.2"
+  },
+  "devDependencies": {
+    "@types/three": "^0.183.1"
   }
 }
