@@ -23,6 +23,7 @@ fastapi-server/app/routines/missed_buses/
 ecosystem.antoinelaptop.config.js
 ecosystem.antoinepc.config.js
 .ven/
+docker-compose.local.yml
 
 fastapi-server/static/orders/
 fastapi-server/static/packages/

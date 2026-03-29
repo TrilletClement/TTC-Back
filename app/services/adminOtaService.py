@@ -6,8 +6,7 @@ from typing import Optional
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.orm_models.device import ESP32Device
-from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware
+from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware, HardwareFirmwareAssignment
 from app.services.updateService import UpdateService
 
 
@@ -32,6 +31,19 @@ class AdminOtaService:
         }
 
     @staticmethod
+    def _serialize_assignment(assignment: HardwareFirmwareAssignment) -> dict:
+        return {
+            "id": assignment.id,
+            "hardware_id": assignment.hardware_id,
+            "firmware_name": assignment.firmware_name,
+            "firmware_package_id": assignment.firmware_package_id,
+            "created_at": assignment.created_at.isoformat() if assignment.created_at else None,
+            "firmware_package": AdminOtaService._serialize_package(assignment.firmware_package)
+            if assignment.firmware_package
+            else None,
+        }
+
+    @staticmethod
     def _serialize_hardware(hardware: Hardware) -> dict:
         return {
             "id": hardware.id,
@@ -40,6 +52,10 @@ class AdminOtaService:
             "default_firmware_package_id": hardware.default_firmware_package_id,
             "created_at": hardware.created_at.isoformat() if hardware.created_at else None,
             "default_firmware": AdminOtaService._serialize_package(hardware.default_firmware) if hardware.default_firmware else None,
+            "firmware_assignments": [
+                AdminOtaService._serialize_assignment(assignment)
+                for assignment in sorted(hardware.firmware_assignments, key=lambda item: item.firmware_name)
+            ],
         }
 
     @staticmethod
@@ -53,6 +69,30 @@ class AdminOtaService:
         }
 
     @staticmethod
+    def _get_or_create_hardware(db: Session, hardware_type: str, hardware_version: Optional[str]) -> Hardware:
+        normalized_type = AdminOtaService._normalize_scope_value(hardware_type)
+        normalized_version = AdminOtaService._normalize_scope_value(hardware_version)
+        if not normalized_type:
+            raise HTTPException(status_code=400, detail="hardware_type is required")
+
+        hardware = (
+            db.query(Hardware)
+            .filter(Hardware.hardware_type == normalized_type, Hardware.hardware_version == normalized_version)
+            .first()
+        )
+        if hardware:
+            return hardware
+
+        hardware = Hardware(
+            hardware_type=normalized_type,
+            hardware_version=normalized_version,
+            created_at=datetime.utcnow(),
+        )
+        db.add(hardware)
+        db.flush()
+        return hardware
+
+    @staticmethod
     def get_versions(db: Session) -> dict:
         hardware_rows = db.query(Hardware).order_by(Hardware.hardware_type.asc(), Hardware.hardware_version.asc()).all()
         overrides = (
@@ -63,6 +103,11 @@ class AdminOtaService:
             .all()
         )
         packages = db.query(FirmwarePackage).order_by(FirmwarePackage.created_at.desc(), FirmwarePackage.id.desc()).all()
+        assignments = (
+            db.query(HardwareFirmwareAssignment)
+            .order_by(HardwareFirmwareAssignment.hardware_id.asc(), HardwareFirmwareAssignment.firmware_name.asc())
+            .all()
+        )
 
         default_entries = {}
         for hardware in hardware_rows:
@@ -84,6 +129,9 @@ class AdminOtaService:
             "exceptions": exception_entries,
             "packages": [AdminOtaService._serialize_package(package) for package in packages],
             "hardware": [AdminOtaService._serialize_hardware(hardware) for hardware in hardware_rows],
+            "hardware_firmware_assignments": [
+                AdminOtaService._serialize_assignment(assignment) for assignment in assignments
+            ],
             "device_overrides": [
                 {
                     "device_id": device.id,
@@ -169,10 +217,7 @@ class AdminOtaService:
         hardware_version: Optional[str] = None,
         default_firmware_package_id: Optional[int] = None,
     ) -> dict:
-        normalized_type = AdminOtaService._normalize_scope_value(hardware_type)
-        normalized_version = AdminOtaService._normalize_scope_value(hardware_version)
-        if not normalized_type:
-            raise HTTPException(status_code=400, detail="hardware_type is required")
+        hardware = AdminOtaService._get_or_create_hardware(db, hardware_type, hardware_version)
 
         package = None
         if default_firmware_package_id is not None:
@@ -180,28 +225,59 @@ class AdminOtaService:
             if not package:
                 raise HTTPException(status_code=404, detail="Firmware package not found")
 
-        hardware = (
-            db.query(Hardware)
-            .filter(Hardware.hardware_type == normalized_type, Hardware.hardware_version == normalized_version)
-            .first()
-        )
-        if hardware:
-            hardware.default_firmware_package_id = package.id if package else None
-        else:
-            hardware = Hardware(
-                hardware_type=normalized_type,
-                hardware_version=normalized_version,
-                default_firmware_package_id=package.id if package else None,
-                created_at=datetime.utcnow(),
-            )
-            db.add(hardware)
-            db.flush()
+        hardware.default_firmware_package_id = package.id if package else None
 
         db.commit()
         db.refresh(hardware)
         return {
             "message": "Hardware configuration saved",
             "hardware": AdminOtaService._serialize_hardware(hardware),
+        }
+
+    @staticmethod
+    def upsert_hardware_firmware(
+        db: Session,
+        hardware_type: str,
+        firmware_name: str,
+        firmware_package_id: int,
+        hardware_version: Optional[str] = None,
+    ) -> dict:
+        normalized_firmware_name = AdminOtaService._normalize_scope_value(firmware_name)
+        if not normalized_firmware_name:
+            raise HTTPException(status_code=400, detail="firmware_name is required")
+
+        hardware = AdminOtaService._get_or_create_hardware(db, hardware_type, hardware_version)
+        package = db.query(FirmwarePackage).filter(FirmwarePackage.id == firmware_package_id).first()
+        if not package:
+            raise HTTPException(status_code=404, detail="Firmware package not found")
+        if package.app_name != normalized_firmware_name:
+            raise HTTPException(status_code=400, detail="firmware_name must match the selected firmware package app_name")
+
+        assignment = (
+            db.query(HardwareFirmwareAssignment)
+            .filter(
+                HardwareFirmwareAssignment.hardware_id == hardware.id,
+                HardwareFirmwareAssignment.firmware_name == normalized_firmware_name,
+            )
+            .first()
+        )
+        if assignment:
+            assignment.firmware_package_id = package.id
+        else:
+            assignment = HardwareFirmwareAssignment(
+                hardware_id=hardware.id,
+                firmware_name=normalized_firmware_name,
+                firmware_package_id=package.id,
+                created_at=datetime.utcnow(),
+            )
+            db.add(assignment)
+            db.flush()
+
+        db.commit()
+        db.refresh(assignment)
+        return {
+            "message": "Hardware firmware assignment saved",
+            "assignment": AdminOtaService._serialize_assignment(assignment),
         }
 
     @staticmethod
@@ -240,9 +316,11 @@ class AdminOtaService:
         delete_file: bool,
         package_id: Optional[int] = None,
         hardware_version: Optional[str] = None,
+        firmware_name: Optional[str] = None,
     ) -> dict:
         normalized_hardware = AdminOtaService._normalize_scope_value(hardware)
         normalized_hardware_version = AdminOtaService._normalize_scope_value(hardware_version)
+        normalized_firmware_name = AdminOtaService._normalize_scope_value(firmware_name)
         normalized_mac = UpdateService.normalize_mac(mac_exception) if mac_exception else ""
 
         if package_id is not None:
@@ -251,8 +329,13 @@ class AdminOtaService:
                 raise HTTPException(status_code=404, detail="Firmware package not found")
 
             hardware_ref = db.query(Hardware.id).filter(Hardware.default_firmware_package_id == package.id).first()
+            assignment_ref = (
+                db.query(HardwareFirmwareAssignment.id)
+                .filter(HardwareFirmwareAssignment.firmware_package_id == package.id)
+                .first()
+            )
             device_ref = db.query(ESP32Device.id).filter(ESP32Device.target_firmware_id == package.id).first()
-            if hardware_ref or device_ref:
+            if hardware_ref or assignment_ref or device_ref:
                 raise HTTPException(status_code=409, detail="Firmware package is still assigned")
 
             db.delete(package)
@@ -277,6 +360,34 @@ class AdminOtaService:
                 "entry": AdminOtaService._serialize_package(deleted_package) if deleted_package else None,
             }
 
+        if normalized_hardware and normalized_firmware_name:
+            hardware_row = (
+                db.query(Hardware)
+                .filter(Hardware.hardware_type == normalized_hardware, Hardware.hardware_version == normalized_hardware_version)
+                .first()
+            )
+            if not hardware_row:
+                raise HTTPException(status_code=404, detail="Hardware configuration not found")
+
+            assignment = (
+                db.query(HardwareFirmwareAssignment)
+                .filter(
+                    HardwareFirmwareAssignment.hardware_id == hardware_row.id,
+                    HardwareFirmwareAssignment.firmware_name == normalized_firmware_name,
+                )
+                .first()
+            )
+            if not assignment:
+                raise HTTPException(status_code=404, detail="Hardware firmware assignment not found")
+
+            deleted_package = assignment.firmware_package
+            db.delete(assignment)
+            db.commit()
+            return {
+                "message": "Hardware firmware assignment deleted",
+                "entry": AdminOtaService._serialize_package(deleted_package) if deleted_package else None,
+            }
+
         if normalized_hardware:
             hardware_row = (
                 db.query(Hardware)
@@ -293,7 +404,7 @@ class AdminOtaService:
                 "entry": AdminOtaService._serialize_package(deleted_package) if deleted_package else None,
             }
 
-        raise HTTPException(status_code=400, detail="Provide hardware, mac_exception, or package_id")
+        raise HTTPException(status_code=400, detail="Provide hardware, firmware_name, mac_exception, or package_id")
 
     @staticmethod
     def list_firmware_files(db: Session) -> dict:

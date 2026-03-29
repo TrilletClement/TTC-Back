@@ -33,9 +33,31 @@ class Hardware(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     default_firmware = relationship("FirmwarePackage", foreign_keys=[default_firmware_package_id])
+    firmware_assignments = relationship(
+        "HardwareFirmwareAssignment",
+        back_populates="hardware",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         UniqueConstraint("hardware_type", "hardware_version", name="uq_hardware_type_version"),
+    )
+
+
+class HardwareFirmwareAssignment(Base):
+    __tablename__ = "hardware_firmware_assignment"
+
+    id = Column(Integer, primary_key=True)
+    hardware_id = Column(Integer, ForeignKey("hardware.id"), nullable=False)
+    firmware_name = Column(String(100), nullable=False)
+    firmware_package_id = Column(Integer, ForeignKey("firmware_package.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    hardware = relationship("Hardware", back_populates="firmware_assignments")
+    firmware_package = relationship("FirmwarePackage", foreign_keys=[firmware_package_id])
+
+    __table_args__ = (
+        UniqueConstraint("hardware_id", "firmware_name", name="uq_hardware_firmware_assignment"),
     )
 
 
@@ -55,6 +77,8 @@ class ESP32Device(Base):
     version_updater = Column(String(50))
     current_firmware_id = Column(Integer, ForeignKey("firmware_package.id"), nullable=True)
     target_firmware_id = Column(Integer, ForeignKey("firmware_package.id"), nullable=True)
+    current_firmware = relationship("FirmwarePackage", foreign_keys=[current_firmware_id])
+    target_firmware = relationship("FirmwarePackage", foreign_keys=[target_firmware_id])
     last_connected = Column(DateTime)
     last_ota_check = Column(DateTime)
 

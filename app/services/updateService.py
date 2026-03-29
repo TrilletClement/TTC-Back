@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware
+from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware, HardwareFirmwareAssignment
 
 
 class UpdateService:
@@ -56,6 +56,35 @@ class UpdateService:
         return None
 
     @staticmethod
+    def _package_matches_requested_firmware(package: Optional[FirmwarePackage], firmware_name: str) -> bool:
+        if not package:
+            return False
+        if not firmware_name:
+            return True
+        return package.app_name == firmware_name
+
+    @staticmethod
+    def _resolve_hardware_assignment(
+        db: Session,
+        hardware: Optional[Hardware],
+        firmware_name: str,
+    ) -> Optional[FirmwarePackage]:
+        if not hardware or not firmware_name:
+            return None
+
+        assignment = (
+            db.query(HardwareFirmwareAssignment)
+            .filter(
+                HardwareFirmwareAssignment.hardware_id == hardware.id,
+                HardwareFirmwareAssignment.firmware_name == firmware_name,
+            )
+            .first()
+        )
+        if assignment and assignment.firmware_package:
+            return assignment.firmware_package
+        return None
+
+    @staticmethod
     def get_version_info(
         db: Session,
         hardware: str,
@@ -95,9 +124,19 @@ class UpdateService:
 
         package = None
         if device and device.target_firmware_id:
-            package = db.query(FirmwarePackage).filter(FirmwarePackage.id == device.target_firmware_id).first()
-        elif resolved_hardware and resolved_hardware.default_firmware_package_id:
-            package = db.query(FirmwarePackage).filter(FirmwarePackage.id == resolved_hardware.default_firmware_package_id).first()
+            candidate = db.query(FirmwarePackage).filter(FirmwarePackage.id == device.target_firmware_id).first()
+            if UpdateService._package_matches_requested_firmware(candidate, normalized_firmware_name):
+                package = candidate
+
+        if not package:
+            package = UpdateService._resolve_hardware_assignment(db, resolved_hardware, normalized_firmware_name)
+
+        if not package and resolved_hardware and resolved_hardware.default_firmware_package_id:
+            candidate = db.query(FirmwarePackage).filter(
+                FirmwarePackage.id == resolved_hardware.default_firmware_package_id
+            ).first()
+            if UpdateService._package_matches_requested_firmware(candidate, normalized_firmware_name):
+                package = candidate
 
         if package:
             result = UpdateService._serialize_package(package)

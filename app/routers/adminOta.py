@@ -56,6 +56,7 @@ async def upload_firmware(
 class DeleteVersionRequest(BaseModel):
     hardware: Optional[str] = None
     hardware_version: Optional[str] = None
+    firmware_name: Optional[str] = None
     mac_exception: Optional[str] = None
     package_id: Optional[int] = None
     delete_file: bool = False
@@ -74,6 +75,7 @@ def delete_version(
         payload.delete_file,
         payload.package_id,
         payload.hardware_version,
+        payload.firmware_name,
     )
 
 
@@ -94,6 +96,28 @@ def upsert_hardware(
         payload.hardware_type,
         payload.hardware_version,
         payload.default_firmware_package_id,
+    )
+
+
+class UpsertHardwareFirmwareRequest(BaseModel):
+    hardware_type: str
+    hardware_version: Optional[str] = None
+    firmware_name: str
+    firmware_package_id: int
+
+
+@router.post("/hardware-firmware")
+def upsert_hardware_firmware(
+    payload: UpsertHardwareFirmwareRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return AdminOtaService.upsert_hardware_firmware(
+        db,
+        payload.hardware_type,
+        payload.firmware_name,
+        payload.firmware_package_id,
+        payload.hardware_version,
     )
 
 
