@@ -2,7 +2,7 @@
 
 # --- CONFIGURATION ---
 SERVER_IP="192.168.14.14"
-SERVER_USER="clement"
+SERVER_USER="antoine"
 API_IMAGE="stib-api:latest"
 FRONT_IMAGE="server-stib-frontend:latest"
 
@@ -19,11 +19,22 @@ echo "3. Installation sur le serveur..."
 ssh -t $SERVER_USER@$SERVER_IP "su - root -c '
     mv /tmp/front.tar.gz /tmp/api.tar.gz /tmp/docker-compose.yml /tmp/.env /root/
     cd /root/
+    echo \"--- Configuration de l environnement frontend --- \"
+    rm -rf /root/stibFront/public/runtime-env.js
+    mkdir -p /root/stibFront/public
+    echo '\''window.__env = {"API_BASE_URL":"https://transport.trillet.be"};'\'' > /root/stibFront/public/runtime-env.js
     echo \"--- Chargement des images --- \"
     docker load < front.tar.gz
     docker load < api.tar.gz
     echo \"--- Relance des services --- \"
     docker compose up -d
+    echo \"--- Attente que la base de donnees soit prete --- \"
+    until docker compose exec -T db pg_isready -U mylocaldb > /dev/null 2>&1; do
+        echo \"  DB not ready, waiting...\"
+        sleep 2
+    done
+    echo \"--- Application des migrations Alembic --- \"
+    docker compose exec -T api sh -c \"cd /app && python -m alembic upgrade head\"
     echo \"--- Nettoyage --- \"
     rm front.tar.gz api.tar.gz
     docker image prune -f

@@ -23,9 +23,13 @@ fastapi-server/app/routines/missed_buses/
 ecosystem.antoinelaptop.config.js
 ecosystem.antoinepc.config.js
 .ven/
+docker-compose.local.yml
 
 fastapi-server/static/orders/
 fastapi-server/static/packages/
 # Large downloaded artifact (must not be committed)
 fastapi-server/**/tec_gtfs.zip
 # stibFront/public/runtime-env.js
+api.tar.gz
+front.tar.gz
+postgres_data/
