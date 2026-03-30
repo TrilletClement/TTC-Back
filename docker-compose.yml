@@ -9,6 +9,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
 
   api:
     build:
@@ -47,5 +49,6 @@ services:
       - "4200:80"
     volumes:
       - ./env.js:/usr/share/nginx/html/assets/env.js
+      - ./stibFront/public/runtime-env.js:/usr/share/nginx/html/runtime-env.js
     depends_on:
       - api
