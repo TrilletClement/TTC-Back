@@ -24,7 +24,7 @@ const backendEnv = {
   DEBUG: 'false',
   ENV: 'prod',
   CORS_ORIGINS: '["*"]',
-  STIB_API_KEY: 'd93b118966fc799fc52d8f63f936478f4b88dbed35370559a7d961f7',
+  STIB_API_KEY: 'ad3f387e38ed4a12a781c8e0201b018b',
   TEC_API_KEY: '36497DD5F3AD4262B24981633E73EF33'
 };
 
@@ -51,7 +51,6 @@ module.exports = {
       error_file: path.join(logsDir, 'stib-frontend.err.log'),
       log_date_format: "YYYY-MM-DD HH:mm:ss",
     },
-    
     // Backend FastAPI - Remplace Flask
     {
       name: 'stib-api',
