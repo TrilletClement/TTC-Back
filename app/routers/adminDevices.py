@@ -121,18 +121,33 @@ def list_all_devices(
     return result
 
 
-@router.get("/boards", response_model=list[BoardListOut])
-def list_all_boards(
+@router.get("/users", response_model=list[str])
+def list_all_user_emails(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
-    boards = db.query(Board).order_by(Board.name).all()
+    from app.orm_models.auth import User as UserModel
+    users = db.query(UserModel.email).order_by(UserModel.email).all()
+    return [u.email for u in users]
+
+
+@router.get("/boards", response_model=list[BoardListOut])
+def list_boards(
+    owner_email: Optional[str] = None,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    from app.orm_models.auth import User as UserModel
+    query = db.query(Board)
+    if owner_email:
+        user = db.query(UserModel).filter(UserModel.email == owner_email).first()
+        if user:
+            query = query.filter(Board.owner_id == user.id)
+        else:
+            return []
+    boards = query.order_by(Board.name).all()
     return [
-        BoardListOut(
-            id=b.id,
-            name=b.name,
-            owner_email=b.owner.email if b.owner else None
-        )
+        BoardListOut(id=b.id, name=b.name, owner_email=b.owner.email if b.owner else None)
         for b in boards
     ]
 
