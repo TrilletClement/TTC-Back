@@ -2,7 +2,7 @@
 
 # --- CONFIGURATION ---
 SERVER_IP="192.168.14.14"
-SERVER_USER="antoine"
+SERVER_USER="clement"
 API_IMAGE="stib-api:latest"
 FRONT_IMAGE="server-stib-frontend:latest"
 

@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """
-TEC GTFS Importer — aligned with STIB importer structure.
-RT matching via (route_id, direction, sequence) sur les best_trips uniquement.
+TEC GTFS Importer v2.1 — RT matching par stop_id réel + logique statut fine.
+
+Changements vs v1 :
+  - Import statique : TripStop.sequence stocke maintenant la VRAIE séquence
+    GTFS (depuis stop_times.txt) au lieu d'un idx réindexé (0,1,2…).
+  - Cache RT : reconstruit autour de deux lookups :
+      (trip_id, stop_sequence) → stop_id        [depuis stop_times en mémoire]
+      (route_id, direction, stop_id) → [ts_ids] [depuis DB, tous les TripStops]
+  - Matching RT : pour chaque bus, on retrouve le stop_id réel via son
+    trip_id + current_stop_sequence, puis on allume TOUS les TripStops
+    de cette (ligne, direction, stop_id) — pas seulement ceux du best_trip.
+  - best_trip reste figé après création de la board (template layout uniquement).
 """
 
 if __name__ == "__main__":
@@ -34,9 +44,7 @@ GTFS_ZIP_URL = "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip"
 TEC_API_KEY  = os.environ.get("TEC_API_KEY", "36497DD5F3AD4262B24981633E73EF33")
 REALTIME_URL = "https://gtfsrt.tectime.be/proto/RealTime/vehicles"
 AGENCY_NAME  = "TEC"
-
-BATCH_SIZE      = 5000
-TRIP_BATCH_SIZE = 1000
+BATCH_SIZE   = 5000
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +197,15 @@ def import_tec_stops(stops_csv_text: str):
 
 
 def import_trips(trips_reader, stop_times_reader):
+    """
+    Import des trips et TripStops.
+
+    FIX v2 : TripStop.sequence stocke maintenant la vraie séquence GTFS
+    (ex: 1, 2, 3… ou 1, 3, 5…) au lieu d'un idx réindexé (0, 1, 2…).
+
+    C'est critique pour le matching RT : le feed envoie current_stop_sequence
+    qui correspond directement à stop_times.stop_sequence, pas à un idx.
+    """
     tic = time.time()
 
     trip_data = {
@@ -224,7 +241,8 @@ def import_trips(trips_reader, stop_times_reader):
                     new_trips_to_create[sig] = Trip(
                         line_id=l_id, line_agency_name=AGENCY_NAME,
                         direction=info["dir"], signature=sig,
-                        start_stop_id=ordered_stops[0], terminus_stop_id=ordered_stops[-1],
+                        start_stop_id=ordered_stops[0],
+                        terminus_stop_id=ordered_stops[-1],
                         start_agency_name=AGENCY_NAME, terminus_agency_name=AGENCY_NAME,
                     )
                 gtfs_mappings_to_add.append((g_id, sig))
@@ -236,9 +254,13 @@ def import_trips(trips_reader, stop_times_reader):
             for sig, trip in new_trips_to_create.items():
                 sig_to_trip_id[sig] = trip.id
                 sample_gtfs_id = next(g for g, s in gtfs_mappings_to_add if s == sig)
-                for idx, (_, s_id) in enumerate(sorted(trip_data[sample_gtfs_id]["stops"])):
-                    ts_to_insert.append({"trip_id": trip.id, "stop_stop_id": s_id,
-                                         "stop_agency_name": AGENCY_NAME, "sequence": idx})
+                for real_seq, s_id in sorted(trip_data[sample_gtfs_id]["stops"]):
+                    ts_to_insert.append({
+                        "trip_id": trip.id,
+                        "stop_stop_id": s_id,
+                        "stop_agency_name": AGENCY_NAME,
+                        "sequence": real_seq,  # FIX v2 : vraie séquence GTFS, pas idx
+                    })
             for batch in _chunked(ts_to_insert, BATCH_SIZE):
                 session.bulk_insert_mappings(TripStop, batch)
 
@@ -256,6 +278,10 @@ def import_trips(trips_reader, stop_times_reader):
             for s, c in sig_counts.items() if s in sig_to_trip_id
         ])
 
+        # Sélection du best_trip — inchangée volontairement.
+        # Le best_trip sert UNIQUEMENT de template pour le layout de la board.
+        # Il ne doit pas changer après création de la board.
+        # Le matching RT n'utilise plus best_trip (voir _load_tec_rt_cache v2).
         best_trips_query = session.query(
             Trip.line_id, Trip.direction, Trip.id,
             (sa.func.max(TripStop.sequence) * Trip.trip_count).label("score"),
@@ -263,6 +289,10 @@ def import_trips(trips_reader, stop_times_reader):
 
         for line in session.query(Line).filter_by(agency_name=AGENCY_NAME).all():
             for d in [0, 1]:
+                # Ne mettre à jour best_trip que si pas encore défini
+                # (protège le layout des boards existantes)
+                if getattr(line, f"best_trip_{d}_id") is not None:
+                    continue
                 best = session.query(best_trips_query.c.id).filter(
                     best_trips_query.c.line_id == line.id,
                     best_trips_query.c.direction == d,
@@ -278,9 +308,9 @@ def import_trips(trips_reader, stop_times_reader):
 
 def import_tec_gtfs():
     gtfs = _fetch_gtfs_zip()
-    if "agency.txt"    in gtfs: import_tec_agency(gtfs["agency.txt"])
-    if "routes.txt"    in gtfs: import_tec_lines(gtfs["routes.txt"])
-    if "stops.txt"     in gtfs: import_tec_stops(gtfs["stops.txt"])
+    if "agency.txt"   in gtfs: import_tec_agency(gtfs["agency.txt"])
+    if "routes.txt"   in gtfs: import_tec_lines(gtfs["routes.txt"])
+    if "stops.txt"    in gtfs: import_tec_stops(gtfs["stops.txt"])
     if "trips.txt" in gtfs and "stop_times.txt" in gtfs:
         import_trips(
             csv.DictReader(StringIO(gtfs["trips.txt"])),
@@ -289,11 +319,32 @@ def import_tec_gtfs():
 
 
 # ---------------------------------------------------------------------------
-# Real-time — cache module-level
+# Cache RT v2
+#
+# Structure du nouveau cache (chargé en mémoire, TTL 10 min) :
+#
+#   stop_seq_cache :
+#     (trip_id, stop_sequence) → stop_id
+#     Construit depuis stop_times.txt en mémoire.
+#     Permet de retrouver le stop_id réel depuis ce que le feed RT envoie.
+#
+#   ts_map :
+#     (route_id, direction, stop_id) → [ts_id1, ts_id2, ...]
+#     Construit depuis la DB : TOUS les TripStops de chaque (ligne, direction, stop).
+#     Permet d'allumer tous les boards concernés, peu importe le trip actif.
+#
+#   next_map :
+#     ts_id → ts_id_suivant
+#     Inchangé : pour marquer le prochain arrêt quand le bus est STOPPED_AT.
 # ---------------------------------------------------------------------------
 _TEC_EMPTY_MATCHES = 0
 _TEC_RT_CACHE_TTL  = 600
-_TEC_RT_CACHE      = {"seq_map": None, "next_map": None, "loaded_at": 0.0}
+_TEC_RT_CACHE      = {
+    "stop_seq_cache": None,  # (trip_id, seq) → stop_id
+    "ts_map": None,          # (route_id, direction, stop_id) → [ts_ids]
+    "next_map": None,        # ts_id → next_ts_id
+    "loaded_at": 0.0,
+}
 
 
 def _fetch_vehicle_positions_tec():
@@ -306,85 +357,148 @@ def _fetch_vehicle_positions_tec():
     return feed
 
 
-def _load_tec_rt_cache(session):
-    now = time.time()
-    if _TEC_RT_CACHE["seq_map"] and now - _TEC_RT_CACHE["loaded_at"] < _TEC_RT_CACHE_TTL:
-        return _TEC_RT_CACHE["seq_map"], _TEC_RT_CACHE["next_map"]
+def _build_stop_seq_cache(stop_times_text: str) -> dict:
+    """
+    Charge stop_times.txt en mémoire et construit le lookup :
+      (trip_id, stop_sequence) → stop_id
 
-    print(f"[{time.strftime('%H:%M:%S')}] Chargement cache RT TEC…")
+    ~6M lignes pour TEC, ~300-400MB RAM.
+    Appelé une seule fois au premier chargement du cache RT.
+    """
+    print(f"  Chargement stop_times en mémoire…")
+    tic    = time.time()
+    cache  = {}
+    reader = csv.DictReader(StringIO(stop_times_text))
+    for row in reader:
+        cache[(row["trip_id"], int(row["stop_sequence"]))] = row["stop_id"]
+    print(f"  stop_seq_cache : {len(cache)} entrées en {time.time()-tic:.2f}s")
+    return cache
+
+
+# Cache du stop_times en mémoire — chargé une seule fois, pas de TTL
+# (le GTFS statique ne change que lors d'un import explicite)
+_STOP_SEQ_CACHE = None
+
+
+def _ensure_stop_seq_cache() -> dict:
+    """
+    Charge stop_times depuis internet si pas encore en mémoire.
+    Après le premier chargement, reste en mémoire jusqu'au redémarrage du process.
+    """
+    global _STOP_SEQ_CACHE
+    if _STOP_SEQ_CACHE is not None:
+        return _STOP_SEQ_CACHE
+
+    print(f"[{time.strftime('%H:%M:%S')}] Premier chargement stop_seq_cache…")
+    # On télécharge uniquement stop_times.txt et trips.txt pour le cache RT
+    headers  = {"User-Agent": "Mozilla/5.0"}
+    response = requests.get(GTFS_ZIP_URL, headers=headers, timeout=120)
+    if response.status_code != 200:
+        raise RuntimeError(f"GTFS zip HTTP {response.status_code}")
+
+    with zipfile.ZipFile(BytesIO(response.content)) as zf:
+        stop_times_text = zf.read("stop_times.txt").decode("utf-8")
+
+    _STOP_SEQ_CACHE = _build_stop_seq_cache(stop_times_text)
+    return _STOP_SEQ_CACHE
+
+
+def _load_tec_rt_cache(session):
+    """
+    Construit le cache RT v2.
+
+    Différence clé vs v1 :
+      v1 : seq_map[(route_id, direction, sequence)] = ts_id_du_best_trip
+           → un seul TripStop par (route, dir, seq), uniquement celui du best_trip
+
+      v2 : ts_map[(route_id, direction, stop_id)] = [ts_id1, ts_id2, ...]
+           → TOUS les TripStops de toutes les lignes+directions qui passent
+             par ce stop_id physique
+    """
+    now = time.time()
+    if _TEC_RT_CACHE["ts_map"] and now - _TEC_RT_CACHE["loaded_at"] < _TEC_RT_CACHE_TTL:
+        return (
+            _TEC_RT_CACHE["stop_seq_cache"],
+            _TEC_RT_CACHE["ts_map"],
+            _TEC_RT_CACHE["next_map"],
+        )
+
+    print(f"[{time.strftime('%H:%M:%S')}] Chargement cache RT TEC v2…")
     tic = time.time()
 
-    best_trip_ids = {}  # internal_trip_id → (route_id, direction)
-    lines = session.query(Line).filter_by(agency_name=AGENCY_NAME).all()
+    # 1. S'assurer que stop_times est en mémoire
+    stop_seq_cache = _ensure_stop_seq_cache()
 
-    # Lignes dont une direction n'a pas de best_trip → on cherche un trip de secours
-    fallback_needed = []  # (line_id, route_id, direction)
-
-    for line in lines:
-        if not line.route_id:
-            continue
-        if line.best_trip_0_id:
-            best_trip_ids[line.best_trip_0_id] = (line.route_id, 0)
-        else:
-            fallback_needed.append((line.id, line.route_id, 0))
-        if line.best_trip_1_id:
-            best_trip_ids[line.best_trip_1_id] = (line.route_id, 1)
-        else:
-            fallback_needed.append((line.id, line.route_id, 1))
-
-    # Pour chaque direction sans best_trip, prendre le premier trip disponible
-    if fallback_needed:
-        for line_id, route_id, direction in fallback_needed:
-            fallback = session.query(Trip.id).filter_by(
-                line_id=line_id,
-                line_agency_name=AGENCY_NAME,
-                direction=direction,
-            ).first()
-            if fallback:
-                best_trip_ids[fallback.id] = (route_id, direction)
-
-    print(f"  {len(lines)} lignes | {len(best_trip_ids)} trips en cache "
-          f"| {len(fallback_needed)} directions sans best_trip")
-
-    if not best_trip_ids:
-        print("  ERREUR: aucun trip trouvé — relancer l'import GTFS statique.")
-        return {}, {}
-
+    # 2. Charger depuis la DB TOUS les TripStops TEC avec leur stop_id et
+    #    le route_id de leur ligne — pas seulement les best_trips.
+    #
+    #    On récupère aussi le next_ts_id via LEAD() pour le marquage STOPPED_AT.
     rows = session.execute(
         sa.text("""
             SELECT
-                ts.id       AS ts_id,
-                ts.trip_id  AS trip_id,
-                ts.sequence AS sequence,
-                LEAD(ts.id) OVER (PARTITION BY ts.trip_id ORDER BY ts.sequence) AS next_ts_id
+                ts.id                AS ts_id,
+                ts.trip_id           AS trip_id,
+                ts.stop_stop_id      AS stop_id,
+                l.route_id           AS route_id,
+                t.direction          AS direction,
+                LEAD(ts.id) OVER (
+                    PARTITION BY ts.trip_id
+                    ORDER BY ts.sequence
+                )                    AS next_ts_id
             FROM trip_stop ts
-            WHERE ts.trip_id = ANY(:trip_ids)
-              AND ts.stop_agency_name = :agency
+            JOIN trip t      ON t.id = ts.trip_id
+            JOIN line l      ON l.id = t.line_id
+            WHERE ts.stop_agency_name = :agency
+              AND t.line_agency_name  = :agency
+              AND l.agency_name       = :agency
             ORDER BY ts.trip_id, ts.sequence
         """),
-        {"trip_ids": list(best_trip_ids.keys()), "agency": AGENCY_NAME},
+        {"agency": AGENCY_NAME},
     ).all()
 
-    seq_map  = {}
-    next_map = {}
+    # 3. Construire ts_map et next_map
+    ts_map   = defaultdict(list)  # (route_id, direction, stop_id) → [ts_ids]
+    next_map = {}                 # ts_id → next_ts_id
+
     for row in rows:
-        route_id, direction = best_trip_ids[row.trip_id]
-        seq_map[(route_id, direction, row.sequence)] = row.ts_id
+        key = (row.route_id, row.direction, row.stop_id)
+        ts_map[key].append(row.ts_id)
         if row.next_ts_id:
             next_map[row.ts_id] = row.next_ts_id
 
-    _TEC_RT_CACHE.update({"seq_map": seq_map, "next_map": next_map, "loaded_at": now})
-    print(f"  Cache chargé en {time.time()-tic:.2f}s : {len(seq_map)} entrées")
-    return seq_map, next_map
+    n_keys    = len(ts_map)
+    n_ts_ids  = sum(len(v) for v in ts_map.values())
+
+    _TEC_RT_CACHE.update({
+        "stop_seq_cache": stop_seq_cache,
+        "ts_map":         dict(ts_map),
+        "next_map":       next_map,
+        "loaded_at":      now,
+    })
+
+    print(f"  Cache chargé en {time.time()-tic:.2f}s : "
+          f"{n_keys} clés (route+dir+stop) → {n_ts_ids} ts_ids")
+    return stop_seq_cache, dict(ts_map), next_map
 
 
 def get_all_incoming_buses_tec():
+    """
+    Mise à jour RT v2.
+
+    Pour chaque bus dans le feed :
+      1. trip_id + current_stop_sequence
+              ↓ stop_seq_cache
+      2. stop_id réel
+              ↓ ts_map
+      3. tous les ts_ids de (route_id, direction, stop_id)
+              ↓
+      4. vehicle_incoming = true sur tous ces TripStops
+    """
     tic = time.time()
-    print(f"[{time.strftime('%H:%M:%S')}] Démarrage mise à jour Temps Réel TEC…")
+    print(f"[{time.strftime('%H:%M:%S')}] Démarrage mise à jour Temps Réel TEC v2.1…")
 
     try:
-        feed = _fetch_vehicle_positions_tec()
-
+        feed     = _fetch_vehicle_positions_tec()
         entities = [e for e in feed.entity if e.HasField("vehicle")]
         print(f"  Feed reçu : {len(entities)} véhicules")
 
@@ -394,76 +508,92 @@ def get_all_incoming_buses_tec():
 
         session = next(get_db())
         try:
-            seq_map, next_map = _load_tec_rt_cache(session)
+            stop_seq_cache, ts_map, next_map = _load_tec_rt_cache(session)
 
-            if not seq_map:
+            if not ts_map:
                 print("  Cache RT vide, mise à jour annulée.")
                 return
 
             incoming_ids  = set()
             matched       = 0
-            no_seq        = 0   # currentStopSequence absent ou 0
-            no_map        = 0   # (route_id, direction, seq) absent du cache
+            no_seq        = 0   # bus sans current_stop_sequence
+            no_stop_id    = 0   # trip_id+seq absent du stop_seq_cache
+            no_map        = 0   # (route_id, dir, stop_id) absent du ts_map
             status_counts = defaultdict(int)
 
             for entity in entities:
                 v         = entity.vehicle
                 route_id  = v.trip.route_id
                 direction = v.trip.direction_id
+                trip_id   = v.trip.trip_id
                 stop_seq  = v.current_stop_sequence
-                status    = v.current_status
-                status_counts[status] += 1
+                status_counts[v.current_status] += 1
 
                 if not stop_seq:
                     no_seq += 1
                     continue
 
-                ts_id = seq_map.get((route_id, direction, stop_seq))
-                if ts_id is None:
-                    no_map += 1
+                # Étape 1 : retrouver le stop_id réel depuis trip_id + séquence
+                stop_id = stop_seq_cache.get((trip_id, stop_seq))
+                if stop_id is None:
+                    no_stop_id += 1
                     continue
 
-                # matched += 1
-
-                # # GTFS-RT statuses :
-                # #   0 INCOMING_AT   → bus approche cet arrêt  → marquer ts_id
-                # #   1 STOPPED_AT    → bus à l'arrêt           → marquer le suivant
-                # #   2 IN_TRANSIT_TO → bus en route vers arrêt → marquer ts_id
-                # if v.current_status in (0, 2):
-                #     incoming_ids.add(ts_id)
-                # elif v.current_status == 1:
-                #     incoming_ids.add(ts_id)
-                #     next_id = next_map.get(ts_id)
-                #     if next_id:
-                #         incoming_ids.add(next_id)
-                
-                # matched += 1
-
-                ts_id = seq_map.get((route_id, direction, stop_seq))
-                if ts_id is None:
+                # Étape 2 : trouver tous les TripStops de ce (route, dir, stop)
+                ts_ids = ts_map.get((route_id, direction, stop_id))
+                if not ts_ids:
                     no_map += 1
                     continue
 
                 matched += 1
+                status = v.current_status
 
-                incoming_ids.add(ts_id)
-                next_id = next_map.get(ts_id)
-                if next_id:
-                    incoming_ids.add(next_id)
+                for ts_id in ts_ids:
+                    next_id = next_map.get(ts_id)
+                    if status == 1:
+                        # STOPPED_AT : bus à l'arrêt → allumer cet arrêt + le suivant
+                        # (il va repartir dans quelques secondes)
+                        incoming_ids.add(ts_id)
+                        if next_id:
+                            incoming_ids.add(next_id)
+                    else:
+                        # INCOMING_AT (0) ou IN_TRANSIT_TO (2) : bus en route vers cet arrêt
+                        # → allumer uniquement le suivant dans la séquence board
+                        # Si c'est le dernier arrêt (pas de suivant), allumer quand même
+                        if next_id:
+                            incoming_ids.add(next_id)
+                        else:
+                            incoming_ids.add(ts_id)
 
             print(f"  Statuts : {dict(status_counts)}  (0=INCOMING_AT, 1=STOPPED_AT, 2=IN_TRANSIT_TO)")
-            print(f"  Matched: {matched} | sans séquence: {no_seq} | hors cache: {no_map}")
+            print(f"  Matched: {matched} | sans séquence: {no_seq} "
+                  f"| stop_id inconnu: {no_stop_id} | hors ts_map: {no_map}")
 
-            # Affiche un échantillon des véhicules hors cache pour diagnostic
-            if no_map > 0:
-                sample_shown = 0
+            # Diagnostic : afficher un échantillon des cas non matchés
+            if no_stop_id > 0:
+                shown = 0
                 for entity in entities:
-                    v   = entity.vehicle
-                    key = (v.trip.route_id, v.trip.direction_id, v.current_stop_sequence)
-                    if v.current_stop_sequence and key not in seq_map:
-                        print(f"  [HORS CACHE] route_id={v.trip.route_id} dir={v.trip.direction_id} seq={v.current_stop_sequence} trip_id={v.trip.trip_id}")
-                        sample_shown += 1
-                        if sample_shown >= 5:
+                    v = entity.vehicle
+                    if v.current_stop_sequence and \
+                       stop_seq_cache.get((v.trip.trip_id, v.current_stop_sequence)) is None:
+                        print(f"  [STOP_ID INCONNU] trip_id={v.trip.trip_id} "
+                              f"seq={v.current_stop_sequence} route={v.trip.route_id}")
+                        shown += 1
+                        if shown >= 5:
+                            break
+
+            if no_map > 0:
+                shown = 0
+                for entity in entities:
+                    v       = entity.vehicle
+                    stop_id = stop_seq_cache.get((v.trip.trip_id, v.current_stop_sequence))
+                    key     = (v.trip.route_id, v.trip.direction_id, stop_id)
+                    if stop_id and key not in ts_map:
+                        print(f"  [HORS TS_MAP] route={v.trip.route_id} "
+                              f"dir={v.trip.direction_id} stop_id={stop_id} "
+                              f"trip_id={v.trip.trip_id}")
+                        shown += 1
+                        if shown >= 5:
                             break
 
             global _TEC_EMPTY_MATCHES
@@ -476,6 +606,7 @@ def get_all_incoming_buses_tec():
             else:
                 _TEC_EMPTY_MATCHES = 0
 
+            # Reset global puis marquage des bus actifs
             session.execute(
                 sa.text("UPDATE trip_stop SET vehicle_incoming = false WHERE stop_agency_name = 'TEC'")
             )
@@ -505,7 +636,7 @@ def get_all_incoming_buses_tec():
 
 if __name__ == "__main__":
     if "--tec-rt" in sys.argv:
-        print("Lancement mise à jour Temps Réel TEC…")
+        print("Lancement mise à jour Temps Réel TEC v2.1…")
         get_all_incoming_buses_tec()
     else:
         import_tec_gtfs()
