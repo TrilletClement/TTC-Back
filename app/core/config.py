@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     MAIL_SSL_TLS: bool = True
     MAIL_STARTTLS: bool = False
     FRONTEND_URL: str = "https://transport.trillet.be"
+    TURNSTILE_SECRET_KEY: str = Field(..., min_length=32)
 
     # CORS
     CORS_ORIGINS: List[str] = [

@@ -1,11 +1,13 @@
+import secrets
+import httpx
+from fastapi import Request
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-import secrets
 from app.services.authService import AuthService
-from app.core.security.jwt import create_access_token, get_current_user
+from app.core.security.jwt import get_current_user
 from app.orm_models.db import get_db
 from app.orm_models.auth import User
 from app.core.mail import send_reset_email
@@ -16,6 +18,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["auth"])
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    turnstileToken: str
 
 class LoginRequest(BaseModel):
     email: str
@@ -37,7 +44,17 @@ def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     return AuthService.login(form_data.username, form_data.password, db)
 
 @router.post("/register")
-def register(payload: LoginRequest, db: Session = Depends(get_db)):
+async def register(
+    payload: RegisterRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    remote_ip = request.client.host if request.client else None
+    
+    is_human = await verify_turnstile(payload.turnstileToken, remote_ip)
+    if not is_human:
+        raise HTTPException(status_code=400, detail="Validation CAPTCHA échouée")
+
     return AuthService.register(payload.email, payload.password, db)
 
 @router.get("/user/current")
@@ -79,3 +96,19 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
     user.reset_token_expiry = None
     db.commit()
     return {"message": "Mot de passe mis à jour"}
+
+async def verify_turnstile(token: str, remote_ip: str = None) -> bool:
+    async with httpx.AsyncClient() as client:
+        data = {
+            "secret": settings.TURNSTILE_SECRET_KEY,
+            "response": token,
+        }
+        if remote_ip:
+            data["remoteip"] = remote_ip
+
+        response = await client.post(
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            data=data
+        )
+        result = response.json()
+        return result.get("success", False)
