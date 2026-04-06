@@ -27,3 +27,18 @@ async def send_reset_email(email: str, reset_url: str):
         subtype="html"
     )
     await fast_mail.send_message(message)
+    
+    
+async def send_confirmation_email(email: str, confirmation_url: str):
+    message = MessageSchema(
+        subject="Confirmez votre inscription",
+        recipients=[email],
+        body=f"""
+        <h3>Bienvenue !</h3>
+        <p>Merci de vous être inscrit. Cliquez sur ce lien pour confirmer votre email :</p>
+        <a href="{confirmation_url}">{confirmation_url}</a>
+        <p>Ce lien expire dans 24 heures.</p>
+        """,
+        subtype="html"
+    )
+    await fast_mail.send_message(message)

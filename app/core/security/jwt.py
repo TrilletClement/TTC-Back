@@ -86,3 +86,17 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
+
+def create_confirmation_token(email: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(hours=24)
+    payload = {"sub": email, "type": "email_confirmation", "exp": expire}
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+def verify_confirmation_token(token: str) -> Optional[str]:
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        if payload.get("type") != "email_confirmation":
+            return None
+        return payload.get("sub")  # retourne l'email
+    except JWTError:
+        return None

@@ -50,12 +50,16 @@ async def register(
     db: Session = Depends(get_db)
 ):
     remote_ip = request.client.host if request.client else None
-    
     is_human = await verify_turnstile(payload.turnstileToken, remote_ip)
     if not is_human:
         raise HTTPException(status_code=400, detail="Validation CAPTCHA échouée")
 
-    return AuthService.register(payload.email, payload.password, db)
+    base_url = str(request.base_url).rstrip("/")
+    return await AuthService.register(payload.email, payload.password, db, base_url)  # ← async + base_url
+
+@router.get("/confirm-email")
+def confirm_email(token: str, db: Session = Depends(get_db)):
+    return AuthService.confirm_email(token, db)
 
 @router.get("/user/current")
 def current_user(
