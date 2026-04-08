@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     MAIL_SSL_TLS: bool = True
     MAIL_STARTTLS: bool = False
     FRONTEND_URL: str = "https://transport.trillet.be"
+    FRONTEND_URL_DEV: str = "http://localhost:4200"
     TURNSTILE_SECRET_KEY: str = "0x4AAAAAACynx6LG7GR6hr1VtUK9uyut8OE"
 
     # CORS

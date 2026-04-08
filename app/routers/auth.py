@@ -56,16 +56,11 @@ async def register(
         raise HTTPException(status_code=400, detail="Validation CAPTCHA échouée")
 
     base_url = str(request.base_url).rstrip("/")
-    return await AuthService.register(payload.email, payload.password, db, base_url)  # ← async + base_url
+    return await AuthService.register(payload.email, payload.password, db, base_url) 
 
 @router.get("/confirm-email")
 def confirm_email(token: str, db: Session = Depends(get_db)):
-    result = AuthService.confirm_email(token, db)
-    
-    if result.get("already_confirmed"):
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/confirm-email?info=already-confirmed")
-    
-    return RedirectResponse(url=f"{settings.FRONTEND_URL}/confirm-email?confirmed=true")
+    return AuthService.confirm_email(token, db)
 
 @router.get("/user/current")
 def current_user(
