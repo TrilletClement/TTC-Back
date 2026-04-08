@@ -1,4 +1,5 @@
 import secrets
+from fastapi.responses import RedirectResponse
 import httpx
 from fastapi import Request
 from fastapi import APIRouter, Depends, HTTPException
@@ -59,7 +60,12 @@ async def register(
 
 @router.get("/confirm-email")
 def confirm_email(token: str, db: Session = Depends(get_db)):
-    return AuthService.confirm_email(token, db)
+    result = AuthService.confirm_email(token, db)
+    
+    if result.get("already_confirmed"):
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/confirm-email?info=already-confirmed")
+    
+    return RedirectResponse(url=f"{settings.FRONTEND_URL}/confirm-email?confirmed=true")
 
 @router.get("/user/current")
 def current_user(
