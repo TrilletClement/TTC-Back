@@ -11,7 +11,7 @@ from app.services.authService import AuthService
 from app.core.security.jwt import get_current_user
 from app.orm_models.db import get_db
 from app.orm_models.auth import User
-from app.core.mail import send_reset_email
+from app.core.mail import send_confirmation_email, send_reset_email
 from app.core.config import settings
 from app.core.security.jwt import hash_password
 
@@ -35,6 +35,9 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     password: str
+    
+class ResendConfirmRequest(BaseModel):
+    email: str
 
 @router.post("/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
@@ -117,3 +120,24 @@ async def verify_turnstile(token: str, remote_ip: str = None) -> bool:
         )
         result = response.json()
         return result.get("success", False)
+    
+    
+@router.post("/resend-confirmation")
+async def resend_confirmation(payload: ResendConfirmRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == payload.email).first()
+    
+    logger.info(f"Resend confirmation pour: {payload.email}")
+    logger.info(f"User trouvé: {user is not None}")
+    if user:
+        logger.info(f"User active: {user.active}")
+    
+    if user and not user.active:
+        token = secrets.token_urlsafe(32)
+        user.confirmation_token = token
+        user.confirmation_token_expiry = datetime.utcnow() + timedelta(hours=24)
+        db.commit()
+        confirmation_url = f"{settings.FRONTEND_URL}/confirm-email?token={token}"
+        await send_confirmation_email(user.email, confirmation_url)
+        logger.info(f"Email renvoyé à {user.email}")
+    
+    return {"message": "Si ce compte existe, un nouvel email a été envoyé"}

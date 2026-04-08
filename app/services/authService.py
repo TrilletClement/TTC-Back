@@ -35,11 +35,15 @@ class AuthService:
     async def register(email: str, password: str, db: Session, base_url: str) -> dict:
         if not email or not password:
             raise HTTPException(status_code=400, detail="Email and password are required")
-        if db.query(User).filter(User.email == email).first():
-            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        existing_user = db.query(User).filter(User.email == email).first()
+        if existing_user:
+            if existing_user.active:
+                raise HTTPException(status_code=400, detail="Email already registered")
+            else:
+                raise HTTPException(status_code=400, detail="email-not-confirmed")
 
         confirmation_token = secrets.token_urlsafe(32)
-
         new_user = User(
             email=email,
             password=hash_password(password),
@@ -60,14 +64,15 @@ class AuthService:
     def confirm_email(token: str, db: Session) -> dict:
         try:
             user = db.query(User).filter(
-                User.confirmation_token == token,
-                User.confirmation_token_expiry > datetime.utcnow()
+                User.confirmation_token == token
             ).first()
 
             if not user:
                 raise HTTPException(status_code=400, detail="invalid-token")
             if user.active:
                 raise HTTPException(status_code=400, detail="already-confirmed")
+            if user.confirmation_token_expiry < datetime.utcnow():
+                raise HTTPException(status_code=400, detail="token-expired")
 
             user.active = True
             user.confirmation_token = None
