@@ -32,6 +32,10 @@ class LedStripService:
         central_stop_left_name: str,
         central_stop_right_name: str,
         led_color: str = None,
+        pre_stop_left_name: str | None = None,
+        pre_stop_left_minutes: int | None = None,
+        pre_stop_right_name: str | None = None,
+        pre_stop_right_minutes: int | None = None,
         order_index_override: int = None,
         db: Session = None,
     ):
@@ -57,12 +61,16 @@ class LedStripService:
 
         trip_stops = LedStripService._get_trip_stops_by_direction(db, trips)
         central_indexes = LedStripService._find_central_indexes(
-            db,
-            trip_stops,
-            central_stop_left_name,
-            central_stop_right_name,
+            db, trip_stops, central_stop_left_name, central_stop_right_name,
         )
-        selected_stops = LedStripService._select_stops_around_central(db, trip_stops, central_indexes)
+        pre_stop_overrides = LedStripService._resolve_pre_stop_overrides(
+            db, trip_stops,
+            pre_stop_left_name, pre_stop_left_minutes,
+            pre_stop_right_name, pre_stop_right_minutes,
+        )
+        selected_stops = LedStripService._select_stops_around_central(
+            db, trip_stops, central_indexes, pre_stop_overrides  # ← fix
+        )
 
         led_strip = LedStrip(
             board_id=board.id,
@@ -78,6 +86,7 @@ class LedStripService:
             led_strip_id=led_strip.id,
             selected_stops=selected_stops,
             led_color=led_color_hex,
+            pre_stop_overrides=pre_stop_overrides,
         )
 
         db.commit()
@@ -111,6 +120,7 @@ class LedStripService:
                     "customName": led.custom_name,
                     "type": led.type,
                     "ledColor": led.led_color,
+                    "preStopMinutes": led.pre_travel_minutes,
                     "tripStops": trip_stops_payload,
                 }
             )
@@ -137,7 +147,11 @@ class LedStripService:
         central_stop_left_name: str | None,
         central_stop_right_name: str | None,
         led_color: str | None,
-        db: Session,
+        pre_stop_left_name: str | None = None,
+        pre_stop_left_minutes: int | None = None,
+        pre_stop_right_name: str | None = None,
+        pre_stop_right_minutes: int | None = None,
+        db: Session = None,
     ):
         if not all([agency_name, line_id]) or (not central_stop_left_name and not central_stop_right_name):
             raise HTTPException(
@@ -157,12 +171,16 @@ class LedStripService:
 
         trip_stops = LedStripService._get_trip_stops_by_direction(db, trips)
         central_indexes = LedStripService._find_central_indexes(
-            db,
-            trip_stops,
-            central_stop_left_name,
-            central_stop_right_name,
+            db, trip_stops, central_stop_left_name, central_stop_right_name,
         )
-        selected_stops = LedStripService._select_stops_around_central(db, trip_stops, central_indexes)
+        pre_stop_overrides = LedStripService._resolve_pre_stop_overrides(
+            db, trip_stops,
+            pre_stop_left_name, pre_stop_left_minutes,
+            pre_stop_right_name, pre_stop_right_minutes,
+        )
+        selected_stops = LedStripService._select_stops_around_central(
+            db, trip_stops, central_indexes, pre_stop_overrides  # ← fix
+        )
 
         strip.line_id = int(line_id)
         strip.line_agency_name = agency_name
@@ -177,10 +195,13 @@ class LedStripService:
             led_strip_id=strip.id,
             selected_stops=selected_stops,
             led_color=led_color_hex,
+            pre_stop_overrides=pre_stop_overrides,
         )
 
         db.commit()
         return {"message": "LED strip updated successfully", "led_strip_id": strip.id}
+
+    # ── Private helpers ─────────────────────────────────────────────────────────
 
     @staticmethod
     def _get_trips_by_direction(db, agency_name, line_id):
@@ -245,7 +266,46 @@ class LedStripService:
         return central_indexes
 
     @staticmethod
-    def _select_stops_around_central(db, trip_stops, central_indexes):
+    def _resolve_pre_stop_overrides(
+        db, trip_stops,
+        pre_stop_left_name,  pre_stop_left_minutes,
+        pre_stop_right_name, pre_stop_right_minutes,
+    ) -> dict:
+        """
+        Retourne { direction: (TripStop | None, minutes | None) }
+        Le pre-stop tombe naturellement dans la séquence du trip.
+        Les minutes sont une métadonnée attachée au LED correspondant.
+        """
+        overrides = {0: (None, None), 1: (None, None)}
+        pairs = {
+            0: (pre_stop_left_name,  pre_stop_left_minutes),
+            1: (pre_stop_right_name, pre_stop_right_minutes),
+        }
+
+        for direction, (name, minutes) in pairs.items():
+            if not name or not trip_stops[direction]:
+                continue
+            target = name.strip().lower()
+            found  = False
+            for i in range(len(trip_stops[direction]) - 1, -1, -1):
+                ts   = trip_stops[direction][i]
+                stop = db.query(Stop).filter_by(
+                    stop_id=ts.stop_stop_id, agency_name=ts.stop_agency_name
+                ).first()
+                if stop and stop.name.strip().lower() == target:
+                    overrides[direction] = (ts, minutes)
+                    found = True
+                    break
+            if not found:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f'Pre-stop "{name}" not found in direction {direction}',
+                )
+
+        return overrides
+
+    @staticmethod
+    def _select_stops_around_central(db, trip_stops, central_indexes, pre_stop_overrides=None):
         selected_stops = {}
 
         only_one_direction = (central_indexes[0] is None) != (central_indexes[1] is None)
@@ -254,56 +314,89 @@ class LedStripService:
         for direction in [0, 1]:
             if central_indexes[direction] is None:
                 selected_stops[direction] = None
-            else:
-                start = max(0, central_indexes[direction] - (stops_to_take - 1))
-                selected = trip_stops[direction][start : central_indexes[direction] + 1]
+                continue
 
+            central_idx = central_indexes[direction]
+            all_stops   = trip_stops[direction]
+
+            pre_ts  = None
+            pre_idx = None
+            if pre_stop_overrides:
+                pre_ts, _ = pre_stop_overrides.get(direction, (None, None))
+                if pre_ts:
+                    pre_idx = next(
+                        (i for i, ts in enumerate(all_stops) if ts.id == pre_ts.id), None
+                    )
+
+            if pre_idx is not None:
+                start    = max(0, pre_idx - (stops_to_take - 2))
+                selected = list(all_stops[start : pre_idx + 1])
+                while len(selected) < stops_to_take - 1:
+                    selected.insert(0, None)
+                selected.append(all_stops[central_idx])
+                
                 if direction == 1:
                     selected = list(reversed(selected))
 
+            elif direction == 0 or (only_one_direction and central_indexes[0] is not None):
+                start    = max(0, central_idx - (stops_to_take - 1))
+                selected = list(all_stops[start : central_idx + 1])
                 while len(selected) < stops_to_take:
                     selected.insert(0, None)
 
-                if len(selected) > stops_to_take:
-                    selected = selected[-stops_to_take:]
+            else:
+                end      = min(len(all_stops), central_idx + stops_to_take)
+                selected = list(all_stops[central_idx : end])
+                while len(selected) < stops_to_take:
+                    selected.append(None)
 
-                selected_stops[direction] = selected
+            selected_stops[direction] = selected[:stops_to_take]
 
         return selected_stops
 
     @staticmethod
-    def _create_leds(db, led_strip_id: int, selected_stops, led_color: str):
+    def _create_leds(db, led_strip_id: int, selected_stops, led_color: str, pre_stop_overrides=None):
         only0 = selected_stops[1] is None
         only1 = selected_stops[0] is None
+
+        # Map TripStop.id → minutes pour identifier le pre-stop sans logique positionnelle
+        pre_minutes_by_ts_id: dict[int, int] = {}
+        if pre_stop_overrides:
+            for direction in [0, 1]:
+                override_ts, override_minutes = pre_stop_overrides.get(direction, (None, None))
+                if override_ts and override_minutes is not None:
+                    pre_minutes_by_ts_id[override_ts.id] = override_minutes
 
         for i in range(12):
             if not only0 and not only1:
                 if i < 6:
                     direction, stop_idx = 0, i
-                    is_c_left = i == 5
+                    is_c_left  = i == 5
                     is_c_right = False
-                    is_left = i < 5
-                    is_right = False
+                    is_left    = i < 5
+                    is_right   = False
                 else:
                     direction, stop_idx = 1, i - 6
-                    is_c_left = False
+                    is_c_left  = False
                     is_c_right = i == 6
-                    is_left = False
-                    is_right = i > 6
+                    is_left    = False
+                    is_right   = i > 6
             elif only0:
                 direction, stop_idx = 0, i
-                is_c_left = i == 11
+                is_c_left  = i == 11
                 is_c_right = False
-                is_left = i < 11
-                is_right = False
+                is_left    = i < 11
+                is_right   = False
             else:
                 direction, stop_idx = 1, i
-                is_c_left = False
+                is_c_left  = False
                 is_c_right = i == 11
-                is_left = False
-                is_right = i < 11
+                is_left    = False
+                is_right   = i < 11
 
             ts = selected_stops[direction][stop_idx] if selected_stops[direction] else None
+
+            pre_travel_minutes = pre_minutes_by_ts_id.get(ts.id) if ts else None
 
             custom_name = None
             if ts:
@@ -328,6 +421,7 @@ class LedStripService:
                 custom_name=custom_name,
                 type=led_type,
                 led_color=led_color,
+                pre_travel_minutes=pre_travel_minutes,
             )
             db.add(led)
             db.flush()

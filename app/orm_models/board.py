@@ -89,6 +89,7 @@ class Led(Base):
     custom_name = Column(String(100))
     type = Column(String(10), nullable=False)  # left/right/central
     led_color = Column(String(50), nullable=False, default="#00FF00")
+    pre_travel_minutes = Column(Integer, nullable=True) 
 
     led_strip = relationship("LedStrip", back_populates="leds")
     trip_stops = relationship(
