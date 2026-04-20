@@ -334,21 +334,17 @@ class LedStripService:
                 while len(selected) < stops_to_take - 1:
                     selected.insert(0, None)
                 selected.append(all_stops[central_idx])
-                
                 if direction == 1:
                     selected = list(reversed(selected))
 
-            elif direction == 0 or (only_one_direction and central_indexes[0] is not None):
+            else:
+                # Sans pre-stop : stops avant le central + reversed pour dir 1
                 start    = max(0, central_idx - (stops_to_take - 1))
                 selected = list(all_stops[start : central_idx + 1])
                 while len(selected) < stops_to_take:
                     selected.insert(0, None)
-
-            else:
-                end      = min(len(all_stops), central_idx + stops_to_take)
-                selected = list(all_stops[central_idx : end])
-                while len(selected) < stops_to_take:
-                    selected.append(None)
+                if direction == 1:
+                    selected = list(reversed(selected))
 
             selected_stops[direction] = selected[:stops_to_take]
 
