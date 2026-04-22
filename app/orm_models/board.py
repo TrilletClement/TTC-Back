@@ -45,38 +45,6 @@ class LedStrip(Base):
     )
 
 
-class Order(Base):
-    __tablename__ = "order"
-
-    id = Column(Integer, primary_key=True)
-    board_id = Column(Integer, ForeignKey("board.id"), nullable=False)
-    order_details_id = Column(Integer, ForeignKey("order_details.id"), nullable=True)
-    svg_path = Column(String(255), nullable=False)
-    status = Column(String(50), nullable=False, default="pending")
-    led_colors = Column(String(255))
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    board = relationship("Board")
-    order_details = relationship("OrderDetails", backref="orders")
-
-
-class OrderDetails(Base):
-    __tablename__ = "order_details"
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("user.id"), nullable=True)
-    first_name = Column(String(100), nullable=True)
-    last_name = Column(String(100), nullable=True)
-    email = Column(String(255), nullable=True, unique=True)
-    address_line1 = Column(String(255), nullable=True)
-    city = Column(String(100), nullable=True)
-    postal_code = Column(String(20), nullable=True)
-    country = Column(String(100), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    user = relationship("User", backref="order_details")
-
-
 class Led(Base):
     __tablename__ = "led"
     __table_args__ = (

@@ -4,7 +4,8 @@ from datetime import datetime
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from app.orm_models.board import Board, Order, OrderDetails
+from app.orm_models.board import Board
+from app.orm_models.order import Order, OrderDetails
 
 ORDER_SVG_DIR = os.path.join(
     os.path.dirname(__file__),

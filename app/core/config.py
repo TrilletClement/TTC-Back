@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "https://transport.trillet.be"
     FRONTEND_URL_DEV: str = "http://localhost:4200"
     TURNSTILE_SECRET_KEY: str = "0x4AAAAAACynx6LG7GR6hr1VtUK9uyut8OE"
+    STRIPE_SECRET_KEY: str = "sk_test_REDACTED"
+    STRIPE_WEBHOOK_SECRET: str = "pk_test_51TP6wx0ieKgPycMuYDLV2I65pvvACjrvEPaMINBOmtk7l10PbpGOeFW4lRIvg3zFSt4WF4I7NMT7tAZJLuch49SJ00JMnXh2LZ"
 
     # CORS
     CORS_ORIGINS: List[str] = [

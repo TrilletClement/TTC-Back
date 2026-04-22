@@ -11,7 +11,6 @@ from app.orm_models.models import (  # noqa: F401
     LedStrip,
     Line,
     Order,
-    OrderDetails,
     Role,
     Stop,
     SubAgency,
@@ -19,7 +18,7 @@ from app.orm_models.models import (  # noqa: F401
     TripStop,
     User,
     UserRoles,
-    trip_stop_led_link,
+    trip_stop_led_link
 )
 
 __all__ = [

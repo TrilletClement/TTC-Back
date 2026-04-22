@@ -9,7 +9,8 @@ from app.core.security.jwt import get_current_user
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.orm_models.device import ESP32Device, FirmwarePackage
-from app.orm_models.board import Order, Board
+from app.orm_models.board import Board
+from app.orm_models.order import Order
 
 router = APIRouter(prefix="/api/admin/devices", tags=["admin-devices"])
 
