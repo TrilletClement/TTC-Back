@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.orm_models.db import Base
@@ -21,6 +21,7 @@ class Board(Base):
     owner_id = Column(Integer, ForeignKey("user.id"), nullable=False)
     owner = relationship("User", backref="boards")
     svg_path = Column(String(255))
+    archived = Column(Boolean, nullable=False, default=False)
     led_strips = relationship("LedStrip", backref="board")
 
 
