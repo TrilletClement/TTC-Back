@@ -32,7 +32,7 @@ class AuthService:
         return {"access_token": access_token, "token_type": "bearer"}
 
     @staticmethod
-    async def register(email: str, password: str, db: Session, base_url: str) -> dict:
+    async def register(email: str, password: str, db: Session, base_url: str, preferred_agency: str | None = None) -> dict:
         if not email or not password:
             raise HTTPException(status_code=400, detail="Email and password are required")
         
@@ -50,7 +50,8 @@ class AuthService:
             fs_uniquifier=str(uuid.uuid4()),
             active=False,
             confirmation_token=confirmation_token,
-            confirmation_token_expiry=datetime.utcnow() + timedelta(hours=24)
+            confirmation_token_expiry=datetime.utcnow() + timedelta(hours=24),
+            preferred_agency=preferred_agency 
         )
         db.add(new_user)
         db.commit()
@@ -89,4 +90,11 @@ class AuthService:
 
     @staticmethod
     def get_user_by_email(user: User, db: Session):
-        return {"id": user.id, "email": user.email, "active": user.active, "roleId": [role.id for role in user.roles], "roleName": [role.name for role in user.roles]}
+        return {
+            "id": user.id,
+            "email": user.email,
+            "active": user.active,
+            "roleId": [role.id for role in user.roles],
+            "roleName": [role.name for role in user.roles],
+            "preferredAgency": user.preferred_agency,
+        }

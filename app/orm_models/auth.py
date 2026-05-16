@@ -24,6 +24,7 @@ class User(Base, UserMixin):
     reset_token_expiry = Column(DateTime, nullable=True)   
     confirmation_token = Column(String(100), nullable=True)
     confirmation_token_expiry = Column(DateTime, nullable=True)
+    preferred_agency = Column(String(50), nullable=True)
 
 
 class UserRoles(Base):

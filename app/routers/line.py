@@ -11,7 +11,6 @@ router = APIRouter(prefix="/api/lines", tags=["lines"])
 
 
 @router.get("/agencies")
-@require_user
 def get_agencies(db: Session = Depends(get_db)):
     return LineService.get_agencies(db)
 

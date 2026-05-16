@@ -24,6 +24,7 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
     turnstileToken: str
+    preferred_agency: str
 
 class LoginRequest(BaseModel):
     email: str
@@ -38,6 +39,8 @@ class ResetPasswordRequest(BaseModel):
     
 class ResendConfirmRequest(BaseModel):
     email: str
+class PreferencesUpdate(BaseModel):
+    preferred_agency: str | None = None
 
 @router.post("/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
@@ -70,6 +73,16 @@ def current_user(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)):
     return AuthService.get_user_by_email(current_user, db)
+
+@router.patch("/user/preferences")
+def update_preferences(
+    payload: PreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    current_user.preferred_agency = payload.preferred_agency
+    db.commit()
+    return {"message": "Préférences mises à jour"}
 
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
@@ -138,3 +151,5 @@ async def resend_confirmation(payload: ResendConfirmRequest, db: Session = Depen
         logger.info(f"Email renvoyé à {user.email}")
     
     return {"message": "Si ce compte existe, un nouvel email a été envoyé"}
+
+
