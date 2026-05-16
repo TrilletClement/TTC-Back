@@ -205,6 +205,15 @@ class LedStripService:
         return {"message": "LED strip updated successfully", "led_strip_id": strip.id}
 
     @staticmethod
+    def reorder_strips(board_id: int, ordered_ids: list[int], db: Session):
+        for position, strip_id in enumerate(ordered_ids, start=1):
+            strip = db.query(LedStrip).filter_by(id=strip_id, board_id=board_id).first()
+            if strip:
+                strip.order_index = position
+        db.commit()
+        return {"message": "Strips reordered"}
+
+    @staticmethod
     def delete_led_strip(board_id: int, strip_id: int, db: Session):
         from fastapi import HTTPException
 

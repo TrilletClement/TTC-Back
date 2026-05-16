@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -15,7 +14,6 @@ class OrderCreate(BaseModel):
     board_id: int
     svg_content: str
     details: dict
-    led_colors: dict
 
 
 @router.post("")
@@ -29,7 +27,6 @@ def create_order(
         payload.board_id,
         payload.svg_content,
         payload.details,
-        payload.led_colors,
         current_user.id,
         db,
     )
@@ -38,7 +35,7 @@ def create_order(
 @router.get("")
 @require_user
 def list_orders(current_user: User, db: Session = Depends(get_db)):
-    return OrderService.list_orders(db)
+    return OrderService.list_orders(current_user.id, db)
 
 
 @router.get("/{order_id}/svg")

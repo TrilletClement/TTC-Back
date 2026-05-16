@@ -119,7 +119,9 @@ class BoardService:
 
     @staticmethod
     def get_board_details(board_id: int, current_user: User, db: Session):
+        from sqlalchemy.orm import joinedload as jl
         query = db.query(Board).options(
+            jl(Board.board_type),
             joinedload(Board.led_strips)
             .joinedload(LedStrip.line)
             .joinedload(Line.best_trip_b)
@@ -142,10 +144,31 @@ class BoardService:
             raise HTTPException(status_code=404, detail="Board not found")
 
         led_strips_data = BoardService._build_led_strips_data(board, db)
+        bt = board.board_type
+
+        board_price = None
+        if bt:
+            current_version = (
+                db.query(PriceVersion)
+                .order_by(PriceVersion.created_at.desc())
+                .first()
+            )
+            if current_version:
+                board_price = (
+                    db.query(BoardTypePrice)
+                    .filter_by(price_version_id=current_version.id, board_type_id=bt.id)
+                    .first()
+                )
+
         return {
             "id": board.id,
             "name": board.name,
             "ownerId": board.owner_id,
+            "boardTypeId": bt.id if bt else None,
+            "boardTypeName": bt.name if bt else None,
+            "boardTypeMaxLedstrip": bt.max_ledstrip if bt else None,
+            "basePriceCents": board_price.base_price_cents if board_price else None,
+            "reducedPriceCents": board_price.reduced_price_cents if board_price else None,
             "ledStrips": led_strips_data,
         }
 

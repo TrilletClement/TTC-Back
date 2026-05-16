@@ -1,18 +1,10 @@
-import os
 import json
-from datetime import datetime
 from fastapi import HTTPException
-from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
+from fastapi.responses import Response
+from sqlalchemy.orm import Session, joinedload
 from app.orm_models.board import Board
 from app.orm_models.order import Order, OrderDetails
 from app.orm_models.price import PriceVersion
-
-ORDER_SVG_DIR = os.path.join(
-    os.path.dirname(__file__),
-    "..", "..", "static", "orders"
-)
-os.makedirs(ORDER_SVG_DIR, exist_ok=True)
 
 
 class OrderService:
@@ -22,7 +14,6 @@ class OrderService:
         board_id: int,
         svg_content: str,
         details: str | dict | None,
-        led_colors: str | None,
         user_id: int | None,
         db: Session
     ):
@@ -36,48 +27,25 @@ class OrderService:
         if not board:
             raise HTTPException(status_code=404, detail="Board not found")
 
-        order_details = None
+        shipping_details = None
 
         if details:
             try:
                 payload = details if isinstance(details, dict) else json.loads(details)
-                email = payload.get("email")
-
-                if email:
-                    order_details = db.query(OrderDetails).filter_by(email=email).first()
-
-                if not order_details:
-                    order_details = OrderDetails(
-                        first_name=payload.get("firstName"),
-                        last_name=payload.get("lastName"),
-                        email=email,
-                        address_line1=payload.get("addressLine1"),
-                        city=payload.get("city"),
-                        postal_code=payload.get("postalCode"),
-                        country=payload.get("country"),
-                        user_id=user_id
-                    )
-                    db.add(order_details)
-                    db.flush()
-                else:
-                    order_details.first_name = payload.get("firstName") or order_details.first_name
-                    order_details.last_name = payload.get("lastName") or order_details.last_name
-                    order_details.address_line1 = payload.get("addressLine1") or order_details.address_line1
-                    order_details.city = payload.get("city") or order_details.city
-                    order_details.postal_code = payload.get("postalCode") or order_details.postal_code
-                    order_details.country = payload.get("country") or order_details.country
-
-                    if user_id and not order_details.user_id:
-                        order_details.user_id = user_id
-
+                shipping_details = OrderDetails(
+                    first_name    = payload.get("firstName") or "",
+                    last_name     = payload.get("lastName") or "",
+                    address_line1 = payload.get("addressLine1") or "",
+                    city          = payload.get("city") or "",
+                    postal_code   = payload.get("postalCode") or "",
+                    country       = payload.get("country") or "",
+                    phone         = payload.get("phone"),
+                    user_id       = user_id,
+                )
+                db.add(shipping_details)
+                db.flush()
             except Exception:
                 pass
-
-        filename = f"order_{board_id}_{int(datetime.utcnow().timestamp())}.svg"
-        filepath = os.path.join(ORDER_SVG_DIR, filename)
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(svg_content)
 
         current_price_version = (
             db.query(PriceVersion)
@@ -86,12 +54,13 @@ class OrderService:
         )
 
         order = Order(
-            board_id=board_id,
-            order_details_id=order_details.id if order_details else None,
-            svg_path=f"/static/orders/{filename}",
-            status="pending",
-            led_colors=led_colors,
-            price_version_id=current_price_version.id if current_price_version else None,
+            board_id            = board_id,
+            shipping_details_id = shipping_details.id if shipping_details else None,
+            billing_details_id  = shipping_details.id if shipping_details else None,
+            svg_content         = svg_content,
+            status              = "pending",
+            price_version_id    = current_price_version.id if current_price_version else None,
+            user_id             = user_id,
         )
 
         db.add(order)
@@ -117,20 +86,41 @@ class OrderService:
         if order.board.owner_id != user_id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
-        filename = os.path.basename(order.svg_path or "")
-        file_path = os.path.join(ORDER_SVG_DIR, filename)
+        if not order.svg_content:
+            raise HTTPException(status_code=404, detail="No SVG stored for this order")
 
-        if not filename or not os.path.isfile(file_path):
-            raise HTTPException(status_code=404, detail="SVG not found")
-
-        return FileResponse(
-            path=file_path,
+        return Response(
+            content=order.svg_content,
             media_type="image/svg+xml",
-            filename=filename
         )
-        
+
     @staticmethod
-    def list_orders(db: Session):
-        orders = db.query(Order).all()
-        
-        return orders
+    def list_orders(user_id: int, db: Session):
+        orders = (
+            db.query(Order)
+            .options(joinedload(Order.shipping_details))
+            .filter(Order.user_id == user_id)
+            .order_by(Order.created_at.desc())
+            .all()
+        )
+        return [
+            {
+                "id":           o.id,
+                "board_id":     o.board_id,
+                "status":       o.status,
+                "amount_cents": o.amount_cents,
+                "currency":     o.currency,
+                "created_at":   o.created_at.isoformat() if o.created_at else None,
+                "svg_content":  o.svg_content,
+                "shipping_details": {
+                    "firstName":    o.shipping_details.first_name,
+                    "lastName":     o.shipping_details.last_name,
+                    "phone":        o.shipping_details.phone,
+                    "addressLine1": o.shipping_details.address_line1,
+                    "city":         o.shipping_details.city,
+                    "postalCode":   o.shipping_details.postal_code,
+                    "country":      o.shipping_details.country,
+                } if o.shipping_details else None,
+            }
+            for o in orders
+        ]
