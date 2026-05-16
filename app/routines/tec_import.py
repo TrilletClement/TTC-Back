@@ -448,8 +448,7 @@ def get_all_incoming_buses_tec():
 
                 incoming_ids.add(ts_id)
                 next_id = next_map.get(ts_id)
-                if next_id:
-                    incoming_ids.add(next_id)
+                
 
             print(f"  Statuts : {dict(status_counts)}  (0=INCOMING_AT, 1=STOPPED_AT, 2=IN_TRANSIT_TO)")
             print(f"  Matched: {matched} | sans séquence: {no_seq} | hors cache: {no_map}")
