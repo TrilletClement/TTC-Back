@@ -46,6 +46,10 @@ class LedStripUpdate(LedStripCreate):
     pass
 
 
+class ReorderPayload(BaseModel):
+    ordered_ids: list[int]
+
+
 @router.post("/boards/{board_id}/add_led_strip", status_code=201)
 @require_user
 def add_led_strip(
@@ -67,6 +71,17 @@ def add_led_strip(
         pre_stop_right_minutes=payload.pre_stop_right_minutes,
         db=db,
     )
+
+
+@router.patch("/boards/{board_id}/led_strips/reorder")
+@require_user
+def reorder_led_strips(
+    board_id: int,
+    payload: ReorderPayload,
+    current_user: User,
+    db: Session = Depends(get_db),
+):
+    return LedStripService.reorder_strips(board_id, payload.ordered_ids, db)
 
 
 @router.get("/boards/{board_id}/led_strips/{strip_id}")

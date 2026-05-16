@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -12,14 +13,17 @@ router = APIRouter(prefix="/api/payments", tags=["payments"])
 
 class CartItem(BaseModel):
     boardId: int
-    boardName: str | None = None
-    ledColors: str | None = None
+    boardName: Optional[str] = None
+    ledColors: Optional[str] = None
+    reducedPriceCents: Optional[int] = None
+    basePriceCents: Optional[int] = None
+    svg: Optional[str] = None
 
 
-class Customer(BaseModel):
+class Address(BaseModel):
     firstName: str
     lastName: str
-    email: str
+    phone: Optional[str] = None
     addressLine1: str
     city: str
     postalCode: str
@@ -28,7 +32,8 @@ class Customer(BaseModel):
 
 class CartPayload(BaseModel):
     items: list[CartItem]
-    customer: Customer
+    shipping: Address
+    billing: Optional[Address] = None  # None means same as shipping
 
 
 @router.post("/create-session")
