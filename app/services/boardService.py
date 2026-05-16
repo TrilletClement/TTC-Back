@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.orm_models.auth import User
 from app.orm_models.board import Board, BoardType, Led, LedStrip
+from app.orm_models.price import BoardTypePrice, PriceVersion
 from app.orm_models.gtfs import Line, Stop, Trip
 
 
@@ -18,9 +19,27 @@ class BoardService:
 
     @staticmethod
     def get_board_types(db: Session):
+        latest_version = (
+            db.query(PriceVersion)
+            .order_by(PriceVersion.created_at.desc())
+            .first()
+        )
+
+        prices: dict[int, BoardTypePrice] = {}
+        if latest_version:
+            for p in db.query(BoardTypePrice).filter_by(price_version_id=latest_version.id).all():
+                prices[p.board_type_id] = p
+
         types = db.query(BoardType).all()
         return [
-            {"id": t.id, "name": t.name, "maxLed": t.max_led, "maxLedstrip": t.max_ledstrip}
+            {
+                "id": t.id,
+                "name": t.name,
+                "maxLed": t.max_led,
+                "maxLedstrip": t.max_ledstrip,
+                "basePriceCents": prices[t.id].base_price_cents if t.id in prices else None,
+                "reducedPriceCents": prices[t.id].reduced_price_cents if t.id in prices else None,
+            }
             for t in types
         ]
 

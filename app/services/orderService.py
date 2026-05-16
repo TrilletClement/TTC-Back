@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from app.orm_models.board import Board
 from app.orm_models.order import Order, OrderDetails
+from app.orm_models.price import PriceVersion
 
 ORDER_SVG_DIR = os.path.join(
     os.path.dirname(__file__),
@@ -78,12 +79,19 @@ class OrderService:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(svg_content)
 
+        current_price_version = (
+            db.query(PriceVersion)
+            .order_by(PriceVersion.created_at.desc())
+            .first()
+        )
+
         order = Order(
             board_id=board_id,
             order_details_id=order_details.id if order_details else None,
             svg_path=f"/static/orders/{filename}",
             status="pending",
-            led_colors=led_colors
+            led_colors=led_colors,
+            price_version_id=current_price_version.id if current_price_version else None,
         )
 
         db.add(order)

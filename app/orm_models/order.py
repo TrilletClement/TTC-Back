@@ -47,5 +47,7 @@ class Order(Base):
     amount_cents      = Column(Integer, nullable=False, default=0)
     currency          = Column(String(10), default="eur")
 
+    price_version_id  = Column(Integer, ForeignKey("price_version.id"), nullable=True)
+
     created_at        = Column(DateTime, default=datetime.utcnow)
     paid_at           = Column(DateTime, nullable=True)
