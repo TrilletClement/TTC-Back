@@ -69,7 +69,6 @@ def upgrade() -> None:
         sa.Column('price_version_id', sa.Integer(), sa.ForeignKey('price_version.id'), nullable=True),
     )
 
-
 def downgrade() -> None:
     op.drop_column('orders', 'price_version_id')
     op.drop_table('board_type_price')

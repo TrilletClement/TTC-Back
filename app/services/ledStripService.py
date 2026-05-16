@@ -1,6 +1,7 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 import sqlalchemy as sa
+import unicodedata
 import re
 
 from app.orm_models.board import Board, Led, LedStrip
@@ -83,6 +84,7 @@ class LedStripService:
 
         LedStripService._create_leds(
             db,
+            agency_name=agency_name,
             led_strip_id=led_strip.id,
             selected_stops=selected_stops,
             led_color=led_color_hex,
@@ -108,7 +110,7 @@ class LedStripService:
                         "tripStopId": ts.id,
                         "stopStopId": ts.stop_stop_id,
                         "stopAgencyName": ts.stop_agency_name,
-                        "stopName": ts.stop.name if ts.stop else None,
+                        "stopName": LedStripService._clean_stop_name(ts.stop.name, ts.stop_agency_name) if ts.stop else None,
                         "vehicleIncoming": ts.vehicle_incoming,
                     }
                 )
@@ -192,6 +194,7 @@ class LedStripService:
 
         LedStripService._create_leds(
             db,
+            agency_name=agency_name,
             led_strip_id=strip.id,
             selected_stops=selected_stops,
             led_color=led_color_hex,
@@ -367,7 +370,7 @@ class LedStripService:
         return selected_stops
 
     @staticmethod
-    def _create_leds(db, led_strip_id: int, selected_stops, led_color: str, pre_stop_overrides=None):
+    def _create_leds(db, agency_name: str, led_strip_id: int, selected_stops, led_color: str, pre_stop_overrides=None):
         only0 = selected_stops[1] is None
         only1 = selected_stops[0] is None
 
@@ -414,9 +417,13 @@ class LedStripService:
             if ts:
                 stop = db.query(Stop).filter_by(
                     stop_id=ts.stop_stop_id,
-                    agency_name=ts.stop_agency_name,
+                    agency_name=agency_name,
                 ).first()
-                custom_name = stop.name if stop else ts.stop_stop_id
+                
+                if stop and stop.name:
+                    custom_name = LedStripService._clean_stop_name(stop.name, agency_name)
+                else:
+                    custom_name = ts.stop_stop_id
 
             if is_c_left:
                 led_type = "c_left"
@@ -440,3 +447,24 @@ class LedStripService:
 
             if ts:
                 led.trip_stops.append(ts)
+                
+
+    @staticmethod
+    def _clean_stop_name(name: str, agency_name: str = "") -> str:
+        if not name:
+            return ""
+
+        name = " ".join(name.split())
+
+        cleaned = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
+
+        if agency_name == 'TEC' and len(cleaned.split()) >= 2:
+            cleaned = re.sub(
+                r'^(?:[A-ZÀ-ÿ]+(?:[\s\-][A-ZÀ-ÿ]+)*)\s+',
+                '',
+                cleaned
+            )
+            
+        print(f"Cleaned stop name: '{cleaned}' from original '{name}'")    
+        
+        return cleaned.strip()

@@ -80,7 +80,7 @@ async def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(
         user.reset_token_expiry = datetime.utcnow() + timedelta(hours=1)
         db.commit()
 
-        reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+        reset_url = f"{settings.FRONTEND_URL_DEV}/reset-password?token={token}"
         
         try:
             await send_reset_email(user.email, reset_url)
@@ -133,7 +133,7 @@ async def resend_confirmation(payload: ResendConfirmRequest, db: Session = Depen
         user.confirmation_token = token
         user.confirmation_token_expiry = datetime.utcnow() + timedelta(hours=24)
         db.commit()
-        confirmation_url = f"{settings.FRONTEND_URL}/confirm-email?token={token}"
+        confirmation_url = f"{settings.FRONTEND_URL_DEV}/confirm-email?token={token}"
         await send_confirmation_email(user.email, confirmation_url)
         logger.info(f"Email renvoyé à {user.email}")
     

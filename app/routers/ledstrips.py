@@ -10,7 +10,6 @@ from app.services.ledStripService import LedStripService
 
 router = APIRouter(prefix="/api", tags=["ledstrips"])
 
-
 class LedStripCreate(BaseModel):
     agency_name: str
     line_id: str

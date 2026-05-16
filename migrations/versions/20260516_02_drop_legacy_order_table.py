@@ -21,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.drop_table('order')
+       op.execute('DROP TABLE IF EXISTS "order" CASCADE;')
 
 
 def downgrade() -> None:
