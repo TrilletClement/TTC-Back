@@ -14,6 +14,14 @@ trip_stop_led_link = Table(
 )
 
 
+class BoardType(Base):
+    __tablename__ = "board_type"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False, unique=True)
+    max_led = Column(Integer, nullable=False)
+    max_ledstrip = Column(Integer, nullable=False)
+
+
 class Board(Base):
     __tablename__ = "board"
     id = Column(Integer, primary_key=True)
@@ -22,6 +30,8 @@ class Board(Base):
     owner = relationship("User", backref="boards")
     svg_path = Column(String(255))
     archived = Column(Boolean, nullable=False, default=False)
+    board_type_id = Column(Integer, ForeignKey("board_type.id"), nullable=True)
+    board_type = relationship("BoardType")
     led_strips = relationship("LedStrip", backref="board")
 
 

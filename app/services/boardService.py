@@ -2,7 +2,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app.orm_models.auth import User
-from app.orm_models.board import Board, Led, LedStrip
+from app.orm_models.board import Board, BoardType, Led, LedStrip
 from app.orm_models.gtfs import Line, Stop, Trip
 
 
@@ -17,11 +17,24 @@ class BoardService:
         return [{"id": board.id, "name": board.name, "owner_id": board.owner_id} for board in boards]
 
     @staticmethod
-    def create_board(name: str, current_user: User, db: Session):
+    def get_board_types(db: Session):
+        types = db.query(BoardType).all()
+        return [
+            {"id": t.id, "name": t.name, "maxLed": t.max_led, "maxLedstrip": t.max_ledstrip}
+            for t in types
+        ]
+
+    @staticmethod
+    def create_board(name: str, current_user: User, db: Session, board_type_id: int | None = None):
         if not name:
             raise HTTPException(status_code=400, detail="Board name is required")
 
-        new_board = Board(name=name, owner=current_user)
+        if board_type_id is not None:
+            board_type = db.query(BoardType).filter_by(id=board_type_id).first()
+            if not board_type:
+                raise HTTPException(status_code=400, detail="Invalid board type")
+
+        new_board = Board(name=name, owner=current_user, board_type_id=board_type_id)
         db.add(new_board)
         db.commit()
         db.refresh(new_board)
