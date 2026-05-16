@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.orm_models.db import Base
@@ -14,6 +14,14 @@ trip_stop_led_link = Table(
 )
 
 
+class BoardType(Base):
+    __tablename__ = "board_type"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False, unique=True)
+    max_led = Column(Integer, nullable=False)
+    max_ledstrip = Column(Integer, nullable=False)
+
+
 class Board(Base):
     __tablename__ = "board"
     id = Column(Integer, primary_key=True)
@@ -21,6 +29,9 @@ class Board(Base):
     owner_id = Column(Integer, ForeignKey("user.id"), nullable=False)
     owner = relationship("User", backref="boards")
     svg_path = Column(String(255))
+    archived = Column(Boolean, nullable=False, default=False)
+    board_type_id = Column(Integer, ForeignKey("board_type.id"), nullable=True)
+    board_type = relationship("BoardType")
     led_strips = relationship("LedStrip", backref="board")
 
 

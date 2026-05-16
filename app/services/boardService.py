@@ -2,7 +2,8 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app.orm_models.auth import User
-from app.orm_models.board import Board, Led, LedStrip
+from app.orm_models.board import Board, BoardType, Led, LedStrip
+from app.orm_models.price import BoardTypePrice, PriceVersion
 from app.orm_models.gtfs import Line, Stop, Trip
 
 
@@ -10,25 +11,59 @@ class BoardService:
     @staticmethod
     def get_boards(current_user: User, db: Session):
         if "admin" in [role.name for role in current_user.roles]:
-            boards = db.query(Board).all()
+            boards = db.query(Board).filter_by(archived=False).all()
         else:
-            boards = db.query(Board).filter_by(owner_id=current_user.id).all()
+            boards = db.query(Board).filter_by(owner_id=current_user.id, archived=False).all()
 
         return [{"id": board.id, "name": board.name, "owner_id": board.owner_id} for board in boards]
 
     @staticmethod
-    def create_board(name: str, current_user: User, db: Session):
+    def get_board_types(db: Session):
+        latest_version = (
+            db.query(PriceVersion)
+            .order_by(PriceVersion.created_at.desc())
+            .first()
+        )
+
+        prices: dict[int, BoardTypePrice] = {}
+        if latest_version:
+            for p in db.query(BoardTypePrice).filter_by(price_version_id=latest_version.id).all():
+                prices[p.board_type_id] = p
+
+        types = db.query(BoardType).all()
+        return [
+            {
+                "id": t.id,
+                "name": t.name,
+                "maxLed": t.max_led,
+                "maxLedstrip": t.max_ledstrip,
+                "basePriceCents": prices[t.id].base_price_cents if t.id in prices else None,
+                "reducedPriceCents": prices[t.id].reduced_price_cents if t.id in prices else None,
+            }
+            for t in types
+        ]
+
+    @staticmethod
+    def create_board(name: str, current_user: User, db: Session, board_type_id: int | None = None):
         if not name:
             raise HTTPException(status_code=400, detail="Board name is required")
 
-        new_board = Board(name=name, owner=current_user)
+        if board_type_id is not None:
+            board_type = db.query(BoardType).filter_by(id=board_type_id).first()
+            if not board_type:
+                raise HTTPException(status_code=400, detail="Invalid board type")
+
+        new_board = Board(name=name, owner=current_user, board_type_id=board_type_id)
         db.add(new_board)
         db.commit()
         db.refresh(new_board)
         return {"message": "Board added successfully!", "board_id": new_board.id}
 
     @staticmethod
-    def delete_board(board_id: int, current_user: User, db: Session):
+    def delete_board(board_id: int, current_user: User, db: Session, force_unlink_devices: bool = False):
+        from app.orm_models.device import ESP32Device
+        from app.orm_models.order import Order
+
         board = (
             db.query(Board)
             .options(
@@ -46,6 +81,32 @@ class BoardService:
         if "admin" not in [role.name for role in current_user.roles] and board.owner_id != current_user.id:
             raise HTTPException(status_code=403, detail="Unauthorized")
 
+        # Devices linked — require explicit confirmation before proceeding
+        linked_devices = db.query(ESP32Device).filter_by(board_id=board_id).all()
+        if linked_devices and not force_unlink_devices:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "devices_linked",
+                    "devices": [
+                        {"id": d.id, "name": d.name or d.mac_address, "mac": d.mac_address}
+                        for d in linked_devices
+                    ],
+                },
+            )
+
+        # Unlink devices if confirmed
+        for device in linked_devices:
+            device.board_id = None
+
+        # Orders exist — archive instead of hard-delete
+        has_orders = db.query(Order).filter_by(board_id=board_id).first() is not None
+        if has_orders:
+            board.archived = True
+            db.commit()
+            return {"archived": True, "id": board_id, "message": "Board archived (linked orders preserved)"}
+
+        # Hard delete: cascade strips → leds → trip_stop links
         for strip in board.led_strips:
             for led in strip.leds:
                 led.trip_stops.clear()
@@ -54,7 +115,7 @@ class BoardService:
         db.delete(board)
         db.commit()
 
-        return {"message": "Board and related data deleted successfully!", "id": board_id}
+        return {"archived": False, "id": board_id, "message": "Board deleted successfully"}
 
     @staticmethod
     def get_board_details(board_id: int, current_user: User, db: Session):

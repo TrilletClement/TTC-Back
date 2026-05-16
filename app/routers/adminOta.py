@@ -1,10 +1,10 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.security.jwt import get_current_user
+from app.core.user_access import require_admin
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.services.adminOtaService import AdminOtaService
@@ -12,35 +12,33 @@ from app.services.adminOtaService import AdminOtaService
 router = APIRouter(prefix="/api/admin/ota", tags=["admin-ota"])
 
 
-def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    if "admin" not in [role.name for role in current_user.roles]:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return current_user
-
-
 @router.get("/versions")
-def get_versions(current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
+@require_admin
+def get_versions(db: Session = Depends(get_db)):
     return AdminOtaService.get_versions(db)
 
 
 @router.get("/packages")
-def list_packages(current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
+@require_admin
+def list_packages(db: Session = Depends(get_db)):
     return AdminOtaService.list_packages(db)
 
 
 @router.get("/hardware")
-def list_hardware(current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
+@require_admin
+def list_hardware(db: Session = Depends(get_db)):
     return AdminOtaService.list_hardware(db)
 
 
 @router.post("/upload")
+@require_admin
 async def upload_firmware(
     file: UploadFile = File(...),
     app_version: str = Form(...),
     app_name: Optional[str] = Form(None),
     firmware_name: Optional[str] = Form(None),
     hardware: Optional[str] = Form(None),
-    current_user: User = Depends(require_admin),
+    current_user: User = None,
     db: Session = Depends(get_db),
 ):
     resolved_app_name = app_name or firmware_name or hardware
@@ -63,11 +61,8 @@ class DeleteVersionRequest(BaseModel):
 
 
 @router.delete("/versions")
-def delete_version(
-    payload: DeleteVersionRequest,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
+@require_admin
+def delete_version(payload: DeleteVersionRequest, db: Session = Depends(get_db)):
     return AdminOtaService.delete_version(
         db,
         payload.hardware,
@@ -86,11 +81,8 @@ class UpsertHardwareRequest(BaseModel):
 
 
 @router.post("/hardware")
-def upsert_hardware(
-    payload: UpsertHardwareRequest,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
+@require_admin
+def upsert_hardware(payload: UpsertHardwareRequest, db: Session = Depends(get_db)):
     return AdminOtaService.upsert_hardware(
         db,
         payload.hardware_type,
@@ -107,11 +99,8 @@ class UpsertHardwareFirmwareRequest(BaseModel):
 
 
 @router.post("/hardware-firmware")
-def upsert_hardware_firmware(
-    payload: UpsertHardwareFirmwareRequest,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
+@require_admin
+def upsert_hardware_firmware(payload: UpsertHardwareFirmwareRequest, db: Session = Depends(get_db)):
     return AdminOtaService.upsert_hardware_firmware(
         db,
         payload.hardware_type,
@@ -127,14 +116,12 @@ class AssignDeviceFirmwareRequest(BaseModel):
 
 
 @router.post("/device-assignments")
-def assign_device_firmware(
-    payload: AssignDeviceFirmwareRequest,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
+@require_admin
+def assign_device_firmware(payload: AssignDeviceFirmwareRequest, db: Session = Depends(get_db)):
     return AdminOtaService.assign_device_firmware(db, payload.mac_address, payload.firmware_package_id)
 
 
 @router.get("/files")
-def list_firmware_files(current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
+@require_admin
+def list_firmware_files(db: Session = Depends(get_db)):
     return AdminOtaService.list_firmware_files(db)

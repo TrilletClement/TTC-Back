@@ -33,3 +33,4 @@ fastapi-server/**/tec_gtfs.zip
 api.tar.gz
 front.tar.gz
 postgres_data/
+ecosystem.ignore.config.js

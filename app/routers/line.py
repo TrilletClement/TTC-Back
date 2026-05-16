@@ -1,46 +1,41 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.services.lineService import LineService
-from app.core.security.jwt import get_current_user
-from app.orm_models.db import get_db
+
+from app.core.user_access import require_user
 from app.orm_models.auth import User
+from app.orm_models.db import get_db
+from app.services.lineService import LineService
 
 router = APIRouter(prefix="/api/lines", tags=["lines"])
 
-# --- Transit endpoints (pour Angular) ---
 
 @router.get("/agencies")
-def get_agencies(
-    current_user: User = Depends(get_current_user),  # auth optionnelle selon besoin
-    db: Session = Depends(get_db)
-):
+@require_user
+def get_agencies(db: Session = Depends(get_db)):
     return LineService.get_agencies(db)
 
+
 @router.get("/{agency_name}/lines")
+@require_user
 def get_lines(
     agency_name: str,
-    search: Optional[str] = None,  # Paramètre de recherche optionnel
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
 ):
     return LineService.get_lines(agency_name, search, db)
 
+
 @router.get("/stops")
-def get_stops(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
+@require_user
+def get_stops(db: Session = Depends(get_db)):
     return LineService.get_stops(db)
 
+
 @router.get("/{line_id}/stops")
-def get_line_stops(
-    line_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
+@require_user
+def get_line_stops(line_id: str, db: Session = Depends(get_db)):
     result = LineService.get_line_stops(line_id, db)
     if isinstance(result, tuple):
         raise HTTPException(status_code=result[1], detail=result[0])
     return result
-

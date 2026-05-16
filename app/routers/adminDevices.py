@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.security.jwt import get_current_user
+from app.core.user_access import require_admin
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.orm_models.device import ESP32Device, FirmwarePackage
@@ -13,12 +13,6 @@ from app.orm_models.board import Board
 from app.orm_models.order import Order
 
 router = APIRouter(prefix="/api/admin/devices", tags=["admin-devices"])
-
-
-def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    if "admin" not in [role.name for role in current_user.roles]:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return current_user
 
 
 class FirmwareOut(BaseModel):
@@ -75,10 +69,8 @@ class DeviceAdminOut(BaseModel):
 
 
 @router.get("", response_model=list[DeviceAdminOut])
-def list_all_devices(
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
+@require_admin
+def list_all_devices(db: Session = Depends(get_db)):
     devices = db.query(ESP32Device).order_by(ESP32Device.last_connected.desc().nullslast()).all()
 
     result = []
@@ -89,7 +81,7 @@ def list_all_devices(
             board_out = BoardOut(
                 id=d.board.id,
                 name=d.board.name,
-                orders=[OrderOut(id=o.id, status=o.status, created_at=o.created_at) for o in orders]
+                orders=[OrderOut(id=o.id, status=o.status, created_at=o.created_at) for o in orders],
             )
 
         result.append(DeviceAdminOut(
@@ -101,17 +93,17 @@ def list_all_devices(
             hardware=HardwareOut(
                 id=d.hardware.id,
                 hardware_type=d.hardware.hardware_type,
-                hardware_version=d.hardware.hardware_version
+                hardware_version=d.hardware.hardware_version,
             ) if d.hardware else None,
             current_firmware=FirmwareOut(
                 id=d.current_firmware.id,
                 app_name=d.current_firmware.app_name,
-                app_version=d.current_firmware.app_version
+                app_version=d.current_firmware.app_version,
             ) if d.current_firmware else None,
             target_firmware=FirmwareOut(
                 id=d.target_firmware.id,
                 app_name=d.target_firmware.app_name,
-                app_version=d.target_firmware.app_version
+                app_version=d.target_firmware.app_version,
             ) if d.target_firmware else None,
             version_updater=d.version_updater,
             last_connected=d.last_connected,
@@ -123,21 +115,16 @@ def list_all_devices(
 
 
 @router.get("/users", response_model=list[str])
-def list_all_user_emails(
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
+@require_admin
+def list_all_user_emails(db: Session = Depends(get_db)):
     from app.orm_models.auth import User as UserModel
     users = db.query(UserModel.email).order_by(UserModel.email).all()
     return [u.email for u in users]
 
 
 @router.get("/boards", response_model=list[BoardListOut])
-def list_boards(
-    owner_email: Optional[str] = None,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
+@require_admin
+def list_boards(owner_email: Optional[str] = None, db: Session = Depends(get_db)):
     from app.orm_models.auth import User as UserModel
     query = db.query(Board)
     if owner_email:
@@ -154,12 +141,8 @@ def list_boards(
 
 
 @router.patch("/{device_id}", response_model=DeviceAdminOut)
-def patch_device(
-    device_id: int,
-    payload: DevicePatch,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
+@require_admin
+def patch_device(device_id: int, payload: DevicePatch, db: Session = Depends(get_db)):
     device = db.query(ESP32Device).filter(ESP32Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -196,7 +179,7 @@ def patch_device(
         board_out = BoardOut(
             id=device.board.id,
             name=device.board.name,
-            orders=[OrderOut(id=o.id, status=o.status, created_at=o.created_at) for o in orders]
+            orders=[OrderOut(id=o.id, status=o.status, created_at=o.created_at) for o in orders],
         )
 
     return DeviceAdminOut(
@@ -208,17 +191,17 @@ def patch_device(
         hardware=HardwareOut(
             id=device.hardware.id,
             hardware_type=device.hardware.hardware_type,
-            hardware_version=device.hardware.hardware_version
+            hardware_version=device.hardware.hardware_version,
         ) if device.hardware else None,
         current_firmware=FirmwareOut(
             id=device.current_firmware.id,
             app_name=device.current_firmware.app_name,
-            app_version=device.current_firmware.app_version
+            app_version=device.current_firmware.app_version,
         ) if device.current_firmware else None,
         target_firmware=FirmwareOut(
             id=device.target_firmware.id,
             app_name=device.target_firmware.app_name,
-            app_version=device.target_firmware.app_version
+            app_version=device.target_firmware.app_version,
         ) if device.target_firmware else None,
         version_updater=device.version_updater,
         last_connected=device.last_connected,

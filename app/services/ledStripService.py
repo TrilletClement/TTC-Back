@@ -201,6 +201,22 @@ class LedStripService:
         db.commit()
         return {"message": "LED strip updated successfully", "led_strip_id": strip.id}
 
+    @staticmethod
+    def delete_led_strip(board_id: int, strip_id: int, db: Session):
+        from fastapi import HTTPException
+
+        strip = db.query(LedStrip).filter_by(id=strip_id, board_id=board_id).first()
+        if not strip:
+            raise HTTPException(status_code=404, detail="LED strip not found")
+
+        for led in list(strip.leds):
+            led.trip_stops.clear()
+            db.delete(led)
+
+        db.delete(strip)
+        db.commit()
+        return {"message": "LED strip deleted successfully", "led_strip_id": strip_id}
+
     # ── Private helpers ─────────────────────────────────────────────────────────
 
     @staticmethod

@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.services.orderService import OrderService
-from app.core.security.jwt import get_current_user
-from app.orm_models.db import get_db
+
+from app.core.user_access import require_user
 from app.orm_models.auth import User
+from app.orm_models.db import get_db
+from app.services.orderService import OrderService
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 
@@ -18,37 +19,29 @@ class OrderCreate(BaseModel):
 
 
 @router.post("")
+@require_user
 def create_order(
     payload: OrderCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User,
+    db: Session = Depends(get_db),
 ):
-    user_id = current_user.id if current_user else None
-
     return OrderService.create_order(
         payload.board_id,
         payload.svg_content,
         payload.details,
         payload.led_colors,
-        user_id,
-        db
+        current_user.id,
+        db,
     )
 
 
 @router.get("")
-def list_orders(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
+@require_user
+def list_orders(current_user: User, db: Session = Depends(get_db)):
     return OrderService.list_orders(db)
 
 
 @router.get("/{order_id}/svg")
-def get_order_svg(
-    order_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    user_id = current_user.id if current_user else None
-    return OrderService.get_order_svg(order_id, user_id, db)
-
+@require_user
+def get_order_svg(order_id: int, current_user: User, db: Session = Depends(get_db)):
+    return OrderService.get_order_svg(order_id, current_user.id, db)

@@ -71,9 +71,6 @@ def current_user(
     db: Session = Depends(get_db)):
     return AuthService.get_user_by_email(current_user, db)
 
-import logging
-logger = logging.getLogger(__name__)
-
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
