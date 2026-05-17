@@ -52,6 +52,14 @@ class LedStripService:
         if not board:
             raise HTTPException(status_code=404, detail="Board not found")
 
+        if board.board_type and board.board_type.max_ledstrip is not None:
+            current_count = db.query(sa.func.count(LedStrip.id)).filter(LedStrip.board_id == board_id).scalar()
+            if current_count >= board.board_type.max_ledstrip:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Maximum number of LED strips reached ({board.board_type.max_ledstrip}) for this board type",
+                )
+
         next_order = order_index_override or (
             (db.query(sa.func.max(LedStrip.order_index)).filter(LedStrip.board_id == board.id).scalar() or 0) + 1
         )
