@@ -1,5 +1,8 @@
+import logging
 from datetime import datetime
 from app.core.config import settings
+
+log = logging.getLogger(__name__)
 
 import stripe
 from fastapi import HTTPException, Request
@@ -8,13 +11,14 @@ from sqlalchemy.orm import Session
 from app.orm_models.auth import User
 from app.orm_models.board import Board
 from app.orm_models.order import Order, OrderDetails
-from app.orm_models.price import PriceVersion
+from app.orm_models.price import BoardTypePrice, PriceVersion
 
-stripe.api_key  = settings.STRIPE_SECRET_KEY
-WEBHOOK_SECRET  = settings.STRIPE_WEBHOOK_SECRET
+stripe.api_key = settings.STRIPE_SECRET_KEY
+WEBHOOK_SECRET = settings.STRIPE_WEBHOOK_SECRET
 
-SUCCESS_URL = "https://transport.trillet.be/orders?success=true&session_id={CHECKOUT_SESSION_ID}"
-CANCEL_URL  = "https://transport.trillet.be/cart?cancelled=true"
+_base = settings.FRONTEND_URL.rstrip("/")
+SUCCESS_URL = f"{_base}/orders?success=true&session_id={{CHECKOUT_SESSION_ID}}"
+CANCEL_URL  = f"{_base}/cart?cancelled=true"
 
 
 def _make_order_details(user_id: int, addr) -> OrderDetails:
@@ -30,6 +34,25 @@ def _make_order_details(user_id: int, addr) -> OrderDetails:
     )
 
 
+def _compute_price(board: Board, version: PriceVersion, db: Session) -> int:
+    """Return the server-authoritative unit price in cents for a board."""
+    if not board.board_type_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Board '{board.name}' has no board type assigned — cannot compute price",
+        )
+    entry = db.query(BoardTypePrice).filter_by(
+        price_version_id=version.id,
+        board_type_id=board.board_type_id,
+    ).first()
+    if not entry:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No price configured for the board type of '{board.name}' in the current price version",
+        )
+    return entry.reduced_price_cents or entry.base_price_cents
+
+
 class PaymentService:
 
     @staticmethod
@@ -37,37 +60,40 @@ class PaymentService:
         if not payload.items:
             raise HTTPException(status_code=400, detail="Cart is empty")
 
-        for item in payload.items:
-            board = db.query(Board).filter_by(id=item.boardId, owner_id=current_user.id).first()
-            if not board:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Board #{item.boardId} not found or not owned by you"
-                )
-
         current_version = (
             db.query(PriceVersion)
             .order_by(PriceVersion.created_at.desc())
             .first()
         )
+        if not current_version:
+            raise HTTPException(status_code=400, detail="No price version configured")
+
+        # Validate ownership and compute server-side prices in one pass
+        item_boards: list[tuple] = []  # (item, board, unit_amount)
+        for item in payload.items:
+            board = db.query(Board).filter_by(id=item.boardId, owner_id=current_user.id).first()
+            if not board:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Board #{item.boardId} not found or not owned by you",
+                )
+            unit_amount = _compute_price(board, current_version, db)
+            item_boards.append((item, board, unit_amount))
 
         try:
-            line_items = []
-            total_cents = 0
-            for item in payload.items:
-                unit_amount = item.reducedPriceCents or item.basePriceCents or 5000
-                total_cents += unit_amount
-                line_items.append({
+            line_items = [
+                {
                     "price_data": {
                         "currency": "eur",
                         "unit_amount": unit_amount,
                         "product_data": {
-                            "name": item.boardName or f"Board #{item.boardId}",
-                            "description": f"LED colors: {item.ledColors}" if item.ledColors else None,
+                            "name": item.boardName or board.name or f"Board #{item.boardId}",
                         },
                     },
                     "quantity": 1,
-                })
+                }
+                for item, board, unit_amount in item_boards
+            ]
 
             shipping = payload.shipping
             session = stripe.checkout.Session.create(
@@ -79,9 +105,7 @@ class PaymentService:
                     "user_id":       str(current_user.id),
                     "board_ids":     ",".join(str(i.boardId) for i in payload.items),
                     "customer_name": f"{shipping.firstName} {shipping.lastName}",
-                    "address":       shipping.addressLine1,
                     "city":          shipping.city,
-                    "postal_code":   shipping.postalCode,
                     "country":       shipping.country,
                 },
                 success_url=SUCCESS_URL,
@@ -93,7 +117,7 @@ class PaymentService:
             db.add(shipping_details)
             db.flush()
 
-            # Billing address — separate row only when different from shipping
+            # Billing address — same row as shipping when not supplied
             if payload.billing:
                 billing_details = _make_order_details(current_user.id, payload.billing)
                 db.add(billing_details)
@@ -101,8 +125,8 @@ class PaymentService:
             else:
                 billing_details = shipping_details
 
-            # One Order row per cart item
-            for item in payload.items:
+            # One Order row per cart item, amount_cents from server-computed price
+            for item, board, unit_amount in item_boards:
                 order = Order(
                     stripe_session_id   = session.id,
                     status              = "pending",
@@ -111,9 +135,9 @@ class PaymentService:
                     shipping_details_id = shipping_details.id,
                     billing_details_id  = billing_details.id,
                     svg_content         = item.svg,
-                    amount_cents        = item.reducedPriceCents or item.basePriceCents or 5000,
+                    amount_cents        = unit_amount,
                     currency            = "eur",
-                    price_version_id    = current_version.id if current_version else None,
+                    price_version_id    = current_version.id,
                 )
                 db.add(order)
 
@@ -127,9 +151,8 @@ class PaymentService:
     def get_payment_status(session_id: str, current_user: User, db: Session):
         order = db.query(Order).filter_by(
             stripe_session_id=session_id,
-            user_id=current_user.id
+            user_id=current_user.id,
         ).first()
-
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
 
@@ -160,12 +183,36 @@ class PaymentService:
 
         if event["type"] == "checkout.session.completed":
             PaymentService._confirm_order(event["data"]["object"], db)
+        elif event["type"] in ("checkout.session.expired", "payment_intent.payment_failed"):
+            PaymentService._cancel_pending_orders(event["data"]["object"], db)
 
         return {"status": "ok"}
 
     @staticmethod
-    def _confirm_order(session: dict, db: Session):
-        for order in db.query(Order).filter_by(stripe_session_id=session["id"]).all():
+    def _confirm_order(session, db: Session):
+        orders = db.query(Order).filter_by(stripe_session_id=session["id"]).all()
+
+        stripe_total   = getattr(session, "amount_total", None) or 0
+        expected_total = sum(o.amount_cents for o in orders)
+        if stripe_total != expected_total:
+            log.warning(
+                "Amount mismatch for session %s: expected %d¢, Stripe reports %d¢",
+                session["id"], expected_total, stripe_total,
+            )
+
+        for order in orders:
             order.status  = "paid"
             order.paid_at = datetime.utcnow()
+        db.commit()
+
+    @staticmethod
+    def _cancel_pending_orders(obj, db: Session):
+        metadata   = getattr(obj, "metadata", None)
+        session_id = getattr(obj, "id", None) or (
+            metadata["stripe_session_id"] if metadata and "stripe_session_id" in metadata else None
+        )
+        if not session_id:
+            return
+        for order in db.query(Order).filter_by(stripe_session_id=session_id, status="pending").all():
+            order.status = "cancelled"
         db.commit()

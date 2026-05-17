@@ -1,50 +1,84 @@
+/**
+ * PM2 production config.
+ * Reads all secrets from .env at the project root — edit that file, not this one.
+ * On the production server: copy .env.example → .env and fill in prod values.
+ */
 const path = require('path');
+const fs   = require('fs');
 
-const PROJECT_ROOT = '/home/c.trillet/server-STIB';
+// ---------------------------------------------------------------------------
+// Minimal .env parser (no external dependencies needed)
+// ---------------------------------------------------------------------------
+function loadEnv(filePath) {
+  try {
+    return Object.fromEntries(
+      fs.readFileSync(filePath, 'utf8')
+        .split('\n')
+        .filter(l => l.trim() && !l.trim().startsWith('#') && l.includes('='))
+        .map(l => {
+          const eq  = l.indexOf('=');
+          const key = l.slice(0, eq).trim();
+          let   val = l.slice(eq + 1).trim();
+          if ((val.startsWith('"') && val.endsWith('"')) ||
+              (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          return [key, val];
+        })
+    );
+  } catch (e) {
+    console.error(`[ecosystem] Could not read ${filePath}:`, e.message);
+    process.exit(1);
+  }
+}
+
+const env = loadEnv(path.join(__dirname, '.env'));
+
+// ---------------------------------------------------------------------------
+// Paths — __dirname resolves to wherever the project is cloned on the server
+// ---------------------------------------------------------------------------
+const PROJECT_ROOT = __dirname;
+const VENV_BIN     = path.join(PROJECT_ROOT, 'venv/bin');
 const FASTAPI_ROOT = path.join(PROJECT_ROOT, 'fastapi-server');
-const VENV_BIN = path.join(PROJECT_ROOT, 'venv/bin');
+const LOGS_DIR     = path.join(PROJECT_ROOT, 'logs');
 
 const backendEnv = {
-  DATABASE_URL: 'postgresql+psycopg2://mylocaldb:mylocaldb@localhost:5432/mylocaldb',
-  JWT_SECRET_KEY: 'your-secret-key-min-32-characters-change-in-production',
-  JWT_ALGORITHM: 'HS256',
-  DEPLOY_SECRET: "446334b8bd0a3addec75bccc25c9ec39202bab0f95a3a75db61c52760d9671501",
-  
-  ENV: 'production',
-  PYTHONPATH: FASTAPI_ROOT,
+  ...env,
+  // Process-management vars — not secrets, don't belong in .env
+  PYTHONPATH:  FASTAPI_ROOT,
   VIRTUAL_ENV: path.join(PROJECT_ROOT, 'venv'),
-  PATH: `${VENV_BIN}:${process.env.PATH}`,
-  STIB_API_KEY: 'ad3f387e38ed4a12a781c8e0201b018b',
-  // TEC_API_KEY: '36497DD5F3AD4262B24981633E73EF33',
-  PROJECT_NAME: 'STIB Automation API'
+  PATH:        `${VENV_BIN}:${process.env.PATH}`,
 };
 
+// ---------------------------------------------------------------------------
+// Apps
+// ---------------------------------------------------------------------------
 module.exports = {
   apps: [
     {
-      name: 'stib-api',
-      cwd: FASTAPI_ROOT,
-      script: path.join(VENV_BIN, 'uvicorn'),
-      // On écoute sur 127.0.0.1 car Nginx fait le pont
-      args: ['app.main:app', '--host', '127.0.0.1', '--port', '8000', '--workers', '4'],
+      name:        'stib-api',
+      cwd:         FASTAPI_ROOT,
+      script:      path.join(VENV_BIN, 'uvicorn'),
+      // Listen on 127.0.0.1 only — Nginx proxies from outside
+      args:        ['app.main:app', '--host', '127.0.0.1', '--port', '8000', '--workers', '4'],
       interpreter: 'none',
       autorestart: true,
-      env: backendEnv,
-      log_date_format: "YYYY-MM-DD HH:mm:ss",
-      error_file: path.join(PROJECT_ROOT, 'logs/api-error.log'),
-      out_file: path.join(PROJECT_ROOT, 'logs/api-out.log'),
+      env:         backendEnv,
+      out_file:    path.join(LOGS_DIR, 'api-out.log'),
+      error_file:  path.join(LOGS_DIR, 'api-error.log'),
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
     },
     {
-      name: 'stib-scheduler',
-      cwd: FASTAPI_ROOT,
-      script: path.join(VENV_BIN, 'python'),
-      args: ['-m', 'app.routines.scheduler'],
+      name:        'stib-scheduler',
+      cwd:         FASTAPI_ROOT,
+      script:      path.join(VENV_BIN, 'python'),
+      args:        ['-m', 'app.routines.scheduler'],
       interpreter: 'none',
       autorestart: true,
-      env: backendEnv,
-      log_date_format: "YYYY-MM-DD HH:mm:ss",
-      error_file: path.join(PROJECT_ROOT, 'logs/scheduler-error.log'),
-      out_file: path.join(PROJECT_ROOT, 'logs/scheduler-out.log'),
-    }
-  ]
+      env:         backendEnv,
+      out_file:    path.join(LOGS_DIR, 'scheduler-out.log'),
+      error_file:  path.join(LOGS_DIR, 'scheduler-error.log'),
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+    },
+  ],
 };

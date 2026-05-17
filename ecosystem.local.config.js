@@ -1,98 +1,129 @@
+/**
+ * PM2 local development config.
+ * Reads all secrets from .env at the project root — edit that file, not this one.
+ * This file is gitignored.
+ */
 const path = require('path');
+const fs   = require('fs');
 
-const projectRoot = __dirname;
-const projectVenv = path.join(projectRoot, 'venv');
-const venvBin = path.join(projectVenv, 'bin');
-const fastapiRoot = path.join(projectRoot, 'fastapi-server');
-const logsDir = path.join(projectRoot, 'logs');
+// ---------------------------------------------------------------------------
+// Minimal .env parser (no external dependencies needed)
+// ---------------------------------------------------------------------------
+function loadEnv(filePath) {
+  try {
+    return Object.fromEntries(
+      fs.readFileSync(filePath, 'utf8')
+        .split('\n')
+        .filter(l => l.trim() && !l.trim().startsWith('#') && l.includes('='))
+        .map(l => {
+          const eq  = l.indexOf('=');
+          const key = l.slice(0, eq).trim();
+          let   val = l.slice(eq + 1).trim();
+          if ((val.startsWith('"') && val.endsWith('"')) ||
+              (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          return [key, val];
+        })
+    );
+  } catch (e) {
+    console.error(`[ecosystem] Could not read ${filePath}:`, e.message);
+    process.exit(1);
+  }
+}
 
-const FRONTEND_PORT = '4200';
-const BACKEND_PORT = '8000';
+const env = loadEnv(path.join(__dirname, '.env'));
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+const PROJECT_ROOT = __dirname;
+const VENV_BIN     = path.join(PROJECT_ROOT, 'venv/bin');
+const FASTAPI_ROOT = path.join(PROJECT_ROOT, 'fastapi-server');
+const LOGS_DIR     = path.join(PROJECT_ROOT, 'logs');
 
 const backendEnv = {
-  PORT: BACKEND_PORT,
-  DATABASE_URL: 'postgresql+psycopg2://mylocaldb:mylocaldb@localhost:5432/mylocaldb',
-
-  ACCESS_TOKEN_EXPIRE_MINUTES: '60',
-
-  JWT_SECRET_KEY: 'your-secret-key-min-32-characters-change-in-production',
-  JWT_ALGORITHM: 'HS256',
-  JWT_EXPIRE_MINUTES: '1440',
-
-  API_V1_PREFIX: '/api/v1',
-  PROJECT_NAME: 'STIB Automation API',
-  DEBUG: 'false',
-  ENV: 'prod',
-  CORS_ORIGINS: '["*"]',
-  STIB_API_KEY: 'ad3f387e38ed4a12a781c8e0201b018b',
-  TEC_API_KEY: '36497DD5F3AD4262B24981633E73EF33'
+  ...env,
+  // Process-management vars — not secrets, don't belong in .env
+  PYTHONPATH:  FASTAPI_ROOT,
+  VIRTUAL_ENV: path.join(PROJECT_ROOT, 'venv'),
+  PATH:        `${VENV_BIN}:${process.env.PATH}`,
 };
 
-const frontendEnv = {
-  PORT: FRONTEND_PORT,
-  API_BASE_URL: `http://localhost:${BACKEND_PORT}`  // Pointe vers FastAPI
-};
+// ---------------------------------------------------------------------------
+// Auto-generate runtime-env.js so the Angular dev server picks up API_BASE_URL
+// without requiring a manual "node scripts/gen-runtime-env.js" step.
+// ---------------------------------------------------------------------------
+const runtimeEnvPath = path.join(PROJECT_ROOT, 'stibFront/public/runtime-env.js');
+fs.writeFileSync(
+  runtimeEnvPath,
+  `window.__env = ${JSON.stringify({ API_BASE_URL: env.API_BASE_URL })};\n`,
+);
+console.log(`[ecosystem] runtime-env.js → API_BASE_URL=${env.API_BASE_URL}`);
 
+// ---------------------------------------------------------------------------
+// Apps
+// ---------------------------------------------------------------------------
 module.exports = {
   apps: [
-    // Frontend - Configuration IDENTIQUE à celle qui fonctionne
     {
-      name: 'stib-frontend',
-      cwd: path.join(projectRoot, 'stibFront'),
-      script: path.join('scripts', 'start-frontend.js'),
-      args: ['serve', '--port', FRONTEND_PORT, '--proxy-config', 'proxy.conf.json'],
+      name:        'stib-frontend',
+      cwd:         path.join(PROJECT_ROOT, 'stibFront'),
+      script:      path.join('scripts', 'start-frontend.js'),
+      args:        ['serve', '--port', '4200', '--proxy-config', 'proxy.conf.json'],
       interpreter: 'node',
-      watch: false,
-      env: {
-        ...frontendEnv,
-      },
-      log_file: path.join(logsDir, 'stib-frontend.log'),
-      out_file: path.join(logsDir, 'stib-frontend.out.log'),
-      error_file: path.join(logsDir, 'stib-frontend.err.log'),
-      log_date_format: "YYYY-MM-DD HH:mm:ss",
+      watch:       false,
+      env:         { PORT: '4200' },
+      out_file:    path.join(LOGS_DIR, 'frontend-out.log'),
+      error_file:  path.join(LOGS_DIR, 'frontend-error.log'),
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
     },
-    // Backend FastAPI - Remplace Flask
     {
-      name: 'stib-api',
-      script: 'uvicorn',
-      args: ['app.main:app', '--host', '0.0.0.0', '--port', BACKEND_PORT, '--workers', '4'],
+      name:        'stib-api',
+      cwd:         FASTAPI_ROOT,
+      script:      path.join(VENV_BIN, 'uvicorn'),
+      args:        ['app.main:app', '--host', '0.0.0.0', '--port', '8000', '--reload'],
       interpreter: 'none',
-      cwd: path.join(projectRoot, 'fastapi-server'),
-      watch: false,
-      env: {
-        ...backendEnv,
-        PYTHONPATH: fastapiRoot,
-        PATH: venvBin + path.delimiter + process.env.PATH,
-        VIRTUAL_ENV: projectVenv,
-        DEPLOY_SECRET: "446334b8bd0a3addec75bccc25c9ec39202bab0f95a3a75db61c52760d9671501"
-      },
-      log_file: path.join(logsDir, 'stib-api.log'),
-      out_file: path.join(logsDir, 'stib-api.out.log'),
-      error_file: path.join(logsDir, 'stib-api.err.log'),
-      log_date_format: "YYYY-MM-DD HH:mm:ss",
+      watch:       false,
+      autorestart: true,
+      env:         backendEnv,
+      out_file:    path.join(LOGS_DIR, 'api-out.log'),
+      error_file:  path.join(LOGS_DIR, 'api-error.log'),
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
     },
-    
-    // Scheduler pour les imports automatiques
     {
-      name: 'stib-scheduler',
-      script: 'python',
-      args: ['-m', 'app.routines.scheduler'],
+      name:        'stib-scheduler',
+      cwd:         FASTAPI_ROOT,
+      script:      path.join(VENV_BIN, 'python'),
+      args:        ['-m', 'app.routines.scheduler'],
       interpreter: 'none',
-      cwd: path.join(projectRoot, 'fastapi-server'),
-      watch: false,
+      watch:       false,
       autorestart: true,
       max_restarts: 10,
       restart_delay: 4000,
-      env: {
-        ...backendEnv,
-        PYTHONPATH: fastapiRoot,
-        PATH: venvBin + path.delimiter + process.env.PATH,
-        VIRTUAL_ENV: projectVenv
-      },
-      log_file: path.join(logsDir, 'stib-scheduler.log'),
-      out_file: path.join(logsDir, 'stib-scheduler.out.log'),
-      error_file: path.join(logsDir, 'stib-scheduler.err.log'),
-      log_date_format: "YYYY-MM-DD HH:mm:ss",
-    }
-  ]
+      env:         backendEnv,
+      out_file:    path.join(LOGS_DIR, 'scheduler-out.log'),
+      error_file:  path.join(LOGS_DIR, 'scheduler-error.log'),
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+    },
+    {
+      // Stripe CLI webhook tunnel for local development.
+      // Prerequisites:
+      //   1. Install Stripe CLI: https://docs.stripe.com/stripe-cli
+      //   2. Authenticate once: stripe login
+      //   3. On first run, note the printed "whsec_..." secret and set it
+      //      as STRIPE_WEBHOOK_SECRET in .env, then restart stib-api.
+      name:        'stib-stripe',
+      script:      'stripe',
+      args:        ['listen', '--forward-to', `${env.API_BASE_URL}/api/payments/webhook`],
+      interpreter: 'none',
+      watch:       false,
+      autorestart: true,
+      max_restarts: 5,
+      restart_delay: 5000,
+      out_file:    path.join(LOGS_DIR, 'stripe-out.log'),
+      error_file:  path.join(LOGS_DIR, 'stripe-error.log'),
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+    },
+  ],
 };

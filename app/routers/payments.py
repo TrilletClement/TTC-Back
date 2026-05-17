@@ -14,9 +14,6 @@ router = APIRouter(prefix="/api/payments", tags=["payments"])
 class CartItem(BaseModel):
     boardId: int
     boardName: Optional[str] = None
-    ledColors: Optional[str] = None
-    reducedPriceCents: Optional[int] = None
-    basePriceCents: Optional[int] = None
     svg: Optional[str] = None
 
 

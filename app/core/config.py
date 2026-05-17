@@ -3,18 +3,21 @@ from pydantic import Field
 from typing import List
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent  # fastapi-server/
+# Project root is three levels up from this file:
+# config.py → core → app → fastapi-server → PROJECT_ROOT
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env",
+        env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
+        extra="ignore",   # .env also contains Docker/frontend vars not used by FastAPI
     )
 
     # App
     DEBUG: bool = False
-    ENV: str = "prod"
+    ENV: str = "local"
 
     # Database
     DATABASE_URL: str
@@ -23,24 +26,33 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = Field(..., min_length=32)
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 60 * 24
+    DEPLOY_SECRET: str = Field(...)
+
+    # External APIs
+    STIB_API_KEY: str = Field(...)
+    TEC_API_KEY: str = ""
+    TURNSTILE_SECRET_KEY: str = Field(...)
 
     # Mail
-    MAIL_USERNAME: str = "admin@trillet.be"
-    MAIL_PASSWORD: str = "aUrbol,28,;"
-    MAIL_FROM: str = "admin@trillet.be"
-    MAIL_SERVER: str = "mail.b-kaiser.be"
+    MAIL_USERNAME: str = Field(...)
+    MAIL_PASSWORD: str = Field(...)
+    MAIL_FROM: str = Field(...)
+    MAIL_SERVER: str = Field(...)
     MAIL_PORT: int = 465
     MAIL_SSL_TLS: bool = True
     MAIL_STARTTLS: bool = False
-    FRONTEND_URL: str = "https://transport.trillet.be"
-    FRONTEND_URL_DEV: str = "http://localhost:4200"
-    TURNSTILE_SECRET_KEY: str = "0x4AAAAAACynx6LG7GR6hr1VtUK9uyut8OE"
-    STRIPE_SECRET_KEY: str = "sk_test_REDACTED"
-    STRIPE_WEBHOOK_SECRET: str = "pk_test_51TP6wx0ieKgPycMuYDLV2I65pvvACjrvEPaMINBOmtk7l10PbpGOeFW4lRIvg3zFSt4WF4I7NMT7tAZJLuch49SJ00JMnXh2LZ"
+
+    # Stripe
+    STRIPE_SECRET_KEY: str = Field(...)
+    STRIPE_WEBHOOK_SECRET: str = Field(...)
+
+    # URLs
+    # Set to http://localhost:4200 locally, https://transport.trillet.be in production
+    FRONTEND_URL: str = Field(...)
 
     # CORS
     CORS_ORIGINS: List[str] = [
-        "http://localhost",         # Important pour le Front Docker
+        "http://localhost",
         "http://localhost:4200",
         "http://localhost:8000",
         "http://127.0.0.1",

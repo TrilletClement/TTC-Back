@@ -1,3 +1,9 @@
+# Environment files — never commit real secrets
+.env
+.env.local
+.env.prod
+fastapi-server/.env
+
 venv/
 sqlite-accounts/
 __pycache__/

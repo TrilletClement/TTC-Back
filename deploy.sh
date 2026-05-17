@@ -12,17 +12,20 @@ docker save $FRONT_IMAGE | gzip > front.tar.gz
 docker save $API_IMAGE | gzip > api.tar.gz
 
 echo "2. Transfert vers le serveur ($SERVER_IP)..."
-# Ajout de runtime-env.js dans le transfert
-scp .env front.tar.gz api.tar.gz docker-compose.yml $SERVER_USER@$SERVER_IP:/tmp/
+# .env is NOT transferred — the server keeps its own prod .env.
+# To set up a new server: ssh in and create /root/.env from .env.example.
+scp front.tar.gz api.tar.gz docker-compose.yml $SERVER_USER@$SERVER_IP:/tmp/
 
 echo "3. Installation sur le serveur..."
 ssh -t $SERVER_USER@$SERVER_IP "su - root -c '
-    mv /tmp/front.tar.gz /tmp/api.tar.gz /tmp/docker-compose.yml /tmp/.env /root/
+    mv /tmp/front.tar.gz /tmp/api.tar.gz /tmp/docker-compose.yml /root/
     cd /root/
     echo \"--- Configuration de l environnement frontend --- \"
-    rm -rf /root/stibFront/public/runtime-env.js
     mkdir -p /root/stibFront/public
-    echo '\''window.__env = {"API_BASE_URL":"https://transport.trillet.be"};'\'' > /root/stibFront/public/runtime-env.js
+    API_URL=\$(grep \"^API_BASE_URL=\" /root/.env 2>/dev/null | cut -d= -f2-)
+    API_URL=\${API_URL:-https://transport.trillet.be}
+    echo \"window.__env = {\\\"API_BASE_URL\\\":\\\"\${API_URL}\\\"};\" > /root/stibFront/public/runtime-env.js
+    echo \"  runtime-env.js → API_BASE_URL=\${API_URL}\"
     echo \"--- Chargement des images --- \"
     docker load < front.tar.gz
     docker load < api.tar.gz

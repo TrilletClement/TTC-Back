@@ -56,7 +56,7 @@ class AuthService:
         db.add(new_user)
         db.commit()
 
-        confirmation_url = f"{settings.FRONTEND_URL_DEV}/confirm-email?token={confirmation_token}"
+        confirmation_url = f"{settings.FRONTEND_URL}/confirm-email?token={confirmation_token}"
         await send_confirmation_email(email, confirmation_url)
 
         return {"message": "Inscription réussie. Vérifiez votre email pour confirmer votre compte."}

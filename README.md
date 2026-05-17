@@ -1,500 +1,329 @@
-# Server STIB - Complete Installation Guide
+# Server STIB
 
-This guide provides step-by-step instructions to clone and run the Server STIB project on a new development machine.
-
-## Prerequisites
-
-- Ubuntu/Debian Linux (or WSL2 on Windows)
-- Sudo access
-- GitHub account with repository access
-- Access to the production PostgreSQL database (192.168.14.13)
+Angular + FastAPI + PostgreSQL application for STIB transit LED board management and ordering.
 
 ## Table of Contents
 
-1. [SSH Configuration for GitHub](#1-ssh-configuration-for-github)
-2. [Clone the Project](#2-clone-the-project)
-3. [System Dependencies Installation](#3-system-dependencies-installation)
-4. [Python Environment Setup](#4-python-environment-setup)
-5. [Frontend Configuration](#5-frontend-configuration)
-6. [Database Configuration](#6-database-configuration)
-7. [PM2 Configuration](#7-pm2-configuration)
-8. [Starting Services](#8-starting-services)
-9. [Verification](#9-verification)
-10. [Troubleshooting](#10-troubleshooting)
+1. [Architecture](#architecture)
+2. [Prerequisites](#prerequisites)
+3. [Environment Setup](#environment-setup)
+4. [Local Development (PM2)](#local-development-pm2)
+5. [Production Deployment (Docker)](#production-deployment-docker)
+6. [Database Migrations (Alembic)](#database-migrations-alembic)
+7. [Reference](#reference)
 
 ---
 
-## Initial Setup
+## Architecture
 
-After cloning the repository, create your local PM2 configuration:
-
-```bash
-# Copy the template
-cp ecosystem.config.js.template ecosystem.config.js
-
-# Replace YOUR_USERNAME with your actual username
-sed -i 's/YOUR_USERNAME/clement/g' ecosystem.config.js
-
-# Or edit manually
-nano ecosystem.config.js
+```
+server-STIB/
+├── fastapi-server/            # FastAPI backend + scheduler
+│   ├── app/
+│   │   ├── core/config.py     # Pydantic settings — reads root .env
+│   │   ├── routers/
+│   │   ├── services/
+│   │   └── orm_models/
+│   └── migrations/            # Alembic migration files
+├── stibFront/                 # Angular frontend
+│   ├── public/runtime-env.js  # auto-generated (gitignored)
+│   └── Dockerfile
+├── .env                       # gitignored — copy from .env.example
+├── .env.example               # committed template with all variable names
+├── ecosystem.local.config.js  # PM2 local dev config (gitignored)
+├── ecosystem.config.js        # PM2 production config
+├── docker-compose.yml         # Docker production config
+└── deploy.sh                  # Production deployment script
 ```
 
-## 1. SSH Configuration for GitHub
+**PM2 services (local dev):**
 
-### Generate an SSH Key (if needed)
+| Name              | What it runs                              | URL                    |
+|-------------------|-------------------------------------------|------------------------|
+| `stib-frontend`   | Angular dev server                        | http://localhost:4200  |
+| `stib-api`        | FastAPI + uvicorn --reload                | http://localhost:8000  |
+| `stib-scheduler`  | Background import/sync scheduler          | —                      |
+| `stib-stripe`     | Stripe CLI webhook tunnel (local testing) | —                      |
 
-```bash
-# Check if a key already exists
-ls ~/.ssh
+**Docker services (production):**
 
-# If needed, generate a new ED25519 key
-ssh-keygen -t ed25519 -C "your.email@example.com"
-```
-
-### Configure SSH Agent
-
-```bash
-# Start SSH agent
-eval "$(ssh-agent -s)"
-
-# Add your private key
-ssh-add ~/.ssh/id_ed25519
-
-# Verify the key is added
-ssh-add -l
-```
-
-### Add Public Key to GitHub
-
-```bash
-# Display your public key
-cat ~/.ssh/id_ed25519.pub
-```
-
-1. Copy the complete output
-2. Go to GitHub → Settings → SSH and GPG keys → New SSH key
-3. Paste the key and save
-
-### Test Connection
-
-```bash
-ssh -T git@github.com
-# Expected: "Hi username! You've successfully authenticated..."
-```
+| Service     | Port  | Description              |
+|-------------|-------|--------------------------|
+| `db`        | 5434  | PostgreSQL 15            |
+| `api`       | 8000  | FastAPI + Uvicorn        |
+| `scheduler` | —     | Background task runner   |
+| `frontend`  | 4200  | Angular served by Nginx  |
 
 ---
 
-## 2. Clone the Project
+## Prerequisites
 
 ```bash
-cd ~/projets  # or your preferred directory
-git clone git@github.com:a-trillet/server-STIB.git
-cd server-STIB
-```
-
----
-
-## 3. System Dependencies Installation
-
-### Install Node.js and npm (NodeSource, Node 20+)
-
-Angular CLI requires Node v20.19+ or v22.12+. Use NodeSource to install a recent version:
-
-```bash
+# Node.js 20+ (use NodeSource)
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 
-# Verify versions (should be 20.x+)
-node -v
-npm -v
-```
-
-### Install PM2 (Process Manager)
-
-```bash
+# PM2
 sudo npm install -g pm2
 
-# Verify installation
-pm2 -v
-```
+# Angular CLI
+cd stibFront && sudo npm install && sudo npm install -g @angular/cli && cd ..
 
-### install Angular stuff
-
-```bash
-cd stibFront
-sudo npm install
-sudo npm install -g @angular/cli
-```
-
-### Install Python Dependencies
-
-```bash
-# Install required development tools
+# Python 3.10+ venv + build tools
 sudo apt install python3.10-venv libpq-dev python3-dev build-essential -y
+
+# Stripe CLI (for local payment testing)
+curl -s https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public \
+  | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main" \
+  | sudo tee /etc/apt/sources.list.d/stripe.list
+sudo apt update && sudo apt install stripe
 ```
 
 ---
 
-## 4. Python Environment Setup
+## Environment Setup
 
-### Create Virtual Environment
+**All configuration lives in a single `.env` at the project root.** It is gitignored — never commit it.
 
 ```bash
+cp .env.example .env
+# Edit .env and fill in real values (see comments inside)
+```
+
+Key variables to set:
+
+| Variable               | Local dev value            | Production value                    |
+|------------------------|----------------------------|-------------------------------------|
+| `FRONTEND_URL`         | `http://localhost:4200`    | `https://transport.trillet.be`      |
+| `API_BASE_URL`         | `http://localhost:8000`    | `https://transport.trillet.be`      |
+| `DATABASE_URL`         | local PostgreSQL URL       | built by docker-compose from POSTGRES_* |
+| `STRIPE_SECRET_KEY`    | `sk_test_...`              | `sk_live_...` (when going live)     |
+| `STRIPE_WEBHOOK_SECRET`| from `stripe listen` output| from Stripe dashboard               |
+
+`FRONTEND_URL` controls Stripe redirect URLs and auth email links.  
+`API_BASE_URL` is injected into `stibFront/public/runtime-env.js` automatically at PM2 startup.
+
+---
+
+## Local Development (PM2)
+
+### First-time setup
+
+```bash
+# 1. Python environment
 python3 -m venv venv
-```
-
-### Activate Virtual Environment
-
-```bash
 source venv/bin/activate
-```
-
-### Install Python Packages
-
-```bash
-# Update pip
 pip install --upgrade pip
+pip install -r fastapi-server/requirements.txt
 
-# Install all dependencies
-pip install -r requirements.txt
-```
-
----
-
-## 5. Database Configuration (NOT NOW)
-
-```bash
-sudo apt update
-sudo apt install postgresql postgresql-contrib
+# 2. Local PostgreSQL (if not already running)
 sudo service postgresql start
 sudo -u postgres psql -c "CREATE USER mylocaldb WITH PASSWORD 'mylocaldb';"
 sudo -u postgres psql -c "CREATE DATABASE mylocaldb OWNER mylocaldb;"
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE mylocaldb TO mylocaldb;"
 
-# sysVinit: 
-sudo update-rc.d postgresql defaults
-sudo service postgresql start
+# 3. Run migrations
+cd fastapi-server && python -m alembic upgrade head && cd ..
 
-# systemd:
-sudo systemctl enable postgresql
-sudo systemctl start postgresql
-
+# 4. Stripe CLI — authenticate once (opens browser)
+stripe login
 ```
 
-## 6. PM2 Configuration
-
-### Update ecosystem.config.js
-
-modify ecosystem.config.js to reflect your paths and environment:
-
-## 7. Starting Services
-
-### Start All Services with PM2
+### Start all services
 
 ```bash
-# start all services defined in ecosystem.config.js
 pm2 start ecosystem.local.config.js
-
-# Save PM2 process list
 pm2 save
 ```
 
-### Useful PM2 Commands
+This also auto-generates `stibFront/public/runtime-env.js` from `API_BASE_URL` in `.env`.
+
+### First-time Stripe webhook secret
+
+On the first start, get the webhook signing secret from the CLI output:
 
 ```bash
-# View all processes status
-pm2 status
+pm2 logs stib-stripe --lines 20
+# Look for: "Your webhook signing secret is whsec_..."
+```
 
-# View real-time logs for all services
-pm2 logs
+Copy the `whsec_...` value into `.env` as `STRIPE_WEBHOOK_SECRET`, then:
 
-# View logs for specific service
-pm2 logs stib-frontend
-pm2 logs stib-api
-pm2 logs stib-imports
+```bash
+pm2 restart stib-api
+```
 
-# Restart all services
-pm2 restart all
+The secret is stable for your Stripe account + machine — you only do this once.
 
-# Restart specific service
-pm2 restart stib-frontend
+### Resending a missed webhook event
 
-# Stop all services
+If a payment went through but the order status didn't update, resend the event:
+
+```bash
+# Find the event ID in your Stripe dashboard → Developers → Events
+stripe events resend evt_xxxx
+```
+
+---
+
+## Production Deployment (Docker)
+
+### First-time server setup
+
+SSH into the production server and create the prod `.env`:
+
+```bash
+cp .env.example .env
+# Set production values:
+#   FRONTEND_URL=https://transport.trillet.be
+#   API_BASE_URL=https://transport.trillet.be
+#   DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+#   STRIPE_SECRET_KEY=sk_live_...     (when going live)
+#   STRIPE_WEBHOOK_SECRET=whsec_...   (from Stripe dashboard → Webhooks)
+#   ... all other production secrets
+```
+
+The production server's `.env` is never transferred by `deploy.sh` — it is managed directly on the server.
+
+### Build and deploy
+
+```bash
+# Build Docker images locally
+docker build -t stib-api:latest ./fastapi-server
+docker build -t server-stib-frontend:latest ./stibFront
+
+# Deploy
+./deploy.sh
+```
+
+**What `deploy.sh` does:**
+
+1. Saves Docker images as gzip tarballs
+2. Transfers images + `docker-compose.yml` to the server via SCP
+3. On server: reads `API_BASE_URL` from `/root/.env` → writes `runtime-env.js`
+4. Loads images, runs `docker compose up -d`
+5. Waits for DB readiness, runs `alembic upgrade head`
+6. Cleans up tarballs and dangling images
+
+### Docker commands
+
+```bash
+docker compose ps
+docker compose logs -f api
+docker compose up -d --build api    # rebuild and restart only the API
+docker compose down                  # stop containers, keep DB volume
+docker compose down -v               # stop containers AND delete DB volume (full reset)
+docker compose exec db psql -U mylocaldb -d mylocaldb
+```
+
+---
+
+## Database Migrations (Alembic)
+
+All Alembic commands run inside the `api` container in production, or directly with the venv activated locally.
+
+**Local:**
+```bash
+source venv/bin/activate
+cd fastapi-server
+python -m alembic upgrade head
+python -m alembic current
+python -m alembic history
+```
+
+**Docker (production):**
+```bash
+docker compose exec api sh -c "cd /app && python -m alembic <command>"
+```
+
+### Create a new migration
+
+```bash
+# After modifying SQLAlchemy models:
+python -m alembic revision --autogenerate -m "describe your change"
+# Review the generated file in fastapi-server/migrations/versions/
+python -m alembic upgrade head
+```
+
+### Fresh database (first-time)
+
+```bash
+# Start the stack (SQLAlchemy creates tables on startup)
+docker compose up -d --build
+
+# Stamp Alembic at head so future migrations work cleanly
+docker compose exec api sh -c "cd /app && python -m alembic stamp head"
+```
+
+### Existing database (tables exist, no alembic_version)
+
+Use this when the DB was built from raw SQL scripts without Alembic involvement:
+
+```bash
+# 1. Find the last revision whose SQL was already applied
+docker compose exec api sh -c "cd /app && python -m alembic history --verbose"
+
+# 2. Stamp at that revision (creates alembic_version table, touches nothing else)
+docker compose exec api sh -c "cd /app && python -m alembic stamp <last_applied_revision>"
+
+# 3. Apply only the missing migrations
+docker compose exec api sh -c "cd /app && python -m alembic upgrade head"
+
+# 4. Verify
+docker compose exec api sh -c "cd /app && python -m alembic current"
+```
+
+---
+
+## Reference
+
+### PM2 commands
+
+```bash
+pm2 status                        # all process statuses
+pm2 logs [service]                # live log tail
+pm2 logs stib-api --lines 50      # last N lines
+pm2 restart [service|all]
 pm2 stop all
-
-# Delete all processes
 pm2 delete all
-
-# Save PM2 configuration
-pm2 save
-
-# Configure PM2 to start on system boot
-pm2 startup
+pm2 save                          # persist process list across reboots
+pm2 startup                       # configure PM2 to start on boot
 ```
 
----
-
-## 8. Verification
-
-### Check Service Status
-
-All three services should show status **"online"**:
+### GitHub SSH setup (new machine)
 
 ```bash
-pm2 status
+ssh-keygen -t ed25519 -C "your.email@example.com"
+eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub         # paste into GitHub → Settings → SSH keys
+ssh -T git@github.com             # verify
+git clone git@github.com:a-trillet/server-STIB.git
 ```
 
-Expected output:
+### Troubleshooting
 
-```
-┌────┬────────────────┬──────┬────────┬─────────┬──────────┐
-│ id │ name           │ mode │ ↺      │ status  │ memory   │
-├────┼────────────────┼──────┼────────┼─────────┼──────────┤
-│ 0  │ stib-frontend  │ fork │ 0      │ online  │ 125.0mb  │
-│ 1  │ stib-api       │ fork │ 0      │ online  │ 89.5mb   │
-│ 2  │ stib-imports   │ fork │ 0      │ online  │ 67.2mb   │
-└────┴────────────────┴──────┴────────┴─────────┴──────────┘
-```
+**API won't start — pydantic validation error:**
+Check that all required variables in `.env` are set. Compare against `.env.example`.
 
-### Access the Application
+**Stripe webhook not updating order status:**
+1. Check `pm2 logs stib-stripe` — tunnel must show events being forwarded with `[200]`
+2. Check `pm2 logs stib-api` — look for errors around the webhook call
+3. If the event returned 500, fix the issue and resend: `stripe events resend evt_xxx`
 
-Services should be accessible at:
+**`DetachedInstanceError` in SQLAlchemy:**
+A lazy-loaded relationship is accessed outside its session. Add `.options(joinedload(...))` to the query or move attribute access inside the session scope.
 
-- **Angular Frontend**: <http://localhost:4200>
-- **Flask API** (direct): <http://localhost:5000>
-- **FastAPI**: <http://localhost:8001>
-- **API via Proxy**: <http://localhost:4200/api> (proxied to localhost:5000)
-
-### Test API Endpoints
-
-```bash
-# Test Flask API health
-curl http://localhost:5000/
-
-# Test through Angular proxy
-curl http://localhost:4200/api/
-```
-
----
-
-## 9. Troubleshooting
-
-### Angular CLI requires newer Node.js
-
-If `pm2 logs stib-frontend` shows a message like "Angular CLI requires a minimum Node.js version of v20.19 or v22.12", update Node.js to 20+ using NodeSource:
-
+**Angular CLI requires newer Node.js:**
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
-node -v
 ```
 
-### "ModuleNotFoundError: No module named 'google'"
-
-Install the missing GTFS package:
-
-```bash
-source venv/bin/activate
-pip install gtfs-realtime-bindings
-echo "gtfs-realtime-bindings==2.0.0" >> requirements.txt
-pm2 restart stib-imports
-```
-
-### "Script not found" Error in PM2
-
-Verify that:
-
-- Paths in `ecosystem.config.js` match your system
-- Virtual environment is activated
-- Dependencies are installed
-
-```bash
-# Check if binaries exist
-source venv/bin/activate
-which gunicorn
-which uvicorn
-ls stibFront/node_modules/.bin/ng
-```
-
-### "Error: spawn .../node_modules/.bin/ng ENOENT"
-
-This means PM2 tried to start Angular but the `ng` executable cannot be resolved from `node_modules` (broken install / missing files).
-
-```bash
-cd stibFront
-node scripts/start-frontend.js version
-```
-
-If it still fails, reinstall frontend dependencies:
-
-```bash
-cd stibFront
-rm -rf node_modules
-npm ci
-```
-
-### STIB realtime ↔ GTFS mismatch files
-
-When the scheduler fetches STIB realtime (`vehicle-position-rt-production`) and cannot match it to a GTFS trip/stop, it writes deduplicated mismatch entries to:
-
-- `server-STIB/logs/missed_buses/direction_not_in_gtfs.json`
-- `server-STIB/logs/missed_buses/stop_not_in_gtfs.json`
-- `server-STIB/logs/missed_buses/no_trips.json`
-- `server-STIB/logs/missed_buses/no_tripstop.json`
-
-### psycopg2 Installation Error
-
+**psycopg2 build error:**
 ```bash
 sudo apt install libpq-dev python3-dev build-essential
 pip install psycopg2-binary
 ```
 
-### Database Connection Error
-
-```bash
-# Test connectivity
-nc -zv 192.168.14.13 5432
-
-# Check database URL in shared/db.py
-cat shared/db.py | grep DATABASE_URL
-
-# Verify credentials are correct
-```
-
-### CORS Errors
-
-If you see CORS errors in the browser console:
-
-1. Verify the proxy configuration in `stibFront/proxy.conf.json`
-2. Check that Angular is using the proxy: `pm2 logs stib-frontend`
-3. Ensure Flask CORS is configured in `flask-web-server/config.py`
-
-### Angular Build Errors
-
-```bash
-cd stibFront
-
-# Clean install
-rm -rf node_modules package-lock.json
-npm cache clean --force
-npm install
-
-cd ..
-pm2 restart stib-frontend
-```
-
-### Git Wants to Commit node_modules or venv
-
-Create/update `.gitignore`:
-
-```bash
-cat >> .gitignore << 'EOF'
-# Dependencies
-node_modules/
-venv/
-
-# IDE
-.vscode/
-.idea/
-
-# Environment
-.env
-*.log
-
-# Build
-dist/
-build/
-*.pyc
-__pycache__/
-
-# PM2
-.pm2/
-EOF
-
-# Remove from git cache
-git rm -r --cached node_modules/ venv/ .vscode/ 2>/dev/null || true
-```
-
----
-
-## Project Architecture
-
-```
-server-STIB/
-├── stibFront/              # Angular application (frontend)
-│   ├── src/
-│   │   └── environments/   # Environment configurations
-│   ├── proxy.conf.json     # Proxy configuration for dev server
-│   └── package.json        # Node.js dependencies
-├── flask-web-server/       # Flask API (main backend)
-│   ├── app/
-│   ├── config.py           # Flask configuration
-│   └── requirements.txt    # Python dependencies
-├── fastapi-server/         # FastAPI (imports service)
-│   └── app/
-├── shared/                 # Shared modules
-│   └── db.py               # Database configuration
-├── venv/                   # Python virtual environment
-├── ecosystem.config.js     # PM2 process configuration
-├── requirements.txt        # Main Python dependencies
-└── .gitignore             # Git ignore patterns
-```
-
----
-
-## Development Workflow
-
-### Daily Development
-
-```bash
-# Navigate to project
-cd ~/projets/server-STIB
-
-# Activate Python environment
-source venv/bin/activate
-
-# Check service status
-pm2 status
-
-# View logs if needed
-pm2 logs
-
-# Work on your code...
-
-# Restart services after changes
-pm2 restart stib-api        # For Flask changes
-pm2 restart stib-imports    # For FastAPI changes
-# Frontend hot-reloads automatically
-```
-
-### Before Committing
-
-```bash
-# Deactivate virtual environment
-deactivate
-
-# Check what's being committed
-git status
-
-# Ensure node_modules and venv are not included
-git add .
-git commit -m "your commit message"
-git push
-```
-
----
-
-## Notes
-
-- **Always activate the virtual environment** before working on Python code: `source venv/bin/activate`
-- **Deactivate** when done: `deactivate`
-- **PM2 logs are essential** for debugging: `pm2 logs [service-name]`
-- **Proxy configuration** allows the frontend to call `/api/*` without CORS issues
-- **Database** is on the production server (192.168.14.13), not local
-- **Environment files** determine which API URL to use (local proxy vs production)
-
----
-
-## Authors
-
-Clément Trillet
+**Docker port 5434 conflict:**
+Edit `docker-compose.yml` and change `"5434:5432"` to a free port.
