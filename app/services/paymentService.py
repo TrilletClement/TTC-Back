@@ -201,8 +201,9 @@ class PaymentService:
             )
 
         for order in orders:
-            order.status  = "paid"
-            order.paid_at = datetime.utcnow()
+            if order.status == "pending":
+                order.status  = "paid"
+                order.paid_at = datetime.utcnow()
         db.commit()
 
     @staticmethod

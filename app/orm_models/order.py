@@ -33,7 +33,7 @@ class Order(Base):
     __tablename__ = "orders"
 
     id                  = Column(Integer, primary_key=True)
-    stripe_session_id   = Column(String(255), unique=True, nullable=True)
+    stripe_session_id   = Column(String(255), nullable=True)
     status              = Column(String(50), default="pending", nullable=False)
     # pending | paid | cancelled
 
