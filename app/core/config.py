@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # Stripe
     STRIPE_SECRET_KEY: str = Field(...)
     STRIPE_WEBHOOK_SECRET: str = Field(...)
+    # Shipping rate IDs from the Stripe dashboard (leave blank to omit)
+    STRIPE_SHIPPING_RATE_BE: str = ""
+    STRIPE_SHIPPING_RATE_EU: str = ""
+    STRIPE_SHIPPING_RATE_WORLD: str = ""
+    # ISO-3166-1 alpha-2 country codes, comma-separated: BE,FR,LU
+    STRIPE_ALLOWED_COUNTRIES: str = "BE"
 
     # URLs
     # Set to http://localhost:4200 locally, https://transport.trillet.be in production

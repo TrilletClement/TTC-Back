@@ -1,4 +1,5 @@
 import logging
+import secrets
 from datetime import datetime
 from app.core.config import settings
 
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.orm_models.auth import User
 from app.orm_models.board import Board
 from app.orm_models.order import Order, OrderDetails
-from app.orm_models.price import BoardTypePrice, PriceVersion
+from app.orm_models.price import BoardTypePrice, PriceVersion, ShippingRate
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 WEBHOOK_SECRET = settings.STRIPE_WEBHOOK_SECRET
@@ -21,17 +22,8 @@ SUCCESS_URL = f"{_base}/orders?success=true&session_id={{CHECKOUT_SESSION_ID}}"
 CANCEL_URL  = f"{_base}/cart?cancelled=true"
 
 
-def _make_order_details(user_id: int, addr) -> OrderDetails:
-    return OrderDetails(
-        user_id       = user_id,
-        first_name    = addr.firstName,
-        last_name     = addr.lastName,
-        phone         = getattr(addr, "phone", None),
-        address_line1 = addr.addressLine1,
-        city          = addr.city,
-        postal_code   = addr.postalCode,
-        country       = addr.country,
-    )
+def _generate_cart_ref() -> str:
+    return "C-" + datetime.utcnow().strftime("%Y%m%d") + "-" + secrets.token_hex(2).upper()
 
 
 def _compute_price(board: Board, version: PriceVersion, db: Session) -> int:
@@ -53,12 +45,50 @@ def _compute_price(board: Board, version: PriceVersion, db: Session) -> int:
     return entry.reduced_price_cents or entry.base_price_cents
 
 
+def _get_shipping_for_country(country: str, db: Session) -> tuple[ShippingRate, list[str]]:
+    """Return (ShippingRate row, allowed_countries) from the DB.
+
+    Restricts allowed_countries to the single selected country so the Stripe
+    address form cannot be changed to a different country after selection.
+    """
+    code     = country.upper().strip()
+    latest   = db.query(PriceVersion).order_by(PriceVersion.created_at.desc()).first()
+    rate_row = (
+        db.query(ShippingRate)
+        .filter_by(price_version_id=latest.id, country_code=code)
+        .first()
+        if latest else None
+    )
+    if not rate_row:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Shipping to {code} is not configured. Please select an available country.",
+        )
+    return rate_row, [code]
+
+
+def _build_stripe_shipping_option(rate_row: ShippingRate) -> dict:
+    return {
+        "shipping_rate_data": {
+            "type": "fixed_amount",
+            "fixed_amount": {"amount": rate_row.cost_cents, "currency": "eur"},
+            "display_name": f"Shipping to {rate_row.country_name}",
+            "delivery_estimate": {
+                "minimum": {"unit": "business_day", "value": rate_row.delivery_days_min},
+                "maximum": {"unit": "business_day", "value": rate_row.delivery_days_max},
+            },
+        }
+    }
+
+
 class PaymentService:
 
     @staticmethod
     def create_checkout_session(payload, current_user: User, db: Session):
         if not payload.items:
             raise HTTPException(status_code=400, detail="Cart is empty")
+        if not payload.shipping_country:
+            raise HTTPException(status_code=400, detail="Shipping country is required")
 
         current_version = (
             db.query(PriceVersion)
@@ -68,8 +98,7 @@ class PaymentService:
         if not current_version:
             raise HTTPException(status_code=400, detail="No price version configured")
 
-        # Validate ownership and compute server-side prices in one pass
-        item_boards: list[tuple] = []  # (item, board, unit_amount)
+        item_boards: list[tuple] = []
         for item in payload.items:
             board = db.query(Board).filter_by(id=item.boardId, owner_id=current_user.id).first()
             if not board:
@@ -80,64 +109,61 @@ class PaymentService:
             unit_amount = _compute_price(board, current_version, db)
             item_boards.append((item, board, unit_amount))
 
+        cart_ref = _generate_cart_ref()
+        rate_row, allowed_countries = _get_shipping_for_country(payload.shipping_country, db)
+        shipping_options = [_build_stripe_shipping_option(rate_row)]
+
         try:
-            line_items = [
-                {
+            line_items = []
+            for item, board, unit_amount in item_boards:
+                line_items.append({
                     "price_data": {
                         "currency": "eur",
                         "unit_amount": unit_amount,
                         "product_data": {
-                            "name": item.boardName or board.name or f"Board #{item.boardId}",
+                            "name": (
+                                board.board_type.name if board.board_type
+                                else board.name or f"Board #{board.id}"
+                            ),
                         },
                     },
                     "quantity": 1,
-                }
-                for item, board, unit_amount in item_boards
-            ]
+                })
 
-            shipping = payload.shipping
-            session = stripe.checkout.Session.create(
-                payment_method_types=["card"],
-                line_items=line_items,
-                mode="payment",
-                customer_email=current_user.email,
-                metadata={
-                    "user_id":       str(current_user.id),
-                    "board_ids":     ",".join(str(i.boardId) for i in payload.items),
-                    "customer_name": f"{shipping.firstName} {shipping.lastName}",
-                    "city":          shipping.city,
-                    "country":       shipping.country,
+            session_params: dict = {
+                "payment_method_types": ["card"],
+                "line_items": line_items,
+                "mode": "payment",
+                "customer_email": current_user.email,
+                "phone_number_collection": {"enabled": True},
+                "invoice_creation": {"enabled": True},
+                "shipping_address_collection": {
+                    "allowed_countries": allowed_countries,
                 },
-                success_url=SUCCESS_URL,
-                cancel_url=CANCEL_URL,
-            )
+                "metadata": {
+                    "user_id":   str(current_user.id),
+                    "board_ids": ",".join(str(i.boardId) for i in payload.items),
+                    "cart_ref":  cart_ref,
+                },
+                "success_url": SUCCESS_URL,
+                "cancel_url":  CANCEL_URL,
+            }
 
-            # Shipping address
-            shipping_details = _make_order_details(current_user.id, shipping)
-            db.add(shipping_details)
-            db.flush()
+            session_params["shipping_options"] = shipping_options
 
-            # Billing address — same row as shipping when not supplied
-            if payload.billing:
-                billing_details = _make_order_details(current_user.id, payload.billing)
-                db.add(billing_details)
-                db.flush()
-            else:
-                billing_details = shipping_details
+            session = stripe.checkout.Session.create(**session_params)
 
-            # One Order row per cart item, amount_cents from server-computed price
             for item, board, unit_amount in item_boards:
                 order = Order(
-                    stripe_session_id   = session.id,
-                    status              = "pending",
-                    board_id            = item.boardId,
-                    user_id             = current_user.id,
-                    shipping_details_id = shipping_details.id,
-                    billing_details_id  = billing_details.id,
-                    svg_content         = item.svg,
-                    amount_cents        = unit_amount,
-                    currency            = "eur",
-                    price_version_id    = current_version.id,
+                    stripe_session_id = session.id,
+                    cart_ref          = cart_ref,
+                    status            = "pending",
+                    board_id          = item.boardId,
+                    user_id           = current_user.id,
+                    svg_content       = item.svg,
+                    amount_cents      = unit_amount,
+                    currency          = "eur",
+                    price_version_id  = current_version.id,
                 )
                 db.add(order)
 
@@ -189,8 +215,18 @@ class PaymentService:
         return {"status": "ok"}
 
     @staticmethod
-    def _confirm_order(session, db: Session):
-        orders = db.query(Order).filter_by(stripe_session_id=session["id"]).all()
+    def _confirm_order(session_event, db: Session):
+        session_id = session_event["id"]
+        # Retrieve fresh session so all fields (shipping_details, customer_details,
+        # shipping_cost, payment_intent) are guaranteed to be present.
+        try:
+            session = stripe.checkout.Session.retrieve(session_id)
+        except stripe.StripeError:
+            session = session_event
+
+        orders = db.query(Order).filter_by(stripe_session_id=session_id).all()
+        if not orders:
+            return
 
         stripe_total   = getattr(session, "amount_total", None) or 0
         expected_total = sum(o.amount_cents for o in orders)
@@ -200,10 +236,55 @@ class PaymentService:
                 session["id"], expected_total, stripe_total,
             )
 
+        # Extract shipping details collected by Stripe
+        # In newer Stripe API versions, shipping is under collected_information.shipping_details
+        shipping_details_id  = None
+        collected_info       = getattr(session, "collected_information", None)
+        shipping_detail_obj  = (
+            getattr(collected_info, "shipping_details", None)
+            if collected_info else None
+        ) or getattr(session, "shipping_details", None)
+        customer_details    = getattr(session, "customer_details", None)
+        shipping_cost_obj   = getattr(session, "shipping_cost", None)
+        payment_intent_id   = getattr(session, "payment_intent", None)
+
+        if shipping_detail_obj:
+            addr = getattr(shipping_detail_obj, "address", None)
+            name = getattr(shipping_detail_obj, "name", "") or ""
+            name_parts = name.split(" ", 1)
+            first_name = name_parts[0] if name_parts else ""
+            last_name  = name_parts[1] if len(name_parts) > 1 else ""
+            phone      = getattr(customer_details, "phone", None) if customer_details else None
+
+            user_id = orders[0].user_id
+            od = OrderDetails(
+                user_id       = user_id,
+                first_name    = first_name,
+                last_name     = last_name,
+                phone         = phone,
+                address_line1 = getattr(addr, "line1", "") or "",
+                city          = getattr(addr, "city", "") or "",
+                postal_code   = getattr(addr, "postal_code", "") or "",
+                country       = getattr(addr, "country", "") or "",
+            )
+            db.add(od)
+            db.flush()
+            shipping_details_id = od.id
+
+        shipping_cost_cents = None
+        if shipping_cost_obj:
+            shipping_cost_cents = getattr(shipping_cost_obj, "amount_total", None)
+
         for order in orders:
             if order.status == "pending":
-                order.status  = "paid"
-                order.paid_at = datetime.utcnow()
+                order.status              = "paid"
+                order.paid_at             = datetime.utcnow()
+                order.payment_intent_id   = payment_intent_id
+                order.shipping_cost_cents = shipping_cost_cents
+                if shipping_details_id:
+                    order.shipping_details_id = shipping_details_id
+                    order.billing_details_id  = shipping_details_id
+
         db.commit()
 
     @staticmethod

@@ -4,15 +4,13 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routines import scheduler
-from app.routers import payments, auth, boards, devices, ledstrips, orders, line, blog, update, adminOta, adminUsers, adminDevices, adminPrices, adminOrders
+from app.routers import payments, auth, boards, devices, ledstrips, orders, line, blog, update, adminOta, adminUsers, adminDevices, adminPrices, adminOrders, shipping
 from app.core.config import settings
 from app.core.security.jwt import get_current_user
-from app.orm_models.db import Base, engine
 from app.orm_models.auth import User
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
     yield
 
 
@@ -61,6 +59,7 @@ app.include_router(adminDevices.router)
 app.include_router(adminPrices.router)
 app.include_router(adminOrders.router)
 app.include_router(payments.router)
+app.include_router(shipping.router)
 
 @app.get("/")
 def root():

@@ -17,20 +17,9 @@ class CartItem(BaseModel):
     svg: Optional[str] = None
 
 
-class Address(BaseModel):
-    firstName: str
-    lastName: str
-    phone: Optional[str] = None
-    addressLine1: str
-    city: str
-    postalCode: str
-    country: str
-
-
 class CartPayload(BaseModel):
     items: list[CartItem]
-    shipping: Address
-    billing: Optional[Address] = None  # None means same as shipping
+    shipping_country: str = ""
 
 
 @router.post("/create-session")

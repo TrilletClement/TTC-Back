@@ -34,6 +34,8 @@ class Order(Base):
 
     id                  = Column(Integer, primary_key=True)
     stripe_session_id   = Column(String(255), nullable=True)
+    cart_ref            = Column(String(20),  nullable=True)
+    payment_intent_id   = Column(String(255), nullable=True)
     status              = Column(String(50), default="pending", nullable=False)
     # pending | paid | cancelled
 
@@ -63,6 +65,7 @@ class Order(Base):
 
     amount_cents        = Column(Integer, nullable=False, default=0)
     currency            = Column(String(10), default="eur")
+    shipping_cost_cents = Column(Integer, nullable=True)
 
     created_at          = Column(DateTime, default=datetime.utcnow)
     paid_at             = Column(DateTime, nullable=True)

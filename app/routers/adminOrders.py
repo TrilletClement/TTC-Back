@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import settings
 from app.core.user_access import require_admin
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
@@ -14,19 +15,28 @@ router = APIRouter(prefix="/api/admin/orders", tags=["admin-orders"])
 ORDER_STATUSES = {"pending", "paid", "shipped", "cancelled"}
 
 
+def _stripe_payment_url(payment_intent_id: Optional[str]) -> Optional[str]:
+    if not payment_intent_id:
+        return None
+    mode = "test/" if settings.STRIPE_SECRET_KEY.startswith("sk_test_") else ""
+    return f"https://dashboard.stripe.com/{mode}payments/{payment_intent_id}"
+
+
 def _order_dict(o: Order, include_svg: bool = False) -> dict:
     sd = o.shipping_details
     bd = o.billing_details
     same_address = sd and bd and sd.id == bd.id
     return {
-        "id":              o.id,
-        "status":          o.status,
-        "amount_cents":    o.amount_cents,
-        "currency":        o.currency,
-        "tracking_number": o.tracking_number,
-        "created_at":      o.created_at.isoformat() if o.created_at else None,
-        "paid_at":         o.paid_at.isoformat() if o.paid_at else None,
-        "stripe_session_id": o.stripe_session_id,
+        "id":                  o.id,
+        "cart_ref":            o.cart_ref,
+        "status":              o.status,
+        "amount_cents":        o.amount_cents,
+        "shipping_cost_cents": o.shipping_cost_cents,
+        "currency":            o.currency,
+        "tracking_number":     o.tracking_number,
+        "created_at":          o.created_at.isoformat() if o.created_at else None,
+        "paid_at":             o.paid_at.isoformat() if o.paid_at else None,
+        "stripe_payment_url":  _stripe_payment_url(o.payment_intent_id),
         "board_id":        o.board_id,
         "board_name":      o.board.name if o.board else None,
         "user_id":         o.user_id,

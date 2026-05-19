@@ -105,13 +105,15 @@ class OrderService:
         )
         return [
             {
-                "id":           o.id,
-                "board_id":     o.board_id,
-                "status":       o.status,
-                "amount_cents": o.amount_cents,
-                "currency":     o.currency,
-                "created_at":   o.created_at.isoformat() if o.created_at else None,
-                "svg_content":  o.svg_content,
+                "id":                  o.id,
+                "cart_ref":            o.cart_ref,
+                "board_id":            o.board_id,
+                "status":              o.status,
+                "amount_cents":        o.amount_cents,
+                "shipping_cost_cents": o.shipping_cost_cents,
+                "currency":            o.currency,
+                "created_at":          o.created_at.isoformat() if o.created_at else None,
+                "svg_content":         o.svg_content,
                 "shipping_details": {
                     "firstName":    o.shipping_details.first_name,
                     "lastName":     o.shipping_details.last_name,

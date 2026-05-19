@@ -13,7 +13,25 @@ class PriceVersion(Base):
     label      = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    prices = relationship("BoardTypePrice", back_populates="version", cascade="all, delete-orphan")
+    prices         = relationship("BoardTypePrice", back_populates="version", cascade="all, delete-orphan")
+    shipping_rates = relationship("ShippingRate",   back_populates="version", cascade="all, delete-orphan",
+                                  order_by="ShippingRate.country_name")
+
+
+class ShippingRate(Base):
+    __tablename__ = "shipping_rate"
+    __table_args__ = (
+        UniqueConstraint("price_version_id", "country_code", name="uq_shipping_version_country"),
+    )
+
+    id                = Column(Integer, primary_key=True)
+    price_version_id  = Column(Integer, ForeignKey("price_version.id", ondelete="CASCADE"), nullable=False)
+    country_code      = Column(String(3),   nullable=False)
+    country_name      = Column(String(100), nullable=False)
+    cost_cents        = Column(Integer, nullable=False)
+    delivery_days_min = Column(Integer, nullable=False)
+    delivery_days_max = Column(Integer, nullable=False)
+    version = relationship("PriceVersion", back_populates="shipping_rates")
 
 
 class BoardTypePrice(Base):
