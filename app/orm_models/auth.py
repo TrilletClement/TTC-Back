@@ -16,7 +16,7 @@ class User(Base, UserMixin):
     __tablename__ = "user"
     id = Column(Integer, primary_key=True)
     email = Column(String(120), unique=True, nullable=False)
-    password = Column(String(255), nullable=False)
+    password = Column(String(255), nullable=True) # Nullable to allow Google OAuth users without a password
     active = Column(Boolean, default=True)
     fs_uniquifier = Column(String(255), unique=True, nullable=False)
     roles = relationship("Role", secondary="user_roles", backref="users")
@@ -25,6 +25,7 @@ class User(Base, UserMixin):
     confirmation_token = Column(String(100), nullable=True)
     confirmation_token_expiry = Column(DateTime, nullable=True)
     preferred_agency = Column(String(50), nullable=True)
+    google_id = Column(String, nullable=True, unique=True, index=True)
 
 
 class UserRoles(Base):

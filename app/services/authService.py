@@ -98,3 +98,23 @@ class AuthService:
             "roleName": [role.name for role in user.roles],
             "preferredAgency": user.preferred_agency,
         }
+        
+    @staticmethod
+    def get_or_create_google_user(email: str, google_id: str, db: Session) -> User:
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            if not user.google_id:
+                user.google_id = google_id
+                db.commit()
+            return user
+
+        user = User(
+            email=email,
+            password=None,
+            google_id=google_id,
+            fs_uniquifier=str(uuid.uuid4()),
+            active=True,  # pas besoin de confirmation email
+        )
+        db.add(user)
+        db.commit()
+        return user

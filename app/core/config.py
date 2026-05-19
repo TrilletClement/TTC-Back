@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     # URLs
     # Set to http://localhost:4200 locally, https://transport.trillet.be in production
     FRONTEND_URL: str = Field(...)
+    
+    # Google OAuth
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = ""
 
     # CORS
     CORS_ORIGINS: List[str] = [

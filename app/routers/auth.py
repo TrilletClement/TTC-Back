@@ -8,17 +8,22 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from app.services.authService import AuthService
-from app.core.security.jwt import get_current_user
+from app.core.security.jwt import create_access_token, get_current_user
 from app.orm_models.db import get_db
 from app.orm_models.auth import User
 from app.core.mail import send_confirmation_email, send_reset_email
 from app.core.config import settings
 from app.core.security.jwt import hash_password
 
+import urllib.parse
 import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["auth"])
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
 class RegisterRequest(BaseModel):
     email: str
@@ -151,5 +156,52 @@ async def resend_confirmation(payload: ResendConfirmRequest, db: Session = Depen
         logger.info(f"Email renvoyé à {user.email}")
     
     return {"message": "Si ce compte existe, un nouvel email a été envoyé"}
+
+@router.get("/auth/google")
+def google_login():
+    params = {
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+    }
+    url = f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
+    return RedirectResponse(url)
+
+@router.get("/auth/google/callback")
+async def google_callback(code: str, db: Session = Depends(get_db)):
+    async with httpx.AsyncClient() as client:
+        # Échange code → tokens
+        token_resp = await client.post(GOOGLE_TOKEN_URL, data={
+            "code": code,
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+            "grant_type": "authorization_code",
+        })
+        token_data = token_resp.json()
+        if "error" in token_data:
+            raise HTTPException(status_code=400, detail="Échec OAuth Google")
+
+        # Récupération du profil
+        userinfo_resp = await client.get(
+            GOOGLE_USERINFO_URL,
+            headers={"Authorization": f"Bearer {token_data['access_token']}"}
+        )
+        userinfo = userinfo_resp.json()
+
+    email = userinfo.get("email")
+    google_id = userinfo.get("sub")
+
+    if not email:
+        raise HTTPException(status_code=400, detail="Email non fourni par Google")
+
+    user = AuthService.get_or_create_google_user(email, google_id, db)
+    roles = [role.name for role in user.roles]
+    jwt = create_access_token(user.email, roles=roles)
+
+    frontend_url = f"{settings.FRONTEND_URL}/auth/callback?token={jwt}"
+    return RedirectResponse(frontend_url)
 
 
