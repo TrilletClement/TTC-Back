@@ -166,6 +166,7 @@ class BoardService:
             "ownerId": board.owner_id,
             "boardTypeId": bt.id if bt else None,
             "boardTypeName": bt.name if bt else None,
+            "boardTypeMaxLed": bt.max_led if bt else None,
             "boardTypeMaxLedstrip": bt.max_ledstrip if bt else None,
             "basePriceCents": board_price.base_price_cents if board_price else None,
             "reducedPriceCents": board_price.reduced_price_cents if board_price else None,

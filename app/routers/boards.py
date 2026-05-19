@@ -10,7 +10,6 @@ from app.services.boardService import BoardService
 
 router = APIRouter(prefix="/api/boards", tags=["boards"])
 
-
 class BoardCreate(BaseModel):
     name: str
     board_type_id: Optional[int] = None
