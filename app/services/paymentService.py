@@ -19,7 +19,7 @@ WEBHOOK_SECRET = settings.STRIPE_WEBHOOK_SECRET
 
 _base = settings.FRONTEND_URL.rstrip("/")
 SUCCESS_URL = f"{_base}/orders?success=true&session_id={{CHECKOUT_SESSION_ID}}"
-CANCEL_URL  = f"{_base}/cart?cancelled=true"
+CANCEL_URL  = f"{_base}/cart?cancelled=true&session_id={{CHECKOUT_SESSION_ID}}"
 
 
 def _generate_cart_ref() -> str:
@@ -211,6 +211,8 @@ class PaymentService:
             PaymentService._confirm_order(event["data"]["object"], db)
         elif event["type"] in ("checkout.session.expired", "payment_intent.payment_failed"):
             PaymentService._cancel_pending_orders(event["data"]["object"], db)
+        elif event["type"] == "charge.refunded":
+            PaymentService._refund_orders(event["data"]["object"], db)
 
         return {"status": "ok"}
 
@@ -285,6 +287,30 @@ class PaymentService:
                     order.shipping_details_id = shipping_details_id
                     order.billing_details_id  = shipping_details_id
 
+        db.commit()
+
+    @staticmethod
+    def cancel_session(session_id: str, current_user: User, db: Session):
+        """Immediately cancel pending orders when the user abandons the checkout."""
+        orders = db.query(Order).filter_by(
+            stripe_session_id=session_id,
+            user_id=current_user.id,
+            status="pending",
+        ).all()
+        for order in orders:
+            order.status = "cancelled"
+        db.commit()
+        return {"cancelled": len(orders)}
+
+    @staticmethod
+    def _refund_orders(charge, db: Session):
+        """Mark orders as refunded when Stripe fires charge.refunded."""
+        payment_intent_id = getattr(charge, "payment_intent", None)
+        if not payment_intent_id:
+            return
+        for order in db.query(Order).filter_by(payment_intent_id=payment_intent_id).all():
+            if order.status not in ("cancelled", "refunded"):
+                order.status = "refunded"
         db.commit()
 
     @staticmethod

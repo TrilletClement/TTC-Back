@@ -12,7 +12,7 @@ from app.orm_models.board import Board
 
 router = APIRouter(prefix="/api/admin/orders", tags=["admin-orders"])
 
-ORDER_STATUSES = {"pending", "paid", "shipped", "cancelled"}
+ORDER_STATUSES = {"pending", "paid", "processing", "shipped", "delivered", "cancelled", "refunded"}
 
 
 def _stripe_payment_url(payment_intent_id: Optional[str]) -> Optional[str]:

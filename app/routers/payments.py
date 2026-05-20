@@ -42,6 +42,13 @@ def get_payment_status(
     return PaymentService.get_payment_status(session_id, current_user, db)
 
 
+@router.post("/cancel-session/{session_id}")
+@require_user
+def cancel_session(session_id: str, current_user: User, db: Session = Depends(get_db)):
+    """Called when user lands on the cancel URL after abandoning Stripe checkout."""
+    return PaymentService.cancel_session(session_id, current_user, db)
+
+
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     """Public endpoint called directly by Stripe — no auth."""
