@@ -1,4 +1,5 @@
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.orm_models.auth import User
@@ -9,13 +10,17 @@ from app.orm_models.gtfs import Line, Stop, Trip
 
 class BoardService:
     @staticmethod
-    def get_boards(current_user: User, db: Session):
-        if "admin" in [role.name for role in current_user.roles]:
-            boards = db.query(Board).filter_by(archived=False).all()
-        else:
-            boards = db.query(Board).filter_by(owner_id=current_user.id, archived=False).all()
+    def get_boards(current_user: User, db: Session, owner_email: str | None = None):
+        is_admin = "admin" in [role.name for role in current_user.roles]
 
-        return [{"id": board.id, "name": board.name, "owner_id": board.owner_id} for board in boards]
+        if is_admin and owner_email:
+            owner = db.query(User).filter(func.lower(User.email) == owner_email.strip().lower()).first()
+            owner_id = owner.id if owner else -1
+        else:
+            owner_id = current_user.id
+
+        boards = db.query(Board).filter_by(owner_id=owner_id, archived=False).all()
+        return [{"id": b.id, "name": b.name, "owner_id": b.owner_id} for b in boards]
 
     @staticmethod
     def get_board_types(db: Session):
@@ -43,10 +48,28 @@ class BoardService:
             for t in types
         ]
 
+    BOARD_LIMIT = 10
+
     @staticmethod
     def create_board(name: str, current_user: User, db: Session, board_type_id: int | None = None):
+        name = (name or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="Board name is required")
+
+        active_count = db.query(Board).filter_by(owner_id=current_user.id, archived=False).count()
+        if active_count >= BoardService.BOARD_LIMIT:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Board limit reached ({BoardService.BOARD_LIMIT} active boards maximum)"
+            )
+
+        duplicate = db.query(Board).filter(
+            Board.owner_id == current_user.id,
+            Board.archived == False,
+            func.lower(Board.name) == name.lower(),
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="You already have a board with this name")
 
         if board_type_id is not None:
             board_type = db.query(BoardType).filter_by(id=board_type_id).first()

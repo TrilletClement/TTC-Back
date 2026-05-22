@@ -23,8 +23,12 @@ def get_board_types(current_user: User, db: Session = Depends(get_db)):
 
 @router.get("")
 @require_user
-def get_boards(current_user: User, db: Session = Depends(get_db)):
-    return BoardService.get_boards(current_user, db)
+def get_boards(
+    current_user: User,
+    owner_email: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    return BoardService.get_boards(current_user, db, owner_email=owner_email)
 
 
 @router.post("/create")

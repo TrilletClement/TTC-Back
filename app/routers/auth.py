@@ -29,7 +29,7 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
     turnstileToken: str
-    preferred_agency: str
+    preferred_agency: str = ''
 
 class LoginRequest(BaseModel):
     email: str
