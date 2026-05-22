@@ -74,7 +74,7 @@ class Line(Base):
     )
     subagency = relationship(
         "SubAgency",
-        backref="lines",
+        backref=backref("lines", overlaps="agency,lines"),
         foreign_keys=[subagency_id, agency_name],
         overlaps="agency,lines",
     )
