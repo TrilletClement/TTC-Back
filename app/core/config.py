@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = Field(...)
     API_BASE_URL: str = "http://localhost:8000"
 
+    # Firmware storage — mount a volume here in Docker so files survive redeploys
+    FIRMWARE_DIR: str = "/data/firmware"
+
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

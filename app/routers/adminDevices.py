@@ -17,14 +17,12 @@ router = APIRouter(prefix="/api/admin/devices", tags=["admin-devices"])
 
 class FirmwareOut(BaseModel):
     id: int
-    app_name: str
-    app_version: str
+    filename: str
 
 
 class HardwareOut(BaseModel):
     id: int
     hardware_type: str
-    hardware_version: str
 
 
 class OrderOut(BaseModel):
@@ -93,17 +91,14 @@ def list_all_devices(db: Session = Depends(get_db)):
             hardware=HardwareOut(
                 id=d.hardware.id,
                 hardware_type=d.hardware.hardware_type,
-                hardware_version=d.hardware.hardware_version,
             ) if d.hardware else None,
             current_firmware=FirmwareOut(
                 id=d.current_firmware.id,
-                app_name=d.current_firmware.app_name,
-                app_version=d.current_firmware.app_version,
+                filename=d.current_firmware.filename,
             ) if d.current_firmware else None,
             target_firmware=FirmwareOut(
                 id=d.target_firmware.id,
-                app_name=d.target_firmware.app_name,
-                app_version=d.target_firmware.app_version,
+                filename=d.target_firmware.filename,
             ) if d.target_firmware else None,
             version_updater=d.version_updater,
             last_connected=d.last_connected,
@@ -191,17 +186,14 @@ def patch_device(device_id: int, payload: DevicePatch, db: Session = Depends(get
         hardware=HardwareOut(
             id=device.hardware.id,
             hardware_type=device.hardware.hardware_type,
-            hardware_version=device.hardware.hardware_version,
         ) if device.hardware else None,
         current_firmware=FirmwareOut(
             id=device.current_firmware.id,
-            app_name=device.current_firmware.app_name,
-            app_version=device.current_firmware.app_version,
+            filename=device.current_firmware.filename,
         ) if device.current_firmware else None,
         target_firmware=FirmwareOut(
             id=device.target_firmware.id,
-            app_name=device.target_firmware.app_name,
-            app_version=device.target_firmware.app_version,
+            filename=device.target_firmware.filename,
         ) if device.target_firmware else None,
         version_updater=device.version_updater,
         last_connected=device.last_connected,

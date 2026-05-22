@@ -6,426 +6,245 @@ from typing import Optional
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware, HardwareFirmwareAssignment
-from app.services.updateService import UpdateService
+from app.core.config import settings
+from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware
 
 
 class AdminOtaService:
-    _FASTAPI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    PACKAGES_DIR = os.path.join(_FASTAPI_ROOT, "static", "packages")
     ALLOWED_SUFFIXES = (".bin", ".tar", ".tar.gz", ".zip")
 
-    @staticmethod
-    def _normalize_scope_value(value: Optional[str]) -> str:
-        return (value or "").strip()
+    # ── filesystem helpers ────────────────────────────────────────────────────
 
-    @staticmethod
-    def _serialize_package(package: FirmwarePackage) -> dict:
+    @classmethod
+    def _packages_dir(cls) -> str:
+        os.makedirs(settings.FIRMWARE_DIR, exist_ok=True)
+        return settings.FIRMWARE_DIR
+
+    @classmethod
+    def _file_path(cls, filename: str) -> str:
+        return os.path.join(cls._packages_dir(), filename)
+
+    @classmethod
+    def _file_exists(cls, filename: str) -> bool:
+        return bool(filename) and os.path.isfile(cls._file_path(filename))
+
+    @classmethod
+    def _delete_file(cls, filename: str) -> None:
+        path = cls._file_path(filename)
+        if os.path.exists(path):
+            os.remove(path)
+
+    # ── serializers ───────────────────────────────────────────────────────────
+
+    @classmethod
+    def _pkg(cls, p: FirmwarePackage) -> dict:
         return {
-            "id": package.id,
-            "app_name": package.app_name,
-            "app_version": package.app_version,
-            "package_file": package.package_file,
-            "uploaded_by_user_id": package.uploaded_by_user_id,
-            "created_at": package.created_at.isoformat() if package.created_at else None,
+            "id":          p.id,
+            "filename":    p.filename,
+            "archived":    p.archived,
+            "file_exists": cls._file_exists(p.filename),
+            "created_at":  p.created_at.isoformat() if p.created_at else None,
         }
 
     @staticmethod
-    def _serialize_assignment(assignment: HardwareFirmwareAssignment) -> dict:
+    def _hw(h: Hardware) -> dict:
         return {
-            "id": assignment.id,
-            "hardware_id": assignment.hardware_id,
-            "firmware_name": assignment.firmware_name,
-            "firmware_package_id": assignment.firmware_package_id,
-            "created_at": assignment.created_at.isoformat() if assignment.created_at else None,
-            "firmware_package": AdminOtaService._serialize_package(assignment.firmware_package)
-            if assignment.firmware_package
-            else None,
+            "id":                  h.id,
+            "hardware_type":       h.hardware_type,
+            "firmware_package_id": h.firmware_package_id,
+            "firmware":            AdminOtaService._pkg(h.firmware) if h.firmware else None,
+            "created_at":          h.created_at.isoformat() if h.created_at else None,
         }
 
+    # ── queries ───────────────────────────────────────────────────────────────
+
     @staticmethod
-    def _serialize_hardware(hardware: Hardware) -> dict:
+    def _users_of_package(db: Session, package_id: int) -> dict:
+        """Return hardware types and device MACs that actively point to this package."""
+        hardware = db.query(Hardware).filter(Hardware.firmware_package_id == package_id).all()
+        devices  = db.query(ESP32Device).filter(ESP32Device.target_firmware_id == package_id).all()
         return {
-            "id": hardware.id,
-            "hardware_type": hardware.hardware_type,
-            "hardware_version": hardware.hardware_version,
-            "default_firmware_package_id": hardware.default_firmware_package_id,
-            "created_at": hardware.created_at.isoformat() if hardware.created_at else None,
-            "default_firmware": AdminOtaService._serialize_package(hardware.default_firmware) if hardware.default_firmware else None,
-            "firmware_assignments": [
-                AdminOtaService._serialize_assignment(assignment)
-                for assignment in sorted(hardware.firmware_assignments, key=lambda item: item.firmware_name)
-            ],
+            "hardware_types": [h.hardware_type for h in hardware],
+            "device_macs":    [d.mac_address    for d in devices],
         }
 
-    @staticmethod
-    def _serialize_legacy_entry(package: FirmwarePackage) -> dict:
-        return {
-            "package_id": package.id,
-            "firmware_name": package.app_name,
-            "app_name": package.app_name,
-            "app_version": package.app_version,
-            "package_file": package.package_file,
-        }
+    # ── public API ────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _get_or_create_hardware(db: Session, hardware_type: str, hardware_version: Optional[str]) -> Hardware:
-        normalized_type = AdminOtaService._normalize_scope_value(hardware_type)
-        normalized_version = AdminOtaService._normalize_scope_value(hardware_version)
-        if not normalized_type:
-            raise HTTPException(status_code=400, detail="hardware_type is required")
-
-        hardware = (
-            db.query(Hardware)
-            .filter(Hardware.hardware_type == normalized_type, Hardware.hardware_version == normalized_version)
-            .first()
-        )
-        if hardware:
-            return hardware
-
-        hardware = Hardware(
-            hardware_type=normalized_type,
-            hardware_version=normalized_version,
-            created_at=datetime.utcnow(),
-        )
-        db.add(hardware)
-        db.flush()
-        return hardware
-
-    @staticmethod
-    def get_versions(db: Session) -> dict:
-        hardware_rows = db.query(Hardware).order_by(Hardware.hardware_type.asc(), Hardware.hardware_version.asc()).all()
+    @classmethod
+    def get_data(cls, db: Session) -> dict:
+        packages  = db.query(FirmwarePackage).order_by(FirmwarePackage.created_at.desc()).all()
+        hardware  = db.query(Hardware).order_by(Hardware.hardware_type).all()
         overrides = (
             db.query(ESP32Device)
-            .join(FirmwarePackage, FirmwarePackage.id == ESP32Device.target_firmware_id)
             .filter(ESP32Device.target_firmware_id.isnot(None))
-            .order_by(ESP32Device.mac_address.asc())
-            .all()
-        )
-        packages = db.query(FirmwarePackage).order_by(FirmwarePackage.created_at.desc(), FirmwarePackage.id.desc()).all()
-        assignments = (
-            db.query(HardwareFirmwareAssignment)
-            .order_by(HardwareFirmwareAssignment.hardware_id.asc(), HardwareFirmwareAssignment.firmware_name.asc())
+            .order_by(ESP32Device.mac_address)
             .all()
         )
 
-        default_entries = {}
-        for hardware in hardware_rows:
-            if not hardware.default_firmware:
-                continue
-            key = hardware.hardware_type
-            if hardware.hardware_version:
-                key = f"{hardware.hardware_type}@{hardware.hardware_version}"
-            default_entries[key] = AdminOtaService._serialize_legacy_entry(hardware.default_firmware)
-
-        exception_entries = {
-            device.mac_address: AdminOtaService._serialize_legacy_entry(device.target_firmware)
-            for device in overrides
-            if device.target_firmware
-        }
+        pkg_users = {p.id: cls._users_of_package(db, p.id) for p in packages}
 
         return {
-            "default": default_entries,
-            "exceptions": exception_entries,
-            "packages": [AdminOtaService._serialize_package(package) for package in packages],
-            "hardware": [AdminOtaService._serialize_hardware(hardware) for hardware in hardware_rows],
-            "hardware_firmware_assignments": [
-                AdminOtaService._serialize_assignment(assignment) for assignment in assignments
-            ],
+            "packages": [{**cls._pkg(p), **pkg_users[p.id]} for p in packages],
+            "hardware": [cls._hw(h) for h in hardware],
             "device_overrides": [
                 {
-                    "device_id": device.id,
-                    "mac_address": device.mac_address,
-                    "hardware_id": device.hardware_id,
-                    "target_package": AdminOtaService._serialize_package(device.target_firmware),
+                    "device_id":      d.id,
+                    "mac_address":    d.mac_address,
+                    "hardware_type":  d.hardware.hardware_type if d.hardware else None,
+                    "target_package": cls._pkg(d.target_firmware),
                 }
-                for device in overrides
-                if device.target_firmware
+                for d in overrides if d.target_firmware
             ],
         }
 
-    @staticmethod
-    def list_packages(db: Session) -> dict:
-        packages = db.query(FirmwarePackage).order_by(FirmwarePackage.created_at.desc(), FirmwarePackage.id.desc()).all()
-        return {"packages": [AdminOtaService._serialize_package(package) for package in packages]}
+    @classmethod
+    def upload_firmware(cls, db: Session, file: UploadFile) -> dict:
+        filename = file.filename or ""
+        lowered  = filename.lower()
+        if not any(lowered.endswith(s) for s in cls.ALLOWED_SUFFIXES):
+            raise HTTPException(status_code=400, detail="Unsupported file type")
 
-    @staticmethod
-    def list_hardware(db: Session) -> dict:
-        hardware_rows = db.query(Hardware).order_by(Hardware.hardware_type.asc(), Hardware.hardware_version.asc()).all()
-        return {"hardware": [AdminOtaService._serialize_hardware(hardware) for hardware in hardware_rows]}
-
-    @staticmethod
-    def _ensure_allowed_filename(filename: str):
-        lowered = filename.lower()
-        if not any(lowered.endswith(suffix) for suffix in AdminOtaService.ALLOWED_SUFFIXES):
-            raise HTTPException(status_code=400, detail="Unsupported firmware package type")
-
-    @staticmethod
-    def _save_upload(file: UploadFile) -> str:
-        AdminOtaService._ensure_allowed_filename(file.filename)
-        os.makedirs(AdminOtaService.PACKAGES_DIR, exist_ok=True)
-        dest_path = os.path.join(AdminOtaService.PACKAGES_DIR, file.filename)
-        with open(dest_path, "wb") as out:
+        dest = cls._file_path(filename)
+        with open(dest, "wb") as out:
             shutil.copyfileobj(file.file, out)
-        return dest_path
 
-    @staticmethod
-    def upload_firmware(
-        db: Session,
-        file: UploadFile,
-        app_version: str,
-        app_name: Optional[str] = None,
-        uploaded_by_user_id: Optional[int] = None,
-    ) -> dict:
-        normalized_app_name = AdminOtaService._normalize_scope_value(app_name)
-        if not normalized_app_name:
-            raise HTTPException(status_code=400, detail="app_name is required")
-        if not app_version or not app_version.strip():
-            raise HTTPException(status_code=400, detail="app_version is required")
-
-        AdminOtaService._save_upload(file)
-
-        existing = db.query(FirmwarePackage).filter(FirmwarePackage.package_file == file.filename).first()
+        existing = db.query(FirmwarePackage).filter(FirmwarePackage.filename == filename).first()
         if existing:
-            existing.app_name = normalized_app_name
-            existing.app_version = app_version.strip()
-            existing.uploaded_by_user_id = uploaded_by_user_id
-            package = existing
+            existing.archived   = False
+            existing.created_at = datetime.utcnow()
+            pkg = existing
         else:
-            package = FirmwarePackage(
-                app_name=normalized_app_name,
-                app_version=app_version.strip(),
-                package_file=file.filename,
-                uploaded_by_user_id=uploaded_by_user_id,
-                created_at=datetime.utcnow(),
-            )
-            db.add(package)
-            db.flush()
+            pkg = FirmwarePackage(filename=filename, archived=False, created_at=datetime.utcnow())
+            db.add(pkg)
 
         db.commit()
-        db.refresh(package)
+        db.refresh(pkg)
+        return {"message": "Firmware uploaded", "package": cls._pkg(pkg)}
 
-        return {
-            "message": "Firmware uploaded successfully",
-            "package": AdminOtaService._serialize_package(package),
-        }
+    @classmethod
+    def set_archived(cls, db: Session, package_id: int, archived: bool) -> dict:
+        pkg = db.query(FirmwarePackage).filter(FirmwarePackage.id == package_id).first()
+        if not pkg:
+            raise HTTPException(status_code=404, detail="Package not found")
+
+        if archived:
+            users = cls._users_of_package(db, package_id)
+            if users["hardware_types"] or users["device_macs"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Still used by hardware: {users['hardware_types']} / devices: {users['device_macs']}"
+                )
+
+        pkg.archived = archived
+        db.commit()
+        db.refresh(pkg)
+        return {"message": "Package updated", "package": cls._pkg(pkg)}
+
+    @classmethod
+    def delete_package(cls, db: Session, package_id: int, delete_file: bool = False) -> dict:
+        pkg = db.query(FirmwarePackage).filter(FirmwarePackage.id == package_id).first()
+        if not pkg:
+            raise HTTPException(status_code=404, detail="Package not found")
+
+        users = cls._users_of_package(db, package_id)
+        if users["hardware_types"] or users["device_macs"]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Still used by hardware: {users['hardware_types']} / devices: {users['device_macs']}"
+            )
+
+        filename = pkg.filename
+        db.delete(pkg)
+        db.commit()
+
+        if delete_file:
+            cls._delete_file(filename)
+
+        return {"message": "Package deleted", "filename": filename}
 
     @staticmethod
-    def upsert_hardware(
-        db: Session,
-        hardware_type: str,
-        hardware_version: Optional[str] = None,
-        default_firmware_package_id: Optional[int] = None,
-    ) -> dict:
-        hardware = AdminOtaService._get_or_create_hardware(db, hardware_type, hardware_version)
+    def upsert_hardware(db: Session, hardware_type: str, firmware_package_id: Optional[int]) -> dict:
+        hardware_type = hardware_type.strip()
+        if not hardware_type:
+            raise HTTPException(status_code=400, detail="hardware_type is required")
 
-        package = None
-        if default_firmware_package_id is not None:
-            package = db.query(FirmwarePackage).filter(FirmwarePackage.id == default_firmware_package_id).first()
-            if not package:
+        if firmware_package_id is not None:
+            pkg = db.query(FirmwarePackage).filter(FirmwarePackage.id == firmware_package_id).first()
+            if not pkg:
                 raise HTTPException(status_code=404, detail="Firmware package not found")
 
-        hardware.default_firmware_package_id = package.id if package else None
-
-        db.commit()
-        db.refresh(hardware)
-        return {
-            "message": "Hardware configuration saved",
-            "hardware": AdminOtaService._serialize_hardware(hardware),
-        }
-
-    @staticmethod
-    def upsert_hardware_firmware(
-        db: Session,
-        hardware_type: str,
-        firmware_name: str,
-        firmware_package_id: int,
-        hardware_version: Optional[str] = None,
-    ) -> dict:
-        normalized_firmware_name = AdminOtaService._normalize_scope_value(firmware_name)
-        if not normalized_firmware_name:
-            raise HTTPException(status_code=400, detail="firmware_name is required")
-
-        hardware = AdminOtaService._get_or_create_hardware(db, hardware_type, hardware_version)
-        package = db.query(FirmwarePackage).filter(FirmwarePackage.id == firmware_package_id).first()
-        if not package:
-            raise HTTPException(status_code=404, detail="Firmware package not found")
-        if package.app_name != normalized_firmware_name:
-            raise HTTPException(status_code=400, detail="firmware_name must match the selected firmware package app_name")
-
-        assignment = (
-            db.query(HardwareFirmwareAssignment)
-            .filter(
-                HardwareFirmwareAssignment.hardware_id == hardware.id,
-                HardwareFirmwareAssignment.firmware_name == normalized_firmware_name,
-            )
-            .first()
-        )
-        if assignment:
-            assignment.firmware_package_id = package.id
+        hw = db.query(Hardware).filter(Hardware.hardware_type == hardware_type).first()
+        if hw:
+            hw.firmware_package_id = firmware_package_id
         else:
-            assignment = HardwareFirmwareAssignment(
-                hardware_id=hardware.id,
-                firmware_name=normalized_firmware_name,
-                firmware_package_id=package.id,
+            hw = Hardware(
+                hardware_type=hardware_type,
+                firmware_package_id=firmware_package_id,
                 created_at=datetime.utcnow(),
             )
-            db.add(assignment)
-            db.flush()
+            db.add(hw)
 
         db.commit()
-        db.refresh(assignment)
-        return {
-            "message": "Hardware firmware assignment saved",
-            "assignment": AdminOtaService._serialize_assignment(assignment),
-        }
+        db.refresh(hw)
+        return {"message": "Hardware saved", "hardware": AdminOtaService._hw(hw)}
+
+    @staticmethod
+    def delete_hardware(db: Session, hardware_id: int) -> dict:
+        hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
+        if not hw:
+            raise HTTPException(status_code=404, detail="Hardware not found")
+        db.delete(hw)
+        db.commit()
+        return {"message": "Hardware deleted"}
 
     @staticmethod
     def assign_device_firmware(db: Session, mac_address: str, firmware_package_id: Optional[int]) -> dict:
-        normalized_mac = UpdateService.normalize_mac(mac_address)
-        device = db.query(ESP32Device).filter(ESP32Device.mac_address == normalized_mac).first()
+        from app.services.updateService import UpdateService
+        mac = UpdateService.normalize_mac(mac_address)
+        device = db.query(ESP32Device).filter(ESP32Device.mac_address == mac).first()
         if not device:
             raise HTTPException(status_code=404, detail="Device not found")
 
-        if firmware_package_id is None:
-            device.target_firmware_id = None
-            db.commit()
-            return {"message": "Device override cleared", "mac_address": normalized_mac}
+        if firmware_package_id is not None:
+            pkg = db.query(FirmwarePackage).filter(FirmwarePackage.id == firmware_package_id).first()
+            if not pkg:
+                raise HTTPException(status_code=404, detail="Package not found")
 
-        package = db.query(FirmwarePackage).filter(FirmwarePackage.id == firmware_package_id).first()
-        if not package:
-            raise HTTPException(status_code=404, detail="Firmware package not found")
-
-        device.target_firmware_id = package.id
+        device.target_firmware_id = firmware_package_id
         db.commit()
-        db.refresh(device)
-        return {
-            "message": "Device firmware override saved",
-            "device": {
-                "id": device.id,
-                "mac_address": device.mac_address,
-                "target_package": AdminOtaService._serialize_package(package),
-            },
+        return {"message": "Device override updated"}
+
+    @classmethod
+    def list_firmware_files(cls, db: Session) -> dict:
+        packages_dir = cls._packages_dir()
+        disk_files = {
+            f: os.path.getsize(os.path.join(packages_dir, f))
+            for f in sorted(os.listdir(packages_dir))
+            if os.path.isfile(os.path.join(packages_dir, f))
         }
+        db_pkgs = {p.filename: p for p in db.query(FirmwarePackage).all()}
 
-    @staticmethod
-    def delete_version(
-        db: Session,
-        hardware: Optional[str],
-        mac_exception: Optional[str],
-        delete_file: bool,
-        package_id: Optional[int] = None,
-        hardware_version: Optional[str] = None,
-        firmware_name: Optional[str] = None,
-    ) -> dict:
-        normalized_hardware = AdminOtaService._normalize_scope_value(hardware)
-        normalized_hardware_version = AdminOtaService._normalize_scope_value(hardware_version)
-        normalized_firmware_name = AdminOtaService._normalize_scope_value(firmware_name)
-        normalized_mac = UpdateService.normalize_mac(mac_exception) if mac_exception else ""
-
-        if package_id is not None:
-            package = db.query(FirmwarePackage).filter(FirmwarePackage.id == package_id).first()
-            if not package:
-                raise HTTPException(status_code=404, detail="Firmware package not found")
-
-            hardware_ref = db.query(Hardware.id).filter(Hardware.default_firmware_package_id == package.id).first()
-            assignment_ref = (
-                db.query(HardwareFirmwareAssignment.id)
-                .filter(HardwareFirmwareAssignment.firmware_package_id == package.id)
-                .first()
-            )
-            device_ref = db.query(ESP32Device.id).filter(ESP32Device.target_firmware_id == package.id).first()
-            if hardware_ref or assignment_ref or device_ref:
-                raise HTTPException(status_code=409, detail="Firmware package is still assigned")
-
-            db.delete(package)
-            db.commit()
-
-            if delete_file:
-                pkg_path = os.path.join(AdminOtaService.PACKAGES_DIR, package.package_file)
-                if os.path.exists(pkg_path):
-                    os.remove(pkg_path)
-
-            return {"message": "Firmware package deleted", "package_file": package.package_file}
-
-        if normalized_mac:
-            device = db.query(ESP32Device).filter(ESP32Device.mac_address == normalized_mac).first()
-            if not device or not device.target_firmware_id:
-                raise HTTPException(status_code=404, detail="Device override not found")
-            deleted_package = device.target_firmware
-            device.target_firmware_id = None
-            db.commit()
-            return {
-                "message": "Device override deleted",
-                "entry": AdminOtaService._serialize_package(deleted_package) if deleted_package else None,
-            }
-
-        if normalized_hardware and normalized_firmware_name:
-            hardware_row = (
-                db.query(Hardware)
-                .filter(Hardware.hardware_type == normalized_hardware, Hardware.hardware_version == normalized_hardware_version)
-                .first()
-            )
-            if not hardware_row:
-                raise HTTPException(status_code=404, detail="Hardware configuration not found")
-
-            assignment = (
-                db.query(HardwareFirmwareAssignment)
-                .filter(
-                    HardwareFirmwareAssignment.hardware_id == hardware_row.id,
-                    HardwareFirmwareAssignment.firmware_name == normalized_firmware_name,
-                )
-                .first()
-            )
-            if not assignment:
-                raise HTTPException(status_code=404, detail="Hardware firmware assignment not found")
-
-            deleted_package = assignment.firmware_package
-            db.delete(assignment)
-            db.commit()
-            return {
-                "message": "Hardware firmware assignment deleted",
-                "entry": AdminOtaService._serialize_package(deleted_package) if deleted_package else None,
-            }
-
-        if normalized_hardware:
-            hardware_row = (
-                db.query(Hardware)
-                .filter(Hardware.hardware_type == normalized_hardware, Hardware.hardware_version == normalized_hardware_version)
-                .first()
-            )
-            if not hardware_row:
-                raise HTTPException(status_code=404, detail="Hardware configuration not found")
-            deleted_package = hardware_row.default_firmware
-            hardware_row.default_firmware_package_id = None
-            db.commit()
-            return {
-                "message": "Hardware default firmware cleared",
-                "entry": AdminOtaService._serialize_package(deleted_package) if deleted_package else None,
-            }
-
-        raise HTTPException(status_code=400, detail="Provide hardware, firmware_name, mac_exception, or package_id")
-
-    @staticmethod
-    def list_firmware_files(db: Session) -> dict:
-        os.makedirs(AdminOtaService.PACKAGES_DIR, exist_ok=True)
-        db_files = {
-            package.package_file: package
-            for package in db.query(FirmwarePackage).order_by(FirmwarePackage.created_at.desc(), FirmwarePackage.id.desc()).all()
-        }
         files = []
-        for filename in sorted(os.listdir(AdminOtaService.PACKAGES_DIR)):
-            path = os.path.join(AdminOtaService.PACKAGES_DIR, filename)
-            if not os.path.isfile(path):
-                continue
-            package = db_files.get(filename)
-            files.append(
-                {
-                    "filename": filename,
-                    "size_kb": round(os.path.getsize(path) / 1024, 1),
-                    "package_id": package.id if package else None,
-                    "app_name": package.app_name if package else None,
-                    "app_version": package.app_version if package else None,
-                }
-            )
+        for filename, size in disk_files.items():
+            pkg = db_pkgs.get(filename)
+            files.append({
+                "filename":   filename,
+                "size_kb":    round(size / 1024, 1),
+                "on_disk":    True,
+                "in_db":      pkg is not None,
+                "package_id": pkg.id if pkg else None,
+                "archived":   pkg.archived if pkg else False,
+            })
+
+        for filename, pkg in db_pkgs.items():
+            if filename not in disk_files:
+                files.append({
+                    "filename":   filename,
+                    "size_kb":    None,
+                    "on_disk":    False,
+                    "in_db":      True,
+                    "package_id": pkg.id,
+                    "archived":   pkg.archived,
+                })
+
         return {"files": files}

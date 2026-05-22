@@ -26,6 +26,8 @@ services:
       - PYTHONPATH=/app
     ports:
       - "8000:8000"
+    volumes:
+      - ./firmware_packages:/data/firmware
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 
   scheduler:
@@ -37,6 +39,8 @@ services:
     environment:
       - DB_HOST=db
       - PYTHONPATH=/app
+    volumes:
+      - ./firmware_packages:/data/firmware
     command: python -m app.routines.scheduler
 
   frontend:
