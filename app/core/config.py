@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, computed_field
 from typing import List
 from pathlib import Path
 
@@ -19,8 +19,20 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     ENV: str = "local"
 
-    # Database
-    DATABASE_URL: str
+    # Database — credentials are the single source of truth.
+    # DATABASE_URL is derived so it never needs to be set manually.
+    POSTGRES_USER: str = "mylocaldb"
+    POSTGRES_PASSWORD: str = "mylocaldb"
+    POSTGRES_DB: str = "mylocaldb"
+    DB_HOST: str = "localhost"   # override to "db" inside Docker
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def DATABASE_URL(self) -> str:
+        return (
+            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.DB_HOST}:5432/{self.POSTGRES_DB}"
+        )
 
     # Security / JWT
     JWT_SECRET_KEY: str = Field(..., min_length=32)
@@ -45,21 +57,20 @@ class Settings(BaseSettings):
     # Stripe
     STRIPE_SECRET_KEY: str = Field(...)
     STRIPE_WEBHOOK_SECRET: str = Field(...)
-    # Shipping rate IDs from the Stripe dashboard (leave blank to omit)
-    STRIPE_SHIPPING_RATE_BE: str = ""
-    STRIPE_SHIPPING_RATE_EU: str = ""
-    STRIPE_SHIPPING_RATE_WORLD: str = ""
-    # ISO-3166-1 alpha-2 country codes, comma-separated: BE,FR,LU
-    STRIPE_ALLOWED_COUNTRIES: str = "BE"
 
     # URLs
     # Set to http://localhost:4200 locally, https://transport.trillet.be in production
     FRONTEND_URL: str = Field(...)
-    
+    API_BASE_URL: str = "http://localhost:8000"
+
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
-    GOOGLE_REDIRECT_URI: str = ""
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def GOOGLE_REDIRECT_URI(self) -> str:
+        return f"{self.API_BASE_URL}/api/auth/google/callback"
 
     # CORS
     CORS_ORIGINS: List[str] = [

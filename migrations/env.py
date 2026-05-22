@@ -16,6 +16,7 @@ sys.path.append(REPO_ROOT)
 
 from app.orm_models.db import Base, engine  # noqa: E402
 from app.orm_models import models  # noqa: F401,E402
+from app.core.config import settings  # noqa: E402
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -27,8 +28,7 @@ fileConfig(config.config_file_name)
 target_metadata = Base.metadata
 
 def _get_database_url() -> str:
-    env_url = os.getenv("DATABASE_URL")
-    return env_url or config.get_main_option("sqlalchemy.url")
+    return settings.DATABASE_URL
 
 
 def run_migrations_offline():

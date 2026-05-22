@@ -13,6 +13,7 @@ Create Date: 2026-05-16
 from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 from sqlalchemy.sql import table, column, select
 
 revision: str = '20260516_03'
@@ -62,6 +63,26 @@ def upgrade() -> None:
             "INSERT INTO board_type_price (price_version_id, board_type_id, base_price_cents, reduced_price_cents) "
             "VALUES (:vid, :btid, :base, :reduced)"
         ), {"vid": version_id, "btid": bt_id, "base": base, "reduced": reduced})
+
+    # ── Create orders table if it was never migrated (prod bootstrap) ────────
+    # On dev the table was created via create_all(); prod never had it.
+    # Subsequent migrations (04-07, 20260519_02) will add/rename/drop columns.
+    if 'orders' not in inspect(conn).get_table_names():
+        op.create_table(
+            'orders',
+            sa.Column('id',                sa.Integer(),   primary_key=True),
+            sa.Column('stripe_session_id', sa.String(255), nullable=True),
+            sa.Column('status',            sa.String(50),  nullable=False, server_default='pending'),
+            sa.Column('board_id',          sa.Integer(),   sa.ForeignKey('board.id'),         nullable=True),
+            sa.Column('user_id',           sa.Integer(),   sa.ForeignKey('user.id'),           nullable=False),
+            sa.Column('order_details_id',  sa.Integer(),   sa.ForeignKey('order_details.id'), nullable=True),
+            sa.Column('led_colors',        sa.String(255), nullable=True),
+            sa.Column('svg_path',          sa.String(255), nullable=True),
+            sa.Column('amount_cents',      sa.Integer(),   nullable=False, server_default='0'),
+            sa.Column('currency',          sa.String(10),  nullable=True,  server_default='eur'),
+            sa.Column('created_at',        sa.DateTime(),  nullable=False, server_default=sa.func.now()),
+            sa.Column('paid_at',           sa.DateTime(),  nullable=True),
+        )
 
     # ── orders: record which price version was active at order time ──────────
     op.add_column(

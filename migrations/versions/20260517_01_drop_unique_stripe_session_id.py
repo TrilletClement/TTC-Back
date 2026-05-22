@@ -18,7 +18,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
-    op.drop_constraint('orders_stripe_session_id_key', 'orders', type_='unique')
+    op.execute('ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_stripe_session_id_key')
 
 def downgrade() -> None:
     op.create_unique_constraint('orders_stripe_session_id_key', 'orders', ['stripe_session_id'])
