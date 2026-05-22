@@ -286,5 +286,6 @@ class BoardService:
             "customName": led_obj.custom_name,
             "type": led_obj.type,
             "ledColor": led_obj.led_color,
+            "preStopMinutes": led_obj.pre_travel_minutes,
             "tripStops": trip_stops_data,
         }
