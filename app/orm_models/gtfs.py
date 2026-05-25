@@ -12,6 +12,8 @@ from sqlalchemy.orm import backref, relationship
 
 from app.orm_models.db import Base
 from app.orm_models.board import trip_stop_led_link
+# GTFSTrip was removed — raw_gtfs_trip (in raw_gtfs.py) stores the same mapping
+# with richer fields and serves both STIB and TEC.
 
 
 class Agency(Base):
@@ -21,21 +23,9 @@ class Agency(Base):
     country = Column(String(100), nullable=False)
 
 
-class SubAgency(Base):
-    __tablename__ = "subagency"
-    id = Column(String(10), nullable=False)
-    name = Column(String(100), unique=True, nullable=False)
-    agency_name = Column(String(100), ForeignKey("agency.name"), nullable=False)
-    agency = relationship("Agency", backref="subagencies")
-
-    __table_args__ = (
-        PrimaryKeyConstraint("id", "agency_name", name="pk_subagency_id_agency"),
-    )
-
-
 class Stop(Base):
     __tablename__ = "stop"
-    stop_id = Column(String(10), nullable=False)
+    stop_id = Column(String(100), nullable=False)
     name = Column(String(100), nullable=False)
     agency_name = Column(String(100), ForeignKey("agency.name"), nullable=False)
     agency = relationship("Agency", backref="stops")
@@ -59,7 +49,6 @@ class Line(Base):
     text_color = Column(String(7))
 
     agency_name = Column(String(100), ForeignKey("agency.name"), nullable=False)
-    subagency_id = Column(String(10), nullable=True)
     agency = relationship("Agency", backref="lines")
 
     best_trip_b = relationship(
@@ -72,20 +61,8 @@ class Line(Base):
         foreign_keys=[best_trip_1_id],
         backref=backref("line_best_trip_1", uselist=False),
     )
-    subagency = relationship(
-        "SubAgency",
-        backref=backref("lines", overlaps="agency,lines"),
-        foreign_keys=[subagency_id, agency_name],
-        overlaps="agency,lines",
-    )
-
     __table_args__ = (
         UniqueConstraint("short_name", "long_name", "agency_name", name="uq_short_long_agency"),
-        ForeignKeyConstraint(
-            ["subagency_id", "agency_name"],
-            ["subagency.id", "subagency.agency_name"],
-            name="fk_line_subagency",
-        ),
     )
 
 
@@ -169,13 +146,3 @@ class TripStop(Base):
     )
 
 
-class GTFSTrip(Base):
-    __tablename__ = "gtfs_trip"
-
-    id = Column(String(100), nullable=False)
-    trip_id = Column(Integer, ForeignKey("trip.id"), nullable=False)
-
-    __table_args__ = (
-        PrimaryKeyConstraint("id", "trip_id", name="pk_gtfs_trip_composite"),
-    )
-    pattern = relationship("Trip", backref="gtfs_mappings")

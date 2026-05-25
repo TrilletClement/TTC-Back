@@ -4,7 +4,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.routines import stib_import, tec_import
+from app.routines import stib_import, tec_import, tec_trip_updates
 
 # Configuration logging
 logging.basicConfig(
@@ -40,26 +40,16 @@ def start():
         max_instances=1
     )
     
-    # ===== STIB - Tâches fréquentes (temps réel) =====
+    # New interval-based realtime: upsert GTFS-RT TripUpdates overrides only.
+    # LED state is derived at query time from active_incoming_intervals view.
     scheduler.add_job(
-        stib_import.get_all_incoming_buses_export,
-        IntervalTrigger(seconds=20),
-        id='fetch_stib_vehicles',
-        name='Fetch STIB vehicles (every 20s)',
+        tec_trip_updates.fetch_tec_trip_updates,
+        IntervalTrigger(seconds=30),
+        id='fetch_tec_trip_updates',
+        name='Fetch TEC TripUpdates overrides (every 30s)',
         replace_existing=True,
         max_instances=1,
-        coalesce=True  # Évite l'accumulation si une tâche prend du retard
-    )
-    
-    # ===== TEC - Tâches fréquentes (temps réel) =====
-    scheduler.add_job(
-        tec_import.get_all_incoming_buses_tec,
-        IntervalTrigger(seconds=20),
-        id='fetch_tec_vehicles',
-        name='Fetch TEC vehicles (every 20s)',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True
+        coalesce=True,
     )
     
     # Démarrage du scheduler

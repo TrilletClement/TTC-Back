@@ -1,6 +1,12 @@
+import logging
+import time
+
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
+import sqlalchemy as sa
 
 from app.orm_models.auth import User
 from app.orm_models.board import Board, BoardType, Led, LedStrip
@@ -196,8 +202,90 @@ class BoardService:
             "ledStrips": led_strips_data,
         }
 
+    # ── Interval-based realtime helpers ─────────────────────────────────────
+
+    @staticmethod
+    def _collect_trip_stop_ids(board) -> list[int]:
+        """Gather every TripStop id linked to any LED on this board."""
+        ids = []
+        for strip in board.led_strips:
+            for led in strip.leds:
+                for ts in led.trip_stops:
+                    ids.append(ts.id)
+        return ids
+
+    @staticmethod
+    def _get_interval_active_trip_stop_ids(
+        db: Session, trip_stop_ids: list[int]
+    ) -> set[int]:
+        """
+        Return the subset of trip_stop_ids currently active.
+
+        The materialized view stores all today's intervals with their
+        led_on_from / led_on_until timestamps. We apply NOW() here so
+        the view never needs a time-driven refresh — only data-driven
+        (after static GTFS import or TripUpdates upsert).
+        """
+        if not trip_stop_ids:
+            return set()
+
+        try:
+            rows = db.execute(sa.text("""
+                SELECT canonical_trip_stop_id, led_on_from, led_on_until
+                FROM active_incoming_intervals
+                WHERE canonical_trip_stop_id = ANY(:ts_ids)
+                  AND EXTRACT(EPOCH FROM NOW())::bigint BETWEEN led_on_from AND led_on_until
+            """), {"ts_ids": trip_stop_ids}).all()
+
+            active = {row.canonical_trip_stop_id for row in rows}
+
+            if rows:
+                for row in rows:
+                    logger.info(
+                        "interval active ts_id=%s led_on_from=%s led_on_until=%s now=%s",
+                        row.canonical_trip_stop_id,
+                        row.led_on_from,
+                        row.led_on_until,
+                        int(__import__("time").time()),
+                    )
+            else:
+                # Log ranges for requested ids to help diagnose misses
+                debug_rows = db.execute(sa.text("""
+                    SELECT canonical_trip_stop_id, led_on_from, led_on_until
+                    FROM active_incoming_intervals
+                    WHERE canonical_trip_stop_id = ANY(:ts_ids)
+                    LIMIT 20
+                """), {"ts_ids": trip_stop_ids}).all()
+                now = int(__import__("time").time())
+                for row in debug_rows:
+                    logger.info(
+                        "interval miss ts_id=%s led_on_from=%s led_on_until=%s now=%s",
+                        row.canonical_trip_stop_id,
+                        row.led_on_from,
+                        row.led_on_until,
+                        now,
+                    )
+
+            return active
+
+        except Exception as e:
+            logger.warning("interval query failed: %s", e)
+            return set()
+
+    # ── LED strip / LED builders ─────────────────────────────────────────────
+
     @staticmethod
     def _build_led_strips_data(board, db: Session):
+        t0 = time.perf_counter()
+
+        trip_stop_ids = BoardService._collect_trip_stop_ids(board)
+        t1 = time.perf_counter()
+
+        interval_active_ids = BoardService._get_interval_active_trip_stop_ids(
+            db, trip_stop_ids
+        )
+        t2 = time.perf_counter()
+
         led_strips_data = []
         for strip in board.led_strips:
             line_obj = strip.line or (
@@ -242,14 +330,29 @@ class BoardService:
                 strip_data["textColor"] = line_obj.text_color
 
             leds_sorted = sorted(strip.leds, key=lambda led: (led.ledstrip_index or 0, led.id or 0))
-            strip_data["leds"] = [BoardService._build_led_data(led_obj) for led_obj in leds_sorted]
+            strip_data["leds"] = [
+                BoardService._build_led_data(led_obj, interval_active_ids)
+                for led_obj in leds_sorted
+            ]
 
             # Backward compatibility with old payload shape: led1..ledN
             for led_obj in leds_sorted:
                 if led_obj.ledstrip_index and led_obj.ledstrip_index > 0:
-                    strip_data[f"led{led_obj.ledstrip_index}"] = BoardService._build_led_data(led_obj)
+                    strip_data[f"led{led_obj.ledstrip_index}"] = BoardService._build_led_data(
+                        led_obj, interval_active_ids
+                    )
 
             led_strips_data.append(strip_data)
+
+        t3 = time.perf_counter()
+        logger.info(
+            "board=%s collect=%.1fms interval_query=%.1fms build=%.1fms total=%.1fms",
+            board.id,
+            (t1 - t0) * 1000,
+            (t2 - t1) * 1000,
+            (t3 - t2) * 1000,
+            (t3 - t0) * 1000,
+        )
         return led_strips_data
 
     @staticmethod
@@ -267,25 +370,48 @@ class BoardService:
         return None
 
     @staticmethod
-    def _build_led_data(led_obj: Led):
-        trip_stops_data = [
-            {
-                "tripStopId": ts.id,
-                "ledId": led_obj.id,
-                "vehicleIncoming": ts.vehicle_incoming,
-                "stopStopId": ts.stop_stop_id,
-                "stopAgencyName": ts.stop_agency_name,
-                "stopName": ts.stop.name if ts.stop else None,
-            }
-            for ts in led_obj.trip_stops
-        ]
+    def _build_led_data(led_obj: Led, interval_active_ids: set[int] | None = None):
+        """
+        Build the LED payload.
+
+        is_on logic (dual-source):
+          • legacy:   any linked TripStop has vehicle_incoming = True
+                      (STIB vehicle-positions poller, or legacy TEC poller)
+          • interval: any linked TripStop id is in interval_active_ids
+                      (new GTFS interval system, populated from TripUpdates)
+
+        A LED is ON if EITHER source reports activity.  This allows STIB and
+        TEC to coexist without either blocking the other.
+        """
+        _interval = interval_active_ids or set()
+
+        trip_stops_data = []
+        for ts in led_obj.trip_stops:
+            legacy_incoming   = bool(ts.vehicle_incoming)
+            interval_incoming = ts.id in _interval
+            trip_stops_data.append({
+                "tripStopId":        ts.id,
+                "ledId":             led_obj.id,
+                # Legacy boolean kept for backward compat with frontend
+                "vehicleIncoming":   legacy_incoming,
+                # New interval-based flag
+                "intervalActive":    interval_incoming,
+                # Combined: ON if either source says so
+                "isOn":              legacy_incoming or interval_incoming,
+                "stopStopId":        ts.stop_stop_id,
+                "stopAgencyName":    ts.stop_agency_name,
+                "stopName":          ts.stop.name if ts.stop else None,
+            })
+
+        led_is_on = any(ts["isOn"] for ts in trip_stops_data)
 
         return {
-            "ledId": led_obj.id,
-            "ledstripIndex": led_obj.ledstrip_index,
-            "customName": led_obj.custom_name,
-            "type": led_obj.type,
-            "ledColor": led_obj.led_color,
+            "ledId":          led_obj.id,
+            "ledstripIndex":  led_obj.ledstrip_index,
+            "customName":     led_obj.custom_name,
+            "type":           led_obj.type,
+            "ledColor":       led_obj.led_color,
             "preStopMinutes": led_obj.pre_travel_minutes,
-            "tripStops": trip_stops_data,
+            "isOn":           led_is_on,
+            "tripStops":      trip_stops_data,
         }

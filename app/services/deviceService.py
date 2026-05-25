@@ -1,10 +1,10 @@
 import re
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session, subqueryload
+from sqlalchemy.orm import Session
 
 from app.orm_models.auth import User
-from app.orm_models.board import Board, Led, LedStrip
+from app.orm_models.board import Board
 from app.orm_models.device import ESP32Device
 
 
@@ -98,6 +98,9 @@ class DeviceService:
 
     @staticmethod
     def get_ledstrip_status(mac: str, db: Session):
+        # Import here to avoid circular dependency
+        from app.services.boardService import BoardService
+
         if not mac:
             raise HTTPException(status_code=400, detail="MAC address is required.")
 
@@ -109,36 +112,23 @@ class DeviceService:
         if not esp or not esp.board:
             raise HTTPException(status_code=401, detail="Invalid or unlinked ESP32 device.")
 
-        board = (
-            db.query(Board)
-            .options(
-                subqueryload(Board.led_strips)
-                .subqueryload(LedStrip.leds)
-                .subqueryload(Led.trip_stops)
-            )
-            .filter(Board.id == esp.board_id)
-            .first()
-        )
-
+        board = db.query(Board).filter(Board.id == esp.board_id).first()
         if not board:
             raise HTTPException(status_code=404, detail="Linked board not found")
 
-        strips_sorted = sorted(board.led_strips, key=lambda s: ((s.order_index or 0), s.id or 0))
+        # Reuse the canonical LED-state logic — single source of truth for isOn.
+        strips_data = BoardService._build_led_strips_data(board, db)
+
         response_data = []
-
-        for idx, strip in enumerate(strips_sorted, start=1):
-            leds_sorted = sorted(strip.leds, key=lambda led: (led.ledstrip_index or 0, led.id or 0))
-            rgb_array = []
-            for led in leds_sorted:
-                vehicle_incoming = any(ts.vehicle_incoming for ts in led.trip_stops)
-                rgb_array.append(DeviceService._parse_color_to_rgb(led.led_color) if vehicle_incoming else [0, 0, 0])
-
-            response_data.append(
-                {
-                    "id": strip.id,
-                    "h": strip.order_index if strip.order_index is not None else idx,
-                    "v": rgb_array,
-                }
-            )
+        for idx, strip in enumerate(strips_data, start=1):
+            rgb_array = [
+                DeviceService._parse_color_to_rgb(led.get("ledColor")) if led.get("isOn") else [0, 0, 0]
+                for led in strip.get("leds", [])
+            ]
+            response_data.append({
+                "id": strip["id"],
+                "h":  strip.get("orderIndex") if strip.get("orderIndex") is not None else idx,
+                "v":  rgb_array,
+            })
 
         return {"strips": response_data}
