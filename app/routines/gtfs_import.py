@@ -285,12 +285,9 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
     session = next(get_db())
     try:
         used_stop_ids: set[str] = {
-            row[0] for row in session.execute(sa.text("""
-                SELECT DISTINCT ts.stop_stop_id 
-                FROM trip_stop ts
-                JOIN trip_stop_led_link lnk ON lnk.trip_stop_id = ts.id
-                WHERE ts.stop_agency_name = :a
-            """), {"a": agency_name})
+            row[0] for row in session.execute(sa.text(
+                "SELECT DISTINCT stop_stop_id FROM trip_stop WHERE stop_agency_name = :a"
+            ), {"a": agency_name})
         }
     finally:
         session.close()
@@ -480,16 +477,6 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
             session.bulk_insert_mappings(RawGtfsStopTime, batch)
             inserted += len(batch)
         print(f"  raw_gtfs_stop_time inserted ({inserted} rows, {mapped} mapped) in {time.time()-t0:.2f}s")
-        
-        # Cleanup: keep only stop_times linked to LEDs on boards
-        t0 = time.time()
-        session.execute(sa.text("""
-            DELETE FROM raw_gtfs_stop_time
-            WHERE canonical_trip_stop_id NOT IN (
-                SELECT DISTINCT trip_stop_id FROM trip_stop_led_link
-            )
-        """))
-        print(f"  unlinked stop_times cleaned in {time.time()-t0:.2f}s")
 
         t0 = time.time()
         session.commit()
