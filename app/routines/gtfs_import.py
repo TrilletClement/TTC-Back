@@ -1,0 +1,629 @@
+#!/usr/bin/env python3
+"""
+Generic GTFS static importer + GtfsOperator base class.
+
+Static import
+─────────────
+Call import_gtfs_static(agency_name, zip_bytes) for any GTFS-compliant operator.
+Optional columns (route_color, etc.) are detected from CSV headers automatically.
+stop_times.txt is always streamed in two passes — never fully loaded into RAM.
+
+Operator class hierarchy
+────────────────────────
+Subclass GtfsOperator to add a new operator:
+
+    class DeLijnOperator(GtfsOperator):
+        AGENCY_NAME     = "DE_LIJN"
+        GTFS_STATIC_URL = "https://..."
+        GTFS_RT_URL     = "https://..."
+
+        @property
+        def _headers(self):
+            return {"Authorization": f"Bearer {API_KEY}"}
+
+The default parse_rt_feed() handles standard GTFS-RT VehiclePositions (protobuf).
+Override it entirely in subclasses that use a non-standard feed (see StibOperator).
+"""
+
+import csv
+import hashlib
+import io
+import time
+import zipfile
+from collections import defaultdict
+from datetime import datetime, timedelta
+from io import BytesIO, StringIO
+
+import requests
+import sqlalchemy as sa
+from google.transit import gtfs_realtime_pb2
+
+from app.orm_models.db import get_db
+from app.orm_models.gtfs import Agency, Line, Stop, Trip, TripStop
+from app.orm_models.raw_gtfs import RawGtfsServiceDate, RawGtfsStopTime, RawGtfsTrip
+
+BATCH_SIZE = 5000
+
+
+def refresh_active_intervals() -> None:
+    """Refresh the active_incoming_intervals materialized view.
+
+    Uses CONCURRENTLY so reads are not blocked during refresh (safe for the
+    every-30s RT poller).  Falls back to a plain refresh on first populate
+    (CONCURRENTLY requires the view to already have data and a unique index).
+    """
+    tic = time.time()
+    session = next(get_db())
+    try:
+        populated = session.execute(sa.text(
+            "SELECT ispopulated FROM pg_matviews "
+            "WHERE matviewname = 'active_incoming_intervals'"
+        )).scalar()
+        sql = (
+            "REFRESH MATERIALIZED VIEW CONCURRENTLY active_incoming_intervals"
+            if populated else
+            "REFRESH MATERIALIZED VIEW active_incoming_intervals"
+        )
+        session.execute(sa.text(sql))
+        session.commit()
+        print(f"  active_incoming_intervals refreshed in {time.time()-tic:.2f}s")
+    except Exception as e:
+        session.rollback()
+        print(f"  ERROR refreshing active_incoming_intervals: {e}")
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers (also importable by operator modules)
+# ---------------------------------------------------------------------------
+
+def _chunked(iterable, size):
+    chunk = []
+    for item in iterable:
+        chunk.append(item)
+        if len(chunk) >= size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
+def _parse_seconds(time_str: str):
+    """Convert GTFS HH:MM:SS (may exceed 24 h) to integer seconds from midnight."""
+    if not time_str:
+        return None
+    try:
+        h, m, s = time_str.strip().split(":")
+        return int(h) * 3600 + int(m) * 60 + int(s)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _build_signature(line_id: int, direction: int, stop_ids: list) -> str:
+    payload = f"{line_id}:{direction}|" + "|".join(stop_ids)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _open_stop_times(zip_bytes: bytes):
+    """Open stop_times.txt for streaming. Caller must close the returned ZipFile."""
+    zf  = zipfile.ZipFile(BytesIO(zip_bytes))
+    raw = zf.open("stop_times.txt")
+    return csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8")), zf
+
+
+def load_text_files(zip_bytes: bytes) -> dict[str, str]:
+    """Load all GTFS text files except stop_times.txt (stream that via _open_stop_times)."""
+    result = {}
+    with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
+        for name in ("agency.txt", "routes.txt", "stops.txt", "trips.txt",
+                     "calendar.txt", "calendar_dates.txt"):
+            if name in zf.namelist():
+                result[name] = zf.read(name).decode("utf-8")
+    return result
+
+
+def _ensure_agency(session, agency_name: str, country: str = "Belgium") -> Agency:
+    agency = session.query(Agency).filter_by(name=agency_name).first()
+    if not agency:
+        agency = Agency(name=agency_name, country=country)
+        session.add(agency)
+        session.commit()
+    return agency
+
+
+# ---------------------------------------------------------------------------
+# Static import — lines, stops, calendar, trips
+# ---------------------------------------------------------------------------
+
+def _import_lines(agency_name: str, routes_csv_text: str):
+    tic    = time.time()
+    reader = csv.DictReader(StringIO(routes_csv_text))
+    fields = reader.fieldnames or []
+    has_color      = "route_color"      in fields
+    has_text_color = "route_text_color" in fields
+
+    session = next(get_db())
+    try:
+        _ensure_agency(session, agency_name)
+        existing    = {l.route_id: l for l in session.query(Line).filter_by(agency_name=agency_name)}
+        seen_combos = {(l.short_name, l.long_name) for l in existing.values()}
+        to_add, updated, skipped = [], 0, 0
+
+        for row in reader:
+            route_id   = (row.get("route_id")        or "").strip()
+            short_name = (row.get("route_short_name") or "").strip()
+            long_name  = (row.get("route_long_name")  or "").strip()
+            route_type = (row.get("route_type")       or "").strip() or None
+            if not short_name:
+                skipped += 1
+                continue
+
+            combo = (short_name, long_name)
+            data  = {
+                "route_id":    route_id or None,
+                "short_name":  short_name,
+                "long_name":   long_name,
+                "route_type":  route_type,
+                "agency_name": agency_name,
+            }
+            if has_color:
+                raw_c = (row.get("route_color") or "000000").strip().lstrip("#")
+                data["color"] = "#" + raw_c.zfill(6).upper()
+            if has_text_color:
+                raw_tc = (row.get("route_text_color") or "FFFFFF").strip().lstrip("#")
+                data["text_color"] = "#" + raw_tc.zfill(6).upper()
+
+            if route_id and route_id in existing:
+                line = existing[route_id]
+                for k, v in data.items():
+                    setattr(line, k, v)
+                seen_combos.add(combo)
+                updated += 1
+            elif combo in seen_combos:
+                skipped += 1
+            else:
+                to_add.append(Line(**data))
+                seen_combos.add(combo)
+
+        if to_add:
+            session.bulk_save_objects(to_add)
+        session.commit()
+        print(f"{agency_name} Lines updated in {time.time()-tic:.2f}s "
+              f"(added {len(to_add)}, updated {updated}, skipped {skipped})")
+    finally:
+        session.close()
+
+
+def _import_stops(agency_name: str, stops_csv_text: str):
+    tic     = time.time()
+    reader  = csv.DictReader(StringIO(stops_csv_text))
+    session = next(get_db())
+    try:
+        _ensure_agency(session, agency_name)
+        existing = {s.stop_id: s for s in session.query(Stop).filter_by(agency_name=agency_name)}
+        to_add, updated = [], 0
+        for row in reader:
+            stop_id   = (row.get("stop_id")  or "").strip()
+            stop_name = (row.get("stop_name") or "").strip()
+            if not stop_id:
+                continue
+            if stop_id in existing:
+                if existing[stop_id].name != stop_name:
+                    existing[stop_id].name = stop_name
+                    updated += 1
+            else:
+                to_add.append(Stop(stop_id=stop_id, name=stop_name, agency_name=agency_name))
+        if to_add:
+            session.bulk_save_objects(to_add)
+        session.commit()
+        print(f"{agency_name} Stops updated in {time.time()-tic:.2f}s "
+              f"(added {len(to_add)}, updated {updated})")
+    finally:
+        session.close()
+
+
+def _import_calendar(agency_name: str, calendar_csv_text: str, calendar_dates_csv_text: str):
+    tic      = time.time()
+    WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    dates: dict[str, set[str]] = defaultdict(set)
+
+    if calendar_csv_text:
+        for row in csv.DictReader(StringIO(calendar_csv_text)):
+            sid   = row.get("service_id", "")
+            start = datetime.strptime(row["start_date"], "%Y%m%d")
+            end   = datetime.strptime(row["end_date"],   "%Y%m%d")
+            d = start
+            while d <= end:
+                if row.get(WEEKDAYS[d.weekday()]) == "1":
+                    dates[sid].add(d.strftime("%Y%m%d"))
+                d += timedelta(days=1)
+
+    if calendar_dates_csv_text:
+        for row in csv.DictReader(StringIO(calendar_dates_csv_text)):
+            sid  = row.get("service_id", "")
+            date = row.get("date", "")
+            if row.get("exception_type") == "1":
+                dates[sid].add(date)
+            elif row.get("exception_type") == "2":
+                dates[sid].discard(date)
+
+    session = next(get_db())
+    try:
+        session.execute(sa.text("DELETE FROM raw_gtfs_service_date WHERE agency_name = :a"), {"a": agency_name})
+        rows = [
+            {"service_id": sid, "agency_name": agency_name, "date": d}
+            for sid, day_set in dates.items() for d in day_set
+        ]
+        for batch in _chunked(rows, BATCH_SIZE):
+            session.bulk_insert_mappings(RawGtfsServiceDate, batch)
+        session.commit()
+        print(f"{agency_name} Calendar imported in {time.time()-tic:.2f}s "
+              f"({len(dates)} services, {len(rows)} date rows)")
+    finally:
+        session.close()
+
+
+def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
+    """Two-pass streaming trip import. See module docstring for memory rationale."""
+    tic = time.time()
+
+    t0 = time.time()
+    trip_data: dict[str, dict] = {}
+    for row in csv.DictReader(StringIO(trips_csv_text)):
+        trip_data[row["trip_id"]] = {
+            "route_id":      row.get("route_id", ""),
+            "service_id":    row.get("service_id", ""),
+            "dir":           int(row.get("direction_id", 0)),
+            "shape_id":      row.get("shape_id") or None,
+            "trip_headsign": row.get("trip_headsign") or None,
+        }
+    print(f"  trips.txt parsed ({len(trip_data)} trips) in {time.time()-t0:.2f}s")
+
+    t0 = time.time()
+    trip_stops_ordered: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    reader, zf = _open_stop_times(zip_bytes)
+    try:
+        for row in reader:
+            tid = row["trip_id"]
+            if tid in trip_data:
+                trip_stops_ordered[tid].append((int(row["stop_sequence"]), row["stop_id"]))
+    finally:
+        zf.close()
+    for tid in trip_stops_ordered:
+        trip_stops_ordered[tid].sort(key=lambda x: x[0])
+    print(f"  stop_times.txt pass 1 ({sum(len(v) for v in trip_stops_ordered.values())} rows) "
+          f"in {time.time()-t0:.2f}s")
+
+    session = next(get_db())
+    try:
+        route_to_line = {l.route_id: l.id for l in session.query(Line).filter_by(agency_name=agency_name)}
+        existing_raw  = {r.gtfs_trip_id for r in
+                         session.query(RawGtfsTrip.gtfs_trip_id).filter_by(agency_name=agency_name)}
+        sig_to_trip_id = {t.signature: t.id for t in
+                          session.query(Trip.id, Trip.signature).filter_by(line_agency_name=agency_name)}
+
+        new_trips_to_create: dict[str, Trip] = {}
+        raw_trips_to_add:    list[tuple[str, str, dict]] = []
+        sig_counts:          dict[str, int] = defaultdict(int)
+
+        for g_id, info in trip_data.items():
+            l_id  = route_to_line.get(info["route_id"])
+            stops = trip_stops_ordered.get(g_id)
+            if not l_id or not stops:
+                continue
+            ordered_stop_ids = [s[1] for s in stops]
+            sig = _build_signature(l_id, info["dir"], ordered_stop_ids)
+            sig_counts[sig] += 1
+            if sig not in sig_to_trip_id and sig not in new_trips_to_create:
+                new_trips_to_create[sig] = Trip(
+                    line_id=l_id, line_agency_name=agency_name,
+                    direction=info["dir"], signature=sig,
+                    start_stop_id=ordered_stop_ids[0], terminus_stop_id=ordered_stop_ids[-1],
+                    start_agency_name=agency_name, terminus_agency_name=agency_name,
+                )
+            if g_id not in existing_raw:
+                raw_trips_to_add.append((g_id, sig, info))
+
+        t0 = time.time()
+        if new_trips_to_create:
+            session.add_all(new_trips_to_create.values())
+            session.flush()
+            ts_rows = []
+            for sig, trip in new_trips_to_create.items():
+                sig_to_trip_id[sig] = trip.id
+                sample_g_id = next(g for g, s, _ in raw_trips_to_add if s == sig)
+                for idx, (_, stop_id) in enumerate(trip_stops_ordered[sample_g_id]):
+                    ts_rows.append({"trip_id": trip.id, "stop_stop_id": stop_id,
+                                    "stop_agency_name": agency_name, "sequence": idx})
+            for batch in _chunked(ts_rows, BATCH_SIZE):
+                session.bulk_insert_mappings(TripStop, batch)
+        print(f"  canonical Trips/TripStops flushed ({len(new_trips_to_create)} new) in {time.time()-t0:.2f}s")
+
+        session.bulk_update_mappings(Trip, [
+            {"id": sig_to_trip_id[s], "trip_count": c}
+            for s, c in sig_counts.items() if s in sig_to_trip_id
+        ])
+
+        t0 = time.time()
+        best_q = session.query(
+            Trip.line_id, Trip.direction, Trip.id,
+            (sa.func.max(TripStop.sequence) * Trip.trip_count).label("score"),
+        ).join(TripStop).filter(Trip.line_agency_name == agency_name).group_by(Trip.id).subquery()
+        for line in session.query(Line).filter_by(agency_name=agency_name).all():
+            for d in [0, 1]:
+                best = session.query(best_q.c.id).filter(
+                    best_q.c.line_id == line.id, best_q.c.direction == d,
+                ).order_by(best_q.c.score.desc()).first()
+                if best:
+                    setattr(line, f"best_trip_{d}_id", best.id)
+        print(f"  best trips updated in {time.time()-t0:.2f}s")
+
+        t0 = time.time()
+        session.execute(sa.text("""DELETE FROM raw_gtfs_stop_time
+            WHERE raw_trip_id IN (SELECT id FROM raw_gtfs_trip WHERE agency_name = :a)"""),
+            {"a": agency_name})
+        session.execute(sa.text("DELETE FROM raw_gtfs_trip WHERE agency_name = :a"), {"a": agency_name})
+        session.flush()
+        print(f"  old raw rows deleted in {time.time()-t0:.2f}s")
+
+        t0 = time.time()
+        raw_trip_rows = []
+        for g_id, sig, info in raw_trips_to_add:
+            raw_trip_rows.append({"gtfs_trip_id": g_id, "agency_name": agency_name,
+                                  "route_id": info["route_id"], "service_id": info["service_id"],
+                                  "direction_id": info["dir"], "shape_id": info["shape_id"],
+                                  "trip_headsign": info["trip_headsign"],
+                                  "canonical_trip_id": sig_to_trip_id.get(sig)})
+        for g_id, info in trip_data.items():
+            if g_id not in existing_raw:
+                continue
+            l_id  = route_to_line.get(info["route_id"])
+            stops = trip_stops_ordered.get(g_id)
+            if not l_id or not stops:
+                continue
+            sig = _build_signature(l_id, info["dir"], [s[1] for s in stops])
+            raw_trip_rows.append({"gtfs_trip_id": g_id, "agency_name": agency_name,
+                                  "route_id": info["route_id"], "service_id": info["service_id"],
+                                  "direction_id": info["dir"], "shape_id": info["shape_id"],
+                                  "trip_headsign": info["trip_headsign"],
+                                  "canonical_trip_id": sig_to_trip_id.get(sig)})
+        for batch in _chunked(raw_trip_rows, BATCH_SIZE):
+            session.bulk_insert_mappings(RawGtfsTrip, batch)
+        session.flush()
+        print(f"  raw_gtfs_trip inserted ({len(raw_trip_rows)} rows) in {time.time()-t0:.2f}s")
+
+        del trip_stops_ordered
+
+        t0 = time.time()
+        gtfs_id_to_raw_pk:    dict[str, int] = {}
+        gtfs_id_to_canonical: dict[str, int] = {}
+        for r in (session.query(RawGtfsTrip.gtfs_trip_id, RawGtfsTrip.id, RawGtfsTrip.canonical_trip_id)
+                         .filter_by(agency_name=agency_name)):
+            gtfs_id_to_raw_pk[r.gtfs_trip_id] = r.id
+            if r.canonical_trip_id is not None:
+                gtfs_id_to_canonical[r.gtfs_trip_id] = r.canonical_trip_id
+        print(f"  raw_trip_id map built ({len(gtfs_id_to_raw_pk)} entries) in {time.time()-t0:.2f}s")
+
+        t0 = time.time()
+        canonical_ids = set(gtfs_id_to_canonical.values())
+        trip_stop_map: dict[tuple[int, str], int] = {
+            (ts.trip_id, ts.stop_stop_id): ts.id
+            for ts in (session.query(TripStop.id, TripStop.trip_id, TripStop.stop_stop_id)
+                               .filter(TripStop.trip_id.in_(canonical_ids)))
+        }
+        print(f"  trip_stop map built ({len(trip_stop_map)} entries) in {time.time()-t0:.2f}s")
+
+        t0 = time.time()
+        mapped = inserted = 0
+        batch: list[dict] = []
+        reader, zf = _open_stop_times(zip_bytes)
+        try:
+            for row in reader:
+                trip_id = row["trip_id"]
+                raw_pk  = gtfs_id_to_raw_pk.get(trip_id)
+                if raw_pk is None:
+                    continue
+                canonical_trip_id = gtfs_id_to_canonical.get(trip_id)
+                stop_id = row["stop_id"]
+                ts_id   = trip_stop_map.get((canonical_trip_id, stop_id)) if canonical_trip_id else None
+                if ts_id:
+                    mapped += 1
+                batch.append({"raw_trip_id": raw_pk, "stop_sequence": int(row["stop_sequence"]),
+                              "stop_id": stop_id,
+                              "arrival_seconds":   _parse_seconds(row.get("arrival_time", "")),
+                              "departure_seconds": _parse_seconds(row.get("departure_time", "")),
+                              "canonical_trip_stop_id": ts_id})
+                if len(batch) >= BATCH_SIZE:
+                    session.bulk_insert_mappings(RawGtfsStopTime, batch)
+                    session.flush()
+                    inserted += len(batch)
+                    batch = []
+        finally:
+            zf.close()
+        if batch:
+            session.bulk_insert_mappings(RawGtfsStopTime, batch)
+            inserted += len(batch)
+        print(f"  raw_gtfs_stop_time inserted ({inserted} rows, {mapped} mapped) in {time.time()-t0:.2f}s")
+
+        t0 = time.time()
+        session.commit()
+        print(f"  committed in {time.time()-t0:.2f}s")
+        print(f"{agency_name} Trips imported in {time.time()-tic:.2f}s")
+
+        refresh_active_intervals()
+    finally:
+        session.close()
+
+
+def import_gtfs_static(agency_name: str, zip_bytes: bytes, country: str = "Belgium") -> None:
+    """Import all static GTFS data for agency_name from the raw ZIP bytes."""
+    print(f"[{time.strftime('%H:%M:%S')}] GTFS static import — {agency_name}")
+    gtfs = load_text_files(zip_bytes)
+    if "routes.txt"  in gtfs: _import_lines(agency_name, gtfs["routes.txt"])
+    if "stops.txt"   in gtfs: _import_stops(agency_name, gtfs["stops.txt"])
+    if "calendar.txt" in gtfs or "calendar_dates.txt" in gtfs:
+        _import_calendar(agency_name, gtfs.get("calendar.txt", ""), gtfs.get("calendar_dates.txt", ""))
+    with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
+        if "trips.txt" in gtfs and "stop_times.txt" in zf.namelist():
+            _import_trips(agency_name, gtfs["trips.txt"], zip_bytes)
+
+
+# ---------------------------------------------------------------------------
+# GtfsOperator — base class for transit operators
+# ---------------------------------------------------------------------------
+
+class GtfsOperator:
+    """Base class for a GTFS-compliant transit operator.
+
+    Subclass, set the class attributes, override _headers, and optionally
+    override _fetch_rt_raw() (if RT auth differs from static) or
+    parse_rt_feed() entirely (if the RT feed is not standard GTFS-RT protobuf).
+
+    The default parse_rt_feed() handles GTFS-RT VehiclePositions (protobuf)
+    with a sequence-map cache rebuilt from the static GTFS ZIP.
+    """
+
+    AGENCY_NAME:     str = ""
+    COUNTRY:         str = "Belgium"
+    GTFS_STATIC_URL: str = ""
+    GTFS_RT_URL:     str = ""    # GTFS-RT TripUpdates feed (empty = RT disabled)
+    STATIC_TIMEOUT:  int = 120
+    RT_TIMEOUT:      int = 10
+
+    def __init__(self):
+        pass
+
+    # ── Configuration hooks ───────────────────────────────────────────────────
+
+    @property
+    def _headers(self) -> dict:
+        """HTTP headers for static GTFS download. Override in subclass."""
+        return {}
+
+    # ── Static import ─────────────────────────────────────────────────────────
+
+    def _fetch_zip_bytes(self) -> bytes:
+        print(f"[{time.strftime('%H:%M:%S')}] [{self.AGENCY_NAME}] Téléchargement GTFS statique…")
+        r = requests.get(self.GTFS_STATIC_URL, headers=self._headers, timeout=self.STATIC_TIMEOUT)
+        if r.status_code != 200:
+            raise RuntimeError(f"[{self.AGENCY_NAME}] GTFS static HTTP {r.status_code}: {r.text[:200]}")
+        print(f"  [{self.AGENCY_NAME}] Téléchargé ({len(r.content)/1024/1024:.1f} MB)")
+        return r.content
+
+    def import_static(self) -> None:
+        """Download and import the full static GTFS dataset."""
+        import_gtfs_static(self.AGENCY_NAME, self._fetch_zip_bytes(), self.COUNTRY)
+
+    # ── Realtime ──────────────────────────────────────────────────────────────
+
+    def _fetch_rt_raw(self) -> bytes:
+        """Fetch raw GTFS-RT bytes. Override when RT auth differs from static."""
+        r = requests.get(self.GTFS_RT_URL, headers=self._headers, timeout=self.RT_TIMEOUT)
+        if r.status_code != 200:
+            raise RuntimeError(f"[{self.AGENCY_NAME}] RT HTTP {r.status_code}: {r.text[:200]}")
+        return r.content
+
+    def update_realtime(self) -> None:
+        """Fetch GTFS-RT TripUpdates and upsert into realtime_stop_time_override.
+
+        No-op when GTFS_RT_URL is not set.
+        Override entirely in subclasses with non-standard feeds (e.g. StibOperator).
+        """
+        if not self.GTFS_RT_URL:
+            return
+
+        from datetime import datetime as _dt
+
+        tic = time.time()
+        print(f"[{time.strftime('%H:%M:%S')}] [{self.AGENCY_NAME}] Mise à jour Temps Réel…")
+
+        try:
+            raw = self._fetch_rt_raw()
+        except Exception as e:
+            print(f"  [{self.AGENCY_NAME}] ERREUR fetch RT: {e}")
+            return
+
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(raw)
+        entities = [e for e in feed.entity if e.HasField("trip_update")]
+        print(f"  [{self.AGENCY_NAME}] {len(entities)} TripUpdates reçus")
+        if not entities:
+            return
+
+        feed_ts = feed.header.timestamp or int(time.time())
+        today   = _dt.now().strftime("%Y%m%d")
+        now_dt  = _dt.utcnow()
+
+        rows = []
+        skipped = 0
+        for entity in entities:
+            tu = entity.trip_update
+            gtfs_trip_id = tu.trip.trip_id
+            if not gtfs_trip_id:
+                skipped += 1
+                continue
+            start_date = tu.trip.start_date or today
+            for stu in tu.stop_time_update:
+                arr_ts    = stu.arrival.time    if stu.HasField("arrival")   else None
+                dep_ts    = stu.departure.time  if stu.HasField("departure") else None
+                arr_delay = stu.arrival.delay   if stu.HasField("arrival")   else None
+                dep_delay = stu.departure.delay if stu.HasField("departure") else None
+                rows.append({
+                    "gtfs_trip_id":           gtfs_trip_id,
+                    "agency_name":            self.AGENCY_NAME,
+                    "start_date":             start_date,
+                    "stop_sequence":          stu.stop_sequence,
+                    "stop_id":                stu.stop_id or None,
+                    "predicted_arrival_ts":   int(arr_ts)    if arr_ts    is not None else None,
+                    "predicted_departure_ts": int(dep_ts)    if dep_ts    is not None else None,
+                    "delay_seconds":          int(arr_delay if arr_delay is not None else dep_delay)
+                                              if (arr_delay is not None or dep_delay is not None) else None,
+                    "schedule_relationship":  int(stu.schedule_relationship),
+                    "feed_timestamp":         int(feed_ts),
+                    "updated_at":             now_dt,
+                })
+
+        if skipped:
+            print(f"  [{self.AGENCY_NAME}] Ignorés (pas de trip_id): {skipped}")
+        if not rows:
+            return
+
+        upsert_sql = sa.text("""
+            INSERT INTO realtime_stop_time_override
+                (gtfs_trip_id, agency_name, start_date, stop_sequence, stop_id,
+                 predicted_arrival_ts, predicted_departure_ts, delay_seconds,
+                 schedule_relationship, feed_timestamp, updated_at)
+            VALUES
+                (:gtfs_trip_id, :agency_name, :start_date, :stop_sequence, :stop_id,
+                 :predicted_arrival_ts, :predicted_departure_ts, :delay_seconds,
+                 :schedule_relationship, :feed_timestamp, :updated_at)
+            ON CONFLICT ON CONSTRAINT uq_rt_override_trip_date_seq
+            DO UPDATE SET
+                stop_id                = EXCLUDED.stop_id,
+                predicted_arrival_ts   = EXCLUDED.predicted_arrival_ts,
+                predicted_departure_ts = EXCLUDED.predicted_departure_ts,
+                delay_seconds          = EXCLUDED.delay_seconds,
+                schedule_relationship  = EXCLUDED.schedule_relationship,
+                feed_timestamp         = EXCLUDED.feed_timestamp,
+                updated_at             = EXCLUDED.updated_at
+        """)
+
+        session = next(get_db())
+        try:
+            for batch in _chunked(rows, BATCH_SIZE):
+                session.execute(upsert_sql, batch)
+            session.execute(sa.text(
+                "DELETE FROM realtime_stop_time_override "
+                "WHERE agency_name = :a AND start_date < :today"
+            ), {"a": self.AGENCY_NAME, "today": today})
+            session.commit()
+            print(f"  [{self.AGENCY_NAME}] {len(rows)} overrides upsertés en {time.time()-tic:.2f}s")
+            refresh_active_intervals()
+        except Exception as e:
+            session.rollback()
+            print(f"  [{self.AGENCY_NAME}] ERREUR upsert RT: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            session.close()

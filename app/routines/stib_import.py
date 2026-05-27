@@ -1,567 +1,243 @@
 #!/usr/bin/env python3
+"""
+STIB GTFS operator.
+
+StibOperator subclasses GtfsOperator.  The static import path is identical to
+any standard operator (delegated to import_gtfs_static).  The realtime path is
+entirely custom: STIB exposes a JSON vehicle-positions endpoint (not GTFS-RT
+protobuf), keyed by lineid + vehiclepositions, with stops identified by 4-digit
+numeric IDs and direction by a terminus stop ID.  parse_rt_feed() is overridden
+entirely; _match_rt_to_tripstops is never meaningful in the base class.
+
+scheduler.py uses: from app.routines.stib_import import _operator as stib_operator
+"""
+
 if __name__ == "__main__":
     import sys, os
-    BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../'))
-    sys.path.insert(0, BASE_DIR)
+    BASE_DIR    = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../'))
     FASTAPI_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
+    sys.path.insert(0, BASE_DIR)
     sys.path.insert(0, FASTAPI_DIR)
 
-import csv
-import hashlib
 import json
 import os
 import re
-import sys
 import time
-import zipfile
 from collections import defaultdict
-from io import BytesIO, StringIO
 
 import requests
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
 
 from app.orm_models.db import get_db
-from app.orm_models.gtfs import Agency, Line, Stop, Trip, TripStop
-from app.orm_models.raw_gtfs import RawGtfsStopTime, RawGtfsTrip
-from app.routines.missed_bus_store import get_stib_missed_bus_store
+from app.orm_models.gtfs import Line, Stop, Trip
+from app.routines.gtfs_import import GtfsOperator, _chunked, BATCH_SIZE
 
-# ---------------------------------------------------------------------------
-# Belgian Mobility Commons API (BMC)
-# Static GTFS and vehicle-position feeds both use the bmc-partner-key header.
-# Set BMC_API_KEY (or the legacy STIB_API_KEY) in your environment.
-# ---------------------------------------------------------------------------
+STIB_API_BASE = "https://api-management-opendata-production.azure-api.net"
+
 STIB_API_KEY = (
     os.environ.get("STIB_API_KEY", "")
     or os.environ.get("BMC_API_KEY", "")
 ).strip()
-# STIB uses Azure API Management — header is Ocp-Apim-Subscription-Key
-STIB_HEADERS = {"Ocp-Apim-Subscription-Key": STIB_API_KEY} if STIB_API_KEY else {}
+
 print(f"[stib_import] STIB_API_KEY={'***' + STIB_API_KEY[-4:] if len(STIB_API_KEY) > 4 else '(empty — anonymous)'}")
 
-STIB_API_BASE     = "https://api-management-opendata-production.azure-api.net"
-GTFS_STATIC_URL   = f"{STIB_API_BASE}/api/gtfs/feed/stibmivb/static"
-VEHICLE_POSITIONS_URL = f"{STIB_API_BASE}/api/datasets/stibmivb/rt/VehiclePositions"
 
-BATCH_SIZE = 5000
+class StibOperator(GtfsOperator):
+    AGENCY_NAME     = "STIB"
+    GTFS_STATIC_URL = f"{STIB_API_BASE}/api/gtfs/feed/stibmivb/static"
+    RT_CACHE_TTL    = 600
+    _VEHICLE_POSITIONS_URL = f"{STIB_API_BASE}/api/datasets/stibmivb/rt/VehiclePositions"
 
-
-# ---------------------------------------------------------------------------
-# Helpers (unchanged)
-# ---------------------------------------------------------------------------
-
-def normalize_stib_id(stop_id):
-    digits = re.sub(r'[A-Z]+$', '', str(stop_id))
-    return digits.zfill(4) if len(digits) < 4 else digits
-
-
-def _base4_stib_id(value):
-    digits = re.sub(r"[^0-9]", "", str(value))
-    return digits[:4].zfill(4) if digits else ""
-
-
-def get_stib_agency(session):
-    stib = session.query(Agency).filter_by(name="STIB").first()
-    if not stib:
-        stib = Agency(name="STIB", country="Belgium")
-        session.add(stib)
-        session.commit()
-    return stib
-
-
-# ---------------------------------------------------------------------------
-# GTFS static import
-# ---------------------------------------------------------------------------
-
-def _fetch_gtfs_zip():
-    """Download the GTFS static ZIP from the new endpoint.
-
-    Returns a dict  {filename: csv_text}  for the files we care about:
-      routes.txt, stops.txt, trips.txt, stop_times.txt
-    """
-    print(f"[{time.strftime('%H:%M:%S')}] Téléchargement GTFS statique…")
-    response = requests.get(GTFS_STATIC_URL, headers=STIB_HEADERS, timeout=60)
-    if response.status_code != 200:
-        raise RuntimeError(f"GTFS static HTTP {response.status_code}: {response.text[:200]}")
-
-    result = {}
-    with zipfile.ZipFile(BytesIO(response.content)) as zf:
-        for name in ("routes.txt", "stops.txt", "trips.txt", "stop_times.txt"):
-            if name in zf.namelist():
-                result[name] = zf.read(name).decode("utf-8")
-            else:
-                print(f"  AVERTISSEMENT: {name} absent du ZIP GTFS")
-    return result
-
-
-def import_stib_lines(routes_csv_text):
-    """Import lines/routes from routes.txt CSV text (unchanged logic)."""
-    tic = time.time()
-    reader = csv.DictReader(StringIO(routes_csv_text))
-    session = next(get_db())
-    try:
-        get_stib_agency(session)
-        for row in reader:
-            short_name = row.get("route_short_name")
-            if not short_name:
-                continue
-
-            existing_lines = session.query(Line).filter_by(short_name=short_name, agency_name="STIB").all()
-            target_line = next((l for l in existing_lines if l.long_name == row.get("route_long_name")), None)
-            if not target_line and len(existing_lines) == 1:
-                target_line = existing_lines[0]
-
-            data = {
-                "route_id":   row.get("route_id"),
-                "short_name": short_name,
-                "long_name":  row.get("route_long_name"),
-                "route_type": row.get("route_type"),
-                "color":      "#" + row.get("route_color", "000000").zfill(6),
-                "text_color": "#" + row.get("route_text_color", "FFFFFF").zfill(6),
-                "agency_name": "STIB",
-            }
-
-            if target_line:
-                for key, value in data.items():
-                    setattr(target_line, key, value)
-            else:
-                session.add(Line(**data))
-
-        session.commit()
-        print(f"STIB Lines updated in {time.time() - tic:.2f}s")
-    finally:
-        session.close()
-
-
-def import_stib_stops(stops_csv_text):
-    """Import stops from stops.txt CSV text (unchanged logic)."""
-    tic = time.time()
-    reader = csv.DictReader(StringIO(stops_csv_text))
-    session = next(get_db())
-    try:
-        get_stib_agency(session)
-        for row in reader:
-            sid, name = row.get("stop_id"), row.get("stop_name")
-            if not sid:
-                continue
-            stop = session.query(Stop).filter_by(stop_id=sid, agency_name="STIB").first()
-            if stop:
-                stop.name = name
-            else:
-                session.add(Stop(stop_id=sid, name=name, agency_name="STIB"))
-        session.commit()
-        print(f"STIB Stops updated in {time.time() - tic:.2f}s")
-    finally:
-        session.close()
-
-
-def _parse_seconds(time_str: str):
-    """Convert GTFS HH:MM:SS (may exceed 24 h) to integer seconds from midnight."""
-    if not time_str:
-        return None
-    try:
-        h, m, s = time_str.strip().split(":")
-        return int(h) * 3600 + int(m) * 60 + int(s)
-    except (ValueError, AttributeError):
-        return None
-
-
-def import_trips(trips_reader, stop_times_reader):
-    """
-    Build canonical Trip / TripStop patterns and populate raw_gtfs_trip +
-    raw_gtfs_stop_time.  Replaces the legacy GTFSTrip table.
-    """
-    tic = time.time()
-    agency_name = "STIB"
-
-    # ── Parse trips.txt ───────────────────────────────────────────────────────
-    trip_data = {}
-    for row in trips_reader:
-        trip_data[row["trip_id"]] = {
-            "route_id":      row.get("route_id", ""),
-            "service_id":    row.get("service_id", ""),
-            "dir":           int(row.get("direction_id", 0)),
-            "shape_id":      row.get("shape_id") or None,
-            "trip_headsign": row.get("trip_headsign") or None,
-            "stops":         [],
+    def __init__(self):
+        super().__init__()
+        self._empty_matches = 0
+        self._stib_cache: dict = {
+            "ts_map": None, "line_map": None,
+            "stops_base4": None, "terminus_by_line": None,
+            "loaded_at": 0.0,
         }
 
-    # ── Parse stop_times.txt ──────────────────────────────────────────────────
-    stop_times_by_trip = defaultdict(list)
-    for row in stop_times_reader:
-        tid = row["trip_id"]
-        if tid not in trip_data:
-            continue
-        stop_times_by_trip[tid].append({
-            "stop_sequence":   int(row["stop_sequence"]),
-            "stop_id":         row["stop_id"],
-            "arrival_time":    row.get("arrival_time") or None,
-            "departure_time":  row.get("departure_time") or None,
-            "arrival_seconds": _parse_seconds(row.get("arrival_time", "")),
-            "departure_seconds": _parse_seconds(row.get("departure_time", "")),
-        })
-        trip_data[tid]["stops"].append((int(row["stop_sequence"]), row["stop_id"]))
+    @property
+    def _headers(self) -> dict:
+        return {"Ocp-Apim-Subscription-Key": STIB_API_KEY} if STIB_API_KEY else {}
 
-    session = next(get_db())
-    try:
-        route_to_line  = {l.route_id: l.id for l in session.query(Line).filter_by(agency_name=agency_name).all()}
-        sig_to_trip_id = {t.signature: t.id for t in
-                          session.query(Trip.id, Trip.signature).filter_by(line_agency_name=agency_name).all()}
+    # ── STIB-specific helpers ─────────────────────────────────────────────────
 
-        new_trips_to_create = {}
-        new_trip_sigs       = []   # (g_id, sig) for new trips only
-        sig_counts          = defaultdict(int)
+    @staticmethod
+    def _base4(value) -> str:
+        """Extract the 4-digit numeric base of a STIB stop/terminus ID."""
+        digits = re.sub(r"[^0-9]", "", str(value))
+        return digits[:4].zfill(4) if digits else ""
 
-        for g_id, info in trip_data.items():
-            l_id = route_to_line.get(info["route_id"])
-            if not l_id or not info["stops"]:
-                continue
-            ordered_stops = [s[1] for s in sorted(info["stops"])]
-            sig = hashlib.sha1(
-                (f"{l_id}:{info['dir']}|" + "|".join(ordered_stops)).encode()
-            ).hexdigest()
-            sig_counts[sig] += 1
+    @staticmethod
+    def normalize_stop_id(stop_id) -> str:
+        digits = re.sub(r'[A-Z]+$', '', str(stop_id))
+        return digits.zfill(4) if len(digits) < 4 else digits
 
-            if sig not in sig_to_trip_id and sig not in new_trips_to_create:
-                new_trips_to_create[sig] = Trip(
-                    line_id=l_id, line_agency_name=agency_name,
-                    direction=info["dir"], signature=sig,
-                    start_stop_id=ordered_stops[0], terminus_stop_id=ordered_stops[-1],
-                    start_agency_name=agency_name, terminus_agency_name=agency_name,
-                )
-            new_trip_sigs.append((g_id, sig))
+    # ── Tripstop cache ────────────────────────────────────────────────────────
 
-        if new_trips_to_create:
-            session.add_all(new_trips_to_create.values())
-            session.flush()
-            ts_to_insert = []
-            for sig, trip in new_trips_to_create.items():
-                sig_to_trip_id[sig] = trip.id
-                sample_g_id = next(g for g, s in new_trip_sigs if s == sig)
-                for idx, st in enumerate(sorted(stop_times_by_trip[sample_g_id],
-                                                key=lambda r: r["stop_sequence"])):
-                    ts_to_insert.append({
-                        "trip_id": trip.id, "stop_stop_id": st["stop_id"],
-                        "stop_agency_name": agency_name, "sequence": idx,
-                    })
-            session.bulk_insert_mappings(TripStop, ts_to_insert)
+    def _load_stib_cache(self, session) -> tuple:
+        now = time.time()
+        if (self._stib_cache["ts_map"] is not None
+                and now - self._stib_cache["loaded_at"] < self.RT_CACHE_TTL):
+            return (
+                self._stib_cache["line_map"],
+                self._stib_cache["ts_map"],
+                self._stib_cache["stops_base4"],
+                self._stib_cache["terminus_by_line"],
+            )
 
-        session.bulk_update_mappings(Trip, [
-            {"id": sig_to_trip_id[s], "trip_count": c}
-            for s, c in sig_counts.items() if s in sig_to_trip_id
-        ])
+        line_map: dict[str, list[int]] = defaultdict(list)
+        for line_id, short_name in session.query(Line.id, Line.short_name).filter_by(agency_name="STIB"):
+            line_map[short_name].append(line_id)
 
-        best_trips_query = session.query(
-            Trip.line_id, Trip.direction, Trip.id,
-            (sa.func.max(TripStop.sequence) * Trip.trip_count).label("score"),
-        ).join(TripStop).filter(Trip.line_agency_name == agency_name).group_by(Trip.id).subquery()
+        stops_base4: set[str] = set()
+        for (stop_id,) in session.query(Stop.stop_id).filter_by(agency_name="STIB").all():
+            b = self._base4(stop_id)
+            if b:
+                stops_base4.add(b)
 
-        for line in session.query(Line).filter_by(agency_name=agency_name).all():
-            for d in [0, 1]:
-                best = session.query(best_trips_query.c.id).filter(
-                    best_trips_query.c.line_id == line.id,
-                    best_trips_query.c.direction == d,
-                ).order_by(best_trips_query.c.score.desc()).first()
-                if best:
-                    setattr(line, f"best_trip_{d}_id", best.id)
+        terminus_by_line: dict[int, set[str]] = defaultdict(set)
+        for line_id, terminus_id in (session.query(Trip.line_id, Trip.terminus_stop_id)
+                                             .filter_by(line_agency_name="STIB")):
+            b = self._base4(terminus_id)
+            if b:
+                terminus_by_line[line_id].add(b)
 
-        # ── raw_gtfs_trip + raw_gtfs_stop_time (replace on every import) ──────
-        session.execute(
+        rows = session.execute(
             sa.text("""
-                DELETE FROM raw_gtfs_stop_time
-                WHERE raw_trip_id IN (
-                    SELECT id FROM raw_gtfs_trip WHERE agency_name = :a
-                )
+                SELECT ts.id AS ts_id, ts.stop_stop_id AS stop_id,
+                       t.line_id, t.terminus_stop_id AS terminus_id,
+                       LEAD(ts.id) OVER (PARTITION BY ts.trip_id ORDER BY ts.sequence) AS next_ts_id
+                FROM trip_stop ts
+                JOIN trip t ON t.id = ts.trip_id
+                WHERE t.line_agency_name = 'STIB'
             """),
-            {"a": agency_name},
-        )
-        session.execute(
-            sa.text("DELETE FROM raw_gtfs_trip WHERE agency_name = :a"),
-            {"a": agency_name},
-        )
-        session.flush()
+        ).all()
 
-        raw_trip_rows = []
-        for g_id, info in trip_data.items():
-            l_id = route_to_line.get(info["route_id"])
-            if not l_id or not info["stops"]:
+        ts_map: dict[tuple, list] = defaultdict(list)
+        for row in rows:
+            key = (row.line_id, self._base4(row.terminus_id), self._base4(row.stop_id))
+            ts_map[key].append((row.ts_id, row.next_ts_id))
+
+        self._stib_cache.update({
+            "line_map": line_map, "ts_map": ts_map,
+            "stops_base4": stops_base4, "terminus_by_line": terminus_by_line,
+            "loaded_at": now,
+        })
+        return line_map, ts_map, stops_base4, terminus_by_line
+
+    # ── STIB RT matching (never meaningful in base class) ────────────────────
+
+    def _match_rt_to_tripstops(self, data: list, cache: tuple) -> tuple[set[int], int]:
+        line_map, ts_map, stops_base4, terminus_by_line = cache
+        incoming: set[int] = set()
+        matched_positions   = 0
+
+        for entry in data:
+            l_short = entry.get("lineid")
+            l_ids   = line_map.get(l_short)
+            if not l_ids:
                 continue
-            ordered_stops = [s[1] for s in sorted(info["stops"])]
-            sig = hashlib.sha1(
-                (f"{l_id}:{info['dir']}|" + "|".join(ordered_stops)).encode()
-            ).hexdigest()
-            raw_trip_rows.append({
-                "gtfs_trip_id":    g_id,
-                "agency_name":     agency_name,
-                "route_id":        info["route_id"],
-                "service_id":      info["service_id"],
-                "direction_id":    info["dir"],
-                "shape_id":        info["shape_id"],
-                "trip_headsign":   info["trip_headsign"],
-                "canonical_trip_id": sig_to_trip_id.get(sig),
-            })
-        for batch in _chunked(raw_trip_rows, BATCH_SIZE):
-            session.bulk_insert_mappings(RawGtfsTrip, batch)
-        session.flush()
-        print(f"  {len(raw_trip_rows)} raw_gtfs_trip rows (STIB)")
 
-        gtfs_id_to_raw_pk: dict[str, int] = {}
-        gtfs_id_to_canonical: dict[str, int] = {}
-        for r in session.query(RawGtfsTrip.gtfs_trip_id, RawGtfsTrip.id, RawGtfsTrip.canonical_trip_id) \
-                         .filter_by(agency_name=agency_name):
-            gtfs_id_to_raw_pk[r.gtfs_trip_id] = r.id
-            if r.canonical_trip_id is not None:
-                gtfs_id_to_canonical[r.gtfs_trip_id] = r.canonical_trip_id
+            v_pos = entry.get("vehiclepositions")
+            if isinstance(v_pos, str):
+                v_pos = json.loads(v_pos)
 
-        canonical_ids = set(gtfs_id_to_canonical.values())
-        trip_stop_map: dict[tuple[int, str], int] = {
-            (ts.trip_id, ts.stop_stop_id): ts.id
-            for ts in session.query(TripStop.id, TripStop.trip_id, TripStop.stop_stop_id)
-                              .filter(TripStop.trip_id.in_(canonical_ids))
-        }
+            for pos in v_pos:
+                t_id = self._base4(pos.get("directionId"))
+                s_id = self._base4(pos.get("pointId"))
+                if not t_id or not s_id:
+                    continue
+                if t_id not in stops_base4:
+                    continue
+                if s_id not in stops_base4:
+                    continue
+                if not any(t_id in terminus_by_line.get(lid, set()) for lid in l_ids):
+                    continue
 
-        st_rows = []
-        mapped = 0
-        for trip_id, stops in stop_times_by_trip.items():
-            raw_pk = gtfs_id_to_raw_pk.get(trip_id)
-            if raw_pk is None:
-                continue
-            canonical_trip_id = gtfs_id_to_canonical.get(trip_id)
-            for st in stops:
-                ts_id = trip_stop_map.get((canonical_trip_id, st["stop_id"])) if canonical_trip_id else None
-                if ts_id:
-                    mapped += 1
-                st_rows.append({
-                    "raw_trip_id":            raw_pk,
-                    "stop_sequence":          st["stop_sequence"],
-                    "stop_id":                st["stop_id"],
-                    "arrival_seconds":        st["arrival_seconds"],
-                    "departure_seconds":      st["departure_seconds"],
-                    "canonical_trip_stop_id": ts_id,
-                })
-        for batch in _chunked(st_rows, BATCH_SIZE):
-            session.bulk_insert_mappings(RawGtfsStopTime, batch)
-        session.flush()
-        print(f"  {len(st_rows)} raw_gtfs_stop_time rows ({mapped} mapped to canonical TripStops, STIB)")
+                found = False
+                for lid in l_ids:
+                    matches = ts_map.get((lid, t_id, s_id))
+                    if not matches:
+                        continue
+                    found = True
+                    for tsid, next_id in matches:
+                        if pos.get("distanceFromPoint") in ("0", 0):
+                            incoming.add(tsid)
+                        elif next_id:
+                            incoming.add(next_id)
+                    matched_positions += 1
 
-        session.commit()
-        print(f"Import STIB terminé en {time.time() - tic:.2f}s")
+        return incoming, matched_positions
 
-        from app.routines.refresh_intervals import refresh_active_intervals
-        refresh_active_intervals()
-    finally:
-        session.close()
+    # ── update_realtime override ──────────────────────────────────────────────
 
-
-def import_stib_gtfs():
-    """Entry point for the full static GTFS import (routes → stops → trips)."""
-    gtfs = _fetch_gtfs_zip()
-
-    if "routes.txt" in gtfs:
-        import_stib_lines(gtfs["routes.txt"])
-    if "stops.txt" in gtfs:
-        import_stib_stops(gtfs["stops.txt"])
-    if "trips.txt" in gtfs and "stop_times.txt" in gtfs:
-        import_trips(
-            csv.DictReader(StringIO(gtfs["trips.txt"])),
-            csv.DictReader(StringIO(gtfs["stop_times.txt"])),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Real-time trip-stop cache (unchanged internals)
-# ---------------------------------------------------------------------------
-
-_STIB_TS_CACHE = {
-    "ts_map": None,
-    "line_map": None,
-    "stops_base4": None,
-    "terminus_by_line": None,
-    "loaded_at": 0.0,
-}
-_STIB_EMPTY_MATCHES = 0
-
-
-def _load_stib_tripstop_cache(session, ttl_seconds=600):
-    now = time.time()
-    if _STIB_TS_CACHE["ts_map"] and now - _STIB_TS_CACHE["loaded_at"] < ttl_seconds:
-        return (
-            _STIB_TS_CACHE["line_map"],
-            _STIB_TS_CACHE["ts_map"],
-            _STIB_TS_CACHE["stops_base4"],
-            _STIB_TS_CACHE["terminus_by_line"],
-        )
-
-    line_map = defaultdict(list)
-    for line_id, short_name in session.query(Line.id, Line.short_name).filter_by(agency_name="STIB"):
-        line_map[short_name].append(line_id)
-
-    stops_base4 = set()
-    for (stop_id,) in session.query(Stop.stop_id).filter_by(agency_name="STIB").all():
-        b = _base4_stib_id(stop_id)
-        if b:
-            stops_base4.add(b)
-
-    terminus_by_line = defaultdict(set)
-    for line_id, terminus_id in session.query(Trip.line_id, Trip.terminus_stop_id).filter_by(line_agency_name="STIB"):
-        b = _base4_stib_id(terminus_id)
-        if b:
-            terminus_by_line[line_id].add(b)
-
-    rows = session.execute(
-        sa.text(
-            """
-            SELECT
-                ts.id AS ts_id,
-                ts.stop_stop_id AS stop_id,
-                t.line_id AS line_id,
-                t.terminus_stop_id AS terminus_id,
-                LEAD(ts.id) OVER (PARTITION BY ts.trip_id ORDER BY ts.sequence) AS next_ts_id
-            FROM trip_stop ts
-            JOIN trip t ON t.id = ts.trip_id
-            WHERE t.line_agency_name = :agency
-            """
-        ),
-        {"agency": "STIB"},
-    ).all()
-
-    ts_map = defaultdict(list)
-    for row in rows:
-        base_term = _base4_stib_id(row.terminus_id)
-        base_stop = _base4_stib_id(row.stop_id)
-        key = (row.line_id, base_term, base_stop)
-        ts_map[key].append((row.ts_id, row.next_ts_id))
-
-    _STIB_TS_CACHE.update({
-        "line_map": line_map, "ts_map": ts_map,
-        "stops_base4": stops_base4, "terminus_by_line": terminus_by_line,
-        "loaded_at": now,
-    })
-    return line_map, ts_map, stops_base4, terminus_by_line
-
-
-# ---------------------------------------------------------------------------
-# Real-time vehicle positions  (new API)
-# ---------------------------------------------------------------------------
-
-def _fetch_vehicle_positions():
-    response = requests.get(
-        VEHICLE_POSITIONS_URL,
-        headers=STIB_HEADERS,
-        timeout=15,
-    )
-    if response.status_code != 200:
-        raise RuntimeError(f"VehiclePositions HTTP {response.status_code}: {response.text[:200]}")
-
-    raw = response.json()
-    # New API wraps in {"results": [...]}
-    # Each entry already has the same shape as the old API:
-    # {"lineid": "N", "vehiclepositions": "[{\"directionId\":..., \"pointId\":..., \"distanceFromPoint\":...}]"}
-    return raw.get("results", raw)
-
-
-def get_all_incoming_buses_export():
-    tic = time.time()
-    print(f"[{time.strftime('%H:%M:%S')}] Démarrage mise à jour Temps Réel STIB…")
-
-    try:
-        data = _fetch_vehicle_positions()
-        if not data:
-            print("Aucune donnée RT reçue, mise à jour ignorée.")
+    def update_realtime(self) -> None:
+        """STIB JSON vehicle positions → vehicle_incoming flags on trip_stop."""
+        tic = time.time()
+        print(f"[{time.strftime('%H:%M:%S')}] [STIB] Mise à jour Temps Réel…")
+        try:
+            r = requests.get(self._VEHICLE_POSITIONS_URL, headers=self._headers, timeout=self.RT_TIMEOUT)
+            if r.status_code != 200:
+                raise RuntimeError(f"VehiclePositions HTTP {r.status_code}: {r.text[:200]}")
+            data = r.json().get("results", r.json())
+        except Exception as e:
+            print(f"  [STIB] ERREUR fetch RT: {e}")
             return
 
-        missed = get_stib_missed_bus_store()
-        incoming_ids    = set()
-        matched_positions = 0
+        if not data:
+            print("  [STIB] Aucune donnée RT reçue.")
+            return
 
         session = next(get_db())
         try:
-            line_map, ts_map, stops_base4, terminus_by_line = _load_stib_tripstop_cache(session)
+            cache = self._load_stib_cache(session)
+            incoming, matched = self._match_rt_to_tripstops(data, cache)
 
-            for entry in data:
-                l_short = entry.get("lineid")
-                l_ids   = line_map.get(l_short)
-                if not l_ids:
-                    continue
-
-                v_pos = entry.get("vehiclepositions")
-                if isinstance(v_pos, str):
-                    v_pos = json.loads(v_pos)
-
-                for pos in v_pos:
-                    raw_dir = _base4_stib_id(pos.get("directionId"))
-                    t_id    = raw_dir
-                    s_id    = _base4_stib_id(pos.get("pointId"))
-                    if not t_id or not s_id:
-                        continue
-
-                    if t_id not in stops_base4:
-                        missed.record("direction_not_in_gtfs", line=l_short, terminus=t_id, stop=s_id)
-                        continue
-                    if s_id not in stops_base4:
-                        missed.record("stop_not_in_gtfs", line=l_short, terminus=t_id, stop=s_id)
-                        continue
-                    if not any(t_id in terminus_by_line.get(lid, set()) for lid in l_ids):
-                        missed.record("no_trips", line=l_short, terminus=t_id, stop=s_id)
-                        continue
-
-                    for lid in l_ids:
-                        key     = (lid, t_id, s_id)
-                        matches = ts_map.get(key)
-                        if not matches:
-                            continue
-                        for tsid, next_id in matches:
-                            if pos.get("distanceFromPoint") in ("0", 0):
-                                incoming_ids.add(tsid)
-                            elif next_id:
-                                incoming_ids.add(next_id)
-                        matched_positions += 1
-
-                    if not any(ts_map.get((lid, t_id, s_id)) for lid in l_ids):
-                        missed.record("no_tripstop", line=l_short, terminus=t_id, stop=s_id)
-
-            global _STIB_EMPTY_MATCHES
-            if matched_positions == 0:
-                _STIB_EMPTY_MATCHES += 1
-                if _STIB_EMPTY_MATCHES < 3:
-                    print("Aucune position appariée, mise à jour ignorée.")
+            if matched == 0:
+                self._empty_matches += 1
+                if self._empty_matches < 3:
+                    print(f"  [STIB] Aucune position appariée (#{self._empty_matches}), cycle ignoré.")
                     return
-                print("Aucune position appariée (x3), reset incoming.")
+                print("  [STIB] Aucune position appariée (x3+), reset incoming.")
             else:
-                _STIB_EMPTY_MATCHES = 0
+                self._empty_matches = 0
 
-            session.execute(
-                sa.text("UPDATE trip_stop SET vehicle_incoming = false WHERE stop_agency_name = 'STIB'")
-            )
-            if incoming_ids:
-                session.execute(
-                    sa.text("UPDATE trip_stop SET vehicle_incoming = true WHERE id = ANY(:ids)"),
-                    {"ids": list(incoming_ids)},
-                )
+            session.execute(sa.text(
+                "UPDATE trip_stop SET vehicle_incoming = false WHERE stop_agency_name = 'STIB'"
+            ))
+            if incoming:
+                for batch in _chunked(list(incoming), BATCH_SIZE):
+                    session.execute(
+                        sa.text("UPDATE trip_stop SET vehicle_incoming = true WHERE id = ANY(:ids)"),
+                        {"ids": batch},
+                    )
             session.commit()
+            print(f"  [STIB] {len(incoming)} TripStops 'incoming' ({matched} positions) "
+                  f"en {time.time()-tic:.2f}s")
+        except Exception as e:
+            session.rollback()
+            print(f"  [STIB] ERREUR CRITIQUE RT: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             session.close()
 
-        missed.flush()
-        print(f"Résultat: {len(incoming_ids)} TripStops marqués 'incoming'.")
-        print(f"Update STIB RT terminée en {time.time() - tic:.2f}s")
 
-    except Exception as e:
-        print(f"ERREUR CRITIQUE RT: {e}")
-        import traceback
-        traceback.print_exc()
+_operator = StibOperator()
 
-
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    if "--stib" in sys.argv:
-        import_stib_gtfs()
-    elif "--stib-rt" in sys.argv:
+    import sys
+    if "--static" in sys.argv:
+        print("Lancement mise à jour GTFS statique STIB…")
+        _operator.import_static()
+    elif "--rt" in sys.argv:
         print("Lancement mise à jour Temps Réel STIB…")
-        get_all_incoming_buses_export()
+        _operator.update_realtime()
     else:
-        get_all_incoming_buses_export()
-        import_stib_gtfs()
+        print("Lancement mise à jour GTFS statique STIB…")
+        _operator.import_static()
+        print("Lancement mise à jour Temps Réel STIB…")
+        _operator.update_realtime()

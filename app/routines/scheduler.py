@@ -4,7 +4,8 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.routines import stib_import, tec_import, tec_trip_updates
+from app.routines.stib_import import _operator as stib_operator
+from app.routines.tec_import import _operator as tec_operator
 
 # Configuration logging
 logging.basicConfig(
@@ -22,7 +23,7 @@ def start():
     
     # ===== STIB - Tâches quotidiennes =====
     scheduler.add_job(
-        stib_import.import_stib_gtfs,
+        stib_operator.import_static,
         CronTrigger(hour=2, minute=0),
         id='import_stib_gtfs',
         name='Daily STIB GTFS import',
@@ -32,7 +33,7 @@ def start():
     
     # ===== TEC - Tâches quotidiennes =====
     scheduler.add_job(
-        tec_import.import_tec_gtfs,
+        tec_operator.import_static,
         CronTrigger(hour=2, minute=30),
         id='import_tec_gtfs',
         name='Daily TEC GTFS import',
@@ -43,7 +44,7 @@ def start():
     # New interval-based realtime: upsert GTFS-RT TripUpdates overrides only.
     # LED state is derived at query time from active_incoming_intervals view.
     scheduler.add_job(
-        tec_trip_updates.fetch_tec_trip_updates,
+        tec_operator.update_realtime,
         IntervalTrigger(seconds=30),
         id='fetch_tec_trip_updates',
         name='Fetch TEC TripUpdates overrides (every 30s)',
