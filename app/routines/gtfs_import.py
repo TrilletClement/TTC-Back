@@ -280,6 +280,40 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         }
     print(f"  trips.txt parsed ({len(trip_data)} trips) in {time.time()-t0:.2f}s")
 
+    # ── Pre-filter: only keep trips that pass through a stop used on a board ──
+    t0 = time.time()
+    session = next(get_db())
+    try:
+        used_stop_ids: set[str] = {
+            row[0] for row in session.execute(sa.text("""
+                SELECT DISTINCT ts.stop_stop_id 
+                FROM trip_stop ts
+                JOIN trip_stop_led_link lnk ON lnk.trip_stop_id = ts.id
+                WHERE ts.stop_agency_name = :a
+            """), {"a": agency_name})
+        }
+    finally:
+        session.close()
+    print(f"  {len(used_stop_ids)} stop_ids used on boards")
+
+    if not used_stop_ids:
+        print(f"  No configured stops — importing all trips (first import)")
+        # pas de filtre, on garde tout trip_data
+    else:
+        relevant_trip_ids: set[str] = set()
+        reader, zf = _open_stop_times(zip_bytes)
+        try:
+            for row in reader:
+                if row["trip_id"] in trip_data and row["stop_id"] in used_stop_ids:
+                    relevant_trip_ids.add(row["trip_id"])
+        finally:
+            zf.close()
+        print(f"  {len(relevant_trip_ids)} relevant trips (pass through a configured stop) "
+          f"in {time.time()-t0:.2f}s")
+        # Restrict trip_data to relevant trips only — massive RAM reduction
+        trip_data = {k: v for k, v in trip_data.items() if k in relevant_trip_ids}
+
+    # ── Pass 1: build ordered stop list for relevant trips only ──────────────
     t0 = time.time()
     trip_stops_ordered: dict[str, list[tuple[int, str]]] = defaultdict(list)
     reader, zf = _open_stop_times(zip_bytes)
@@ -414,6 +448,7 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         }
         print(f"  trip_stop map built ({len(trip_stop_map)} entries) in {time.time()-t0:.2f}s")
 
+        # ── Pass 2: insert raw_gtfs_stop_time for relevant trips only ─────────
         t0 = time.time()
         mapped = inserted = 0
         batch: list[dict] = []
@@ -445,6 +480,16 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
             session.bulk_insert_mappings(RawGtfsStopTime, batch)
             inserted += len(batch)
         print(f"  raw_gtfs_stop_time inserted ({inserted} rows, {mapped} mapped) in {time.time()-t0:.2f}s")
+        
+        # Cleanup: keep only stop_times linked to LEDs on boards
+        t0 = time.time()
+        session.execute(sa.text("""
+            DELETE FROM raw_gtfs_stop_time
+            WHERE canonical_trip_stop_id NOT IN (
+                SELECT DISTINCT trip_stop_id FROM trip_stop_led_link
+            )
+        """))
+        print(f"  unlinked stop_times cleaned in {time.time()-t0:.2f}s")
 
         t0 = time.time()
         session.commit()
@@ -452,9 +497,9 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         print(f"{agency_name} Trips imported in {time.time()-tic:.2f}s")
 
         refresh_active_intervals()
+
     finally:
         session.close()
-
 
 def import_gtfs_static(agency_name: str, zip_bytes: bytes, country: str = "Belgium") -> None:
     """Import all static GTFS data for agency_name from the raw ZIP bytes."""

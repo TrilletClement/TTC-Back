@@ -1,23 +1,18 @@
-"""Add unique index to active_incoming_intervals for CONCURRENTLY refresh.
+"""Fix timezone + add raw_trip_id for unique index on active_incoming_intervals.
 
-Recreates the materialized view with raw_trip_id + stop_sequence in the SELECT
-so a UNIQUE index can be built on (raw_trip_id, stop_sequence).  These two
-columns are guaranteed unique by the raw_gtfs_stop_time unique constraint.
-
-Revision ID: 20260527_01_mview_unique_index
+Revision ID: 20260527_02_fix_timezone_intervals
 Revises: 20260525_interval_system
 Create Date: 2026-05-27
 """
 from typing import Sequence, Union
-
 from alembic import op
 
-revision: str = "20260527_01_mview_unique_index"
-down_revision: Union[str, None] = "20260525_interval_system"
+revision: str = "20260527_02_fix_timezone_intervals"
+down_revision: Union[str, None] = "20260527_01_mview_unique_index"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-_DROP   = "DROP MATERIALIZED VIEW IF EXISTS active_incoming_intervals"
+_DROP = "DROP MATERIALIZED VIEW IF EXISTS active_incoming_intervals"
 _CREATE = """
 CREATE MATERIALIZED VIEW active_incoming_intervals AS
 WITH today_trips AS (
@@ -26,7 +21,7 @@ WITH today_trips AS (
     JOIN raw_gtfs_service_date svc
       ON svc.service_id  = rgt.service_id
      AND svc.agency_name = rgt.agency_name
-     AND svc.date        = TO_CHAR(CURRENT_DATE, 'YYYYMMDD')
+     AND svc.date        = TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels', 'YYYYMMDD')
 ),
 all_trip_stops AS (
     SELECT
@@ -65,10 +60,11 @@ with_effective AS (
              WHERE ov.gtfs_trip_id  = cs.gtfs_trip_id
                AND ov.agency_name   = cs.agency_name
                AND ov.stop_sequence = cs.prev_seq
-               AND ov.start_date    = TO_CHAR(CURRENT_DATE, 'YYYYMMDD')
+               AND ov.start_date    = TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels', 'YYYYMMDD')
                AND (ov.schedule_relationship IS NULL OR ov.schedule_relationship != 1)
              LIMIT 1),
-            EXTRACT(EPOCH FROM CURRENT_DATE)::bigint + cs.prev_dep_sec
+            EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels')::date)::bigint
+            + cs.prev_dep_sec
         ) AS led_on_from,
         COALESCE(
             (SELECT ov.predicted_arrival_ts
@@ -76,17 +72,18 @@ with_effective AS (
              WHERE ov.gtfs_trip_id  = cs.gtfs_trip_id
                AND ov.agency_name   = cs.agency_name
                AND ov.stop_sequence = cs.stop_sequence
-               AND ov.start_date    = TO_CHAR(CURRENT_DATE, 'YYYYMMDD')
+               AND ov.start_date    = TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels', 'YYYYMMDD')
                AND (ov.schedule_relationship IS NULL OR ov.schedule_relationship != 1)
              LIMIT 1),
-            EXTRACT(EPOCH FROM CURRENT_DATE)::bigint + cs.arrival_seconds
+            EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels')::date)::bigint
+            + cs.arrival_seconds
         ) AS led_on_until,
         NOT EXISTS (
             SELECT 1 FROM realtime_stop_time_override skip_ov
             WHERE skip_ov.gtfs_trip_id  = cs.gtfs_trip_id
               AND skip_ov.agency_name   = cs.agency_name
               AND skip_ov.stop_sequence = cs.stop_sequence
-              AND skip_ov.start_date    = TO_CHAR(CURRENT_DATE, 'YYYYMMDD')
+              AND skip_ov.start_date    = TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels', 'YYYYMMDD')
               AND skip_ov.schedule_relationship = 1
         ) AS not_skipped
     FROM canonical_stops cs
@@ -104,7 +101,20 @@ WITH NO DATA
 
 
 def upgrade() -> None:
-    pass  # superseded by 20260527_02_fix_timezone_intervals
+    op.execute(_DROP)
+    op.execute(_CREATE)
+    op.execute(
+        "CREATE UNIQUE INDEX uq_active_incoming_intervals_trip_seq "
+        "ON active_incoming_intervals (raw_trip_id, stop_sequence)"
+    )
+    op.execute(
+        "CREATE INDEX ix_active_incoming_intervals_ts_id "
+        "ON active_incoming_intervals (canonical_trip_stop_id)"
+    )
+    op.execute(
+        "CREATE INDEX ix_active_incoming_intervals_range "
+        "ON active_incoming_intervals (led_on_from, led_on_until)"
+    )
 
 def downgrade() -> None:
-    pass
+    op.execute(_DROP)

@@ -217,33 +217,29 @@ class BoardService:
     @staticmethod
     def _get_interval_active_trip_stop_ids(
         db: Session, trip_stop_ids: list[int]
-    ) -> set[int]:
+    ) -> dict[int, bool]:
         """
-        Return the subset of trip_stop_ids currently active.
-
-        The materialized view stores all today's intervals with their
-        led_on_from / led_on_until timestamps. We apply NOW() here so
-        the view never needs a time-driven refresh — only data-driven
-        (after static GTFS import or TripUpdates upsert).
+        Return a mapping of currently active trip_stop_ids to their is_realtime flag.
         """
         if not trip_stop_ids:
-            return set()
+            return {}
 
         try:
             rows = db.execute(sa.text("""
-                SELECT canonical_trip_stop_id, led_on_from, led_on_until
+                SELECT canonical_trip_stop_id, is_realtime, led_on_from, led_on_until
                 FROM active_incoming_intervals
                 WHERE canonical_trip_stop_id = ANY(:ts_ids)
                   AND EXTRACT(EPOCH FROM NOW())::bigint BETWEEN led_on_from AND led_on_until
             """), {"ts_ids": trip_stop_ids}).all()
 
-            active = {row.canonical_trip_stop_id for row in rows}
+            active = {row.canonical_trip_stop_id: row.is_realtime for row in rows}
 
             if rows:
                 for row in rows:
                     logger.info(
-                        "interval active ts_id=%s led_on_from=%s led_on_until=%s now=%s",
+                        "interval active ts_id=%s is_realtime=%s led_on_from=%s led_on_until=%s now=%s",
                         row.canonical_trip_stop_id,
+                        row.is_realtime,
                         row.led_on_from,
                         row.led_on_until,
                         int(__import__("time").time()),
@@ -270,7 +266,7 @@ class BoardService:
 
         except Exception as e:
             logger.warning("interval query failed: %s", e)
-            return set()
+            return {}
 
     # ── LED strip / LED builders ─────────────────────────────────────────────
 
@@ -370,34 +366,28 @@ class BoardService:
         return None
 
     @staticmethod
-    def _build_led_data(led_obj: Led, interval_active_ids: set[int] | None = None):
+    def _build_led_data(led_obj: Led, interval_active_ids: dict[int, bool] | None = None):
         """
         Build the LED payload.
-
-        is_on logic (dual-source):
-          • legacy:   any linked TripStop has vehicle_incoming = True
-                      (STIB vehicle-positions poller, or legacy TEC poller)
-          • interval: any linked TripStop id is in interval_active_ids
-                      (new GTFS interval system, populated from TripUpdates)
-
-        A LED is ON if EITHER source reports activity.  This allows STIB and
-        TEC to coexist without either blocking the other.
         """
-        _interval = interval_active_ids or set()
+        _interval = interval_active_ids or {}
 
         trip_stops_data = []
         for ts in led_obj.trip_stops:
             legacy_incoming   = bool(ts.vehicle_incoming)
             interval_incoming = ts.id in _interval
+            
+            # Si c'est actif via l'intervalle, on récupère le vrai état temps réel de la vue,
+            # sinon par défaut (legacy STIB) on considère que c'est du temps réel (True).
+            is_realtime_flag  = _interval[ts.id] if interval_incoming else True
+
             trip_stops_data.append({
                 "tripStopId":        ts.id,
                 "ledId":             led_obj.id,
-                # Legacy boolean kept for backward compat with frontend
                 "vehicleIncoming":   legacy_incoming,
-                # New interval-based flag
                 "intervalActive":    interval_incoming,
-                # Combined: ON if either source says so
                 "isOn":              legacy_incoming or interval_incoming,
+                "isRealtime":        is_realtime_flag,
                 "stopStopId":        ts.stop_stop_id,
                 "stopAgencyName":    ts.stop_agency_name,
                 "stopName":          ts.stop.name if ts.stop else None,

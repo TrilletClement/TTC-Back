@@ -32,6 +32,7 @@ from app.orm_models.db import get_db
 from app.orm_models.gtfs import Line, Stop, Trip
 from app.routines.gtfs_import import GtfsOperator, _chunked, BATCH_SIZE
 
+# --- CONFIGURATION API SECURISEE (HTTPS + NOUVELLES ROUTES) ---
 STIB_API_BASE = "https://api-management-opendata-production.azure-api.net"
 
 STIB_API_KEY = (
@@ -46,6 +47,8 @@ class StibOperator(GtfsOperator):
     AGENCY_NAME     = "STIB"
     GTFS_STATIC_URL = f"{STIB_API_BASE}/api/gtfs/feed/stibmivb/static"
     RT_CACHE_TTL    = 600
+    
+    # URL mise à jour (sans doublon de domaine)
     _VEHICLE_POSITIONS_URL = f"{STIB_API_BASE}/api/datasets/stibmivb/rt/VehiclePositions"
 
     def __init__(self):
@@ -59,7 +62,8 @@ class StibOperator(GtfsOperator):
 
     @property
     def _headers(self) -> dict:
-        return {"Ocp-Apim-Subscription-Key": STIB_API_KEY} if STIB_API_KEY else {}
+        # Aligné sur le security scheme 'bmc-partner-key' de l'OpenAPI
+        return {"bmc-partner-key": STIB_API_KEY} if STIB_API_KEY else {}
 
     # ── STIB-specific helpers ─────────────────────────────────────────────────
 
@@ -127,7 +131,7 @@ class StibOperator(GtfsOperator):
         })
         return line_map, ts_map, stops_base4, terminus_by_line
 
-    # ── STIB RT matching (never meaningful in base class) ────────────────────
+    # ── STIB RT matching ──────────────────────────────────────────────────────
 
     def _match_rt_to_tripstops(self, data: list, cache: tuple) -> tuple[set[int], int]:
         line_map, ts_map, stops_base4, terminus_by_line = cache
@@ -135,12 +139,16 @@ class StibOperator(GtfsOperator):
         matched_positions   = 0
 
         for entry in data:
+            # Azure encapsule les propriétés de l'entité sous 'results'
             l_short = entry.get("lineid")
             l_ids   = line_map.get(l_short)
             if not l_ids:
                 continue
 
             v_pos = entry.get("vehiclepositions")
+            if not v_pos:
+                continue
+                
             if isinstance(v_pos, str):
                 v_pos = json.loads(v_pos)
 
@@ -156,12 +164,10 @@ class StibOperator(GtfsOperator):
                 if not any(t_id in terminus_by_line.get(lid, set()) for lid in l_ids):
                     continue
 
-                found = False
                 for lid in l_ids:
                     matches = ts_map.get((lid, t_id, s_id))
                     if not matches:
                         continue
-                    found = True
                     for tsid, next_id in matches:
                         if pos.get("distanceFromPoint") in ("0", 0):
                             incoming.add(tsid)
@@ -181,13 +187,19 @@ class StibOperator(GtfsOperator):
             r = requests.get(self._VEHICLE_POSITIONS_URL, headers=self._headers, timeout=self.RT_TIMEOUT)
             if r.status_code != 200:
                 raise RuntimeError(f"VehiclePositions HTTP {r.status_code}: {r.text[:200]}")
-            data = r.json().get("results", r.json())
+            
+            # Adaptation ODSQL : extraction obligatoire du tableau contenu dans 'results'
+            res_json = r.json()
+            data = res_json.get("results") if isinstance(res_json, dict) else None
+            if data is None:
+                data = res_json if isinstance(res_json, list) else []
+                
         except Exception as e:
             print(f"  [STIB] ERREUR fetch RT: {e}")
             return
 
         if not data:
-            print("  [STIB] Aucune donnée RT reçue.")
+            print("  [STIB] Aucune donnée RT reçue ou tableau 'results' vide.")
             return
 
         session = next(get_db())

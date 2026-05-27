@@ -17,10 +17,10 @@ if __name__ == "__main__":
     sys.path.insert(0, FASTAPI_DIR)
 
 import os
-
 from app.routines.gtfs_import import GtfsOperator
 
-BMC_API_BASE = "https://opendata-discovery-gtfs-static.api.production.belgianmobility.io"
+# --- URLS OFFICIELLES APIM AZURE (HTTPS) ---
+BMC_API_BASE = "https://api-management-opendata-production.azure-api.net"
 BMC_API_KEY  = os.environ.get("BMC_API_KEY", "").strip()
 
 print(f"[tec_import] BMC_API_KEY={'***' + BMC_API_KEY[-4:] if len(BMC_API_KEY) > 4 else '(empty — anonymous)'}")
@@ -28,14 +28,16 @@ print(f"[tec_import] BMC_API_KEY={'***' + BMC_API_KEY[-4:] if len(BMC_API_KEY) >
 
 class TecOperator(GtfsOperator):
     AGENCY_NAME     = "TEC"
+    
+    # URL statique sécurisée
     GTFS_STATIC_URL = f"{BMC_API_BASE}/api/gtfs/feed/tec/static"
-    GTFS_RT_URL     = (
-        "https://opendata-discovery-gtfs-realtime.api.production.belgianmobility.io"
-        "/api/gtfs-rt/tec/TripUpdates.pbf"
-    )
+    
+    # URL Temps Réel calquée sur le serveur de ta doc OpenAPI
+    GTFS_RT_URL     = f"{BMC_API_BASE}/api/gtfs/feed/tec/rt/trip-update?format=protobuf"
 
     @property
     def _headers(self) -> dict:
+        # Confirmé par le Swagger : le paramètre est bien 'bmc-partner-key'
         return {"bmc-partner-key": BMC_API_KEY} if BMC_API_KEY else {}
 
 
