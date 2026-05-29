@@ -274,7 +274,7 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         trip_data[row["trip_id"]] = {
             "route_id":      row.get("route_id", ""),
             "service_id":    row.get("service_id", ""),
-            "dir":           int(row.get("direction_id", 0)),
+            "dir": int(row.get("direction_id") or 0),
             "shape_id":      row.get("shape_id") or None,
             "trip_headsign": row.get("trip_headsign") or None,
         }
@@ -295,7 +295,6 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
 
     if not used_stop_ids:
         print(f"  No configured stops — importing all trips (first import)")
-        # pas de filtre, on garde tout trip_data
     else:
         relevant_trip_ids: set[str] = set()
         reader, zf = _open_stop_times(zip_bytes)
@@ -306,8 +305,7 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         finally:
             zf.close()
         print(f"  {len(relevant_trip_ids)} relevant trips (pass through a configured stop) "
-          f"in {time.time()-t0:.2f}s")
-        # Restrict trip_data to relevant trips only — massive RAM reduction
+              f"in {time.time()-t0:.2f}s")
         trip_data = {k: v for k, v in trip_data.items() if k in relevant_trip_ids}
 
     # ── Pass 1: build ordered stop list for relevant trips only ──────────────
@@ -328,15 +326,13 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
 
     session = next(get_db())
     try:
-        route_to_line = {l.route_id: l.id for l in session.query(Line).filter_by(agency_name=agency_name)}
-        existing_raw  = {r.gtfs_trip_id for r in
-                         session.query(RawGtfsTrip.gtfs_trip_id).filter_by(agency_name=agency_name)}
+        route_to_line  = {l.route_id: l.id for l in session.query(Line).filter_by(agency_name=agency_name)}
         sig_to_trip_id = {t.signature: t.id for t in
                           session.query(Trip.id, Trip.signature).filter_by(line_agency_name=agency_name)}
 
         new_trips_to_create: dict[str, Trip] = {}
-        raw_trips_to_add:    list[tuple[str, str, dict]] = []
-        sig_counts:          dict[str, int] = defaultdict(int)
+        sig_counts: dict[str, int] = defaultdict(int)
+        sig_sample: dict[str, str] = {}
 
         for g_id, info in trip_data.items():
             l_id  = route_to_line.get(info["route_id"])
@@ -346,6 +342,8 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
             ordered_stop_ids = [s[1] for s in stops]
             sig = _build_signature(l_id, info["dir"], ordered_stop_ids)
             sig_counts[sig] += 1
+            if sig not in sig_sample:
+                sig_sample[sig] = g_id
             if sig not in sig_to_trip_id and sig not in new_trips_to_create:
                 new_trips_to_create[sig] = Trip(
                     line_id=l_id, line_agency_name=agency_name,
@@ -353,8 +351,6 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
                     start_stop_id=ordered_stop_ids[0], terminus_stop_id=ordered_stop_ids[-1],
                     start_agency_name=agency_name, terminus_agency_name=agency_name,
                 )
-            if g_id not in existing_raw:
-                raw_trips_to_add.append((g_id, sig, info))
 
         t0 = time.time()
         if new_trips_to_create:
@@ -363,7 +359,7 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
             ts_rows = []
             for sig, trip in new_trips_to_create.items():
                 sig_to_trip_id[sig] = trip.id
-                sample_g_id = next(g for g, s, _ in raw_trips_to_add if s == sig)
+                sample_g_id = sig_sample[sig]
                 for idx, (_, stop_id) in enumerate(trip_stops_ordered[sample_g_id]):
                     ts_rows.append({"trip_id": trip.id, "stop_stop_id": stop_id,
                                     "stop_agency_name": agency_name, "sequence": idx})
@@ -390,6 +386,26 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
                     setattr(line, f"best_trip_{d}_id", best.id)
         print(f"  best trips updated in {time.time()-t0:.2f}s")
 
+        # ── Supprimer les trips canoniques orphelins (signature disparue du ZIP) ──
+        t0 = time.time()
+        active_sigs = set(sig_counts.keys())
+        orphan_trips = session.query(Trip).filter(
+            Trip.line_agency_name == agency_name,
+            Trip.signature.notin_(active_sigs),
+        ).all()
+        if orphan_trips:
+            orphan_ids = [t.id for t in orphan_trips]
+            session.query(TripStop).filter(
+                TripStop.trip_id.in_(orphan_ids)
+            ).delete(synchronize_session=False)
+            session.query(Trip).filter(
+                Trip.id.in_(orphan_ids)
+            ).delete(synchronize_session=False)
+            print(f"  {len(orphan_trips)} orphan canonical trips deleted in {time.time()-t0:.2f}s")
+        else:
+            print(f"  no orphan canonical trips to delete")
+
+        # ── DELETE all existing raw data, then reinsert everything cleanly ────
         t0 = time.time()
         session.execute(sa.text("""DELETE FROM raw_gtfs_stop_time
             WHERE raw_trip_id IN (SELECT id FROM raw_gtfs_trip WHERE agency_name = :a)"""),
@@ -398,27 +414,25 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         session.flush()
         print(f"  old raw rows deleted in {time.time()-t0:.2f}s")
 
+        # ── Single loop: insert ALL trips in trip_data (existing_raw is gone) ─
         t0 = time.time()
         raw_trip_rows = []
-        for g_id, sig, info in raw_trips_to_add:
-            raw_trip_rows.append({"gtfs_trip_id": g_id, "agency_name": agency_name,
-                                  "route_id": info["route_id"], "service_id": info["service_id"],
-                                  "direction_id": info["dir"], "shape_id": info["shape_id"],
-                                  "trip_headsign": info["trip_headsign"],
-                                  "canonical_trip_id": sig_to_trip_id.get(sig)})
         for g_id, info in trip_data.items():
-            if g_id not in existing_raw:
-                continue
             l_id  = route_to_line.get(info["route_id"])
             stops = trip_stops_ordered.get(g_id)
             if not l_id or not stops:
                 continue
             sig = _build_signature(l_id, info["dir"], [s[1] for s in stops])
-            raw_trip_rows.append({"gtfs_trip_id": g_id, "agency_name": agency_name,
-                                  "route_id": info["route_id"], "service_id": info["service_id"],
-                                  "direction_id": info["dir"], "shape_id": info["shape_id"],
-                                  "trip_headsign": info["trip_headsign"],
-                                  "canonical_trip_id": sig_to_trip_id.get(sig)})
+            raw_trip_rows.append({
+                "gtfs_trip_id":      g_id,
+                "agency_name":       agency_name,
+                "route_id":          info["route_id"],
+                "service_id":        info["service_id"],
+                "direction_id":      info["dir"],
+                "shape_id":          info["shape_id"],
+                "trip_headsign":     info["trip_headsign"],
+                "canonical_trip_id": sig_to_trip_id.get(sig),
+            })
         for batch in _chunked(raw_trip_rows, BATCH_SIZE):
             session.bulk_insert_mappings(RawGtfsTrip, batch)
         session.flush()
@@ -445,7 +459,7 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         }
         print(f"  trip_stop map built ({len(trip_stop_map)} entries) in {time.time()-t0:.2f}s")
 
-        # ── Pass 2: insert raw_gtfs_stop_time for relevant trips only ─────────
+        # ── Pass 2: insert raw_gtfs_stop_time ─────────────────────────────────
         t0 = time.time()
         mapped = inserted = 0
         batch: list[dict] = []
@@ -463,8 +477,8 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
                     mapped += 1
                 batch.append({"raw_trip_id": raw_pk, "stop_sequence": int(row["stop_sequence"]),
                               "stop_id": stop_id,
-                              "arrival_seconds":   _parse_seconds(row.get("arrival_time", "")),
-                              "departure_seconds": _parse_seconds(row.get("departure_time", "")),
+                              "arrival_seconds":        _parse_seconds(row.get("arrival_time", "")),
+                              "departure_seconds":      _parse_seconds(row.get("departure_time", "")),
                               "canonical_trip_stop_id": ts_id})
                 if len(batch) >= BATCH_SIZE:
                     session.bulk_insert_mappings(RawGtfsStopTime, batch)
@@ -487,6 +501,7 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
 
     finally:
         session.close()
+
 
 def import_gtfs_static(agency_name: str, zip_bytes: bytes, country: str = "Belgium") -> None:
     """Import all static GTFS data for agency_name from the raw ZIP bytes."""
