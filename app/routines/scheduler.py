@@ -28,6 +28,13 @@ def start():
         name='Daily STIB GTFS import',
         replace_existing=True, max_instances=1,
     )
+    scheduler.add_job(
+        stib_operator.update_realtime,
+        IntervalTrigger(seconds=15),
+        id='fetch_stib_trip_updates',
+        name='Fetch STIB TripUpdates (every 15s)',
+        replace_existing=True, max_instances=1, coalesce=True,
+    )
 
     # ===== TEC =====
     scheduler.add_job(
