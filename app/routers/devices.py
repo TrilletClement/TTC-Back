@@ -1,11 +1,15 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 import re
 
+from app.core.security.device_auth import get_device_from_cert
 from app.core.user_access import require_user
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
+from app.orm_models.device import ESP32Device
 from app.services.deviceService import DeviceService
 
 router = APIRouter(prefix="/api", tags=["devices"])
@@ -98,9 +102,13 @@ def unlink_device_from_board(esp_id: int, current_user: User, db: Session = Depe
     summary="Get LED strips state for ESP (RGB per LED)",
 )
 def get_ledstrip_status(
-    mac: str = Query(..., description="ESP MAC address, 12-hex or colon-separated"),
     db: Session = Depends(get_db),
+    device: ESP32Device = Depends(get_device_from_cert),
+    mac: Optional[str] = Query(default=None, include_in_schema=False),  # ignored — kept for old firmware compat
 ):
-    """Public endpoint polled by ESP32 hardware — no auth required."""
-    normalized_mac = _normalize_mac(mac)
-    return DeviceService.get_ledstrip_status(normalized_mac, db)
+    """LED strip state polled by ESP32 hardware — requires a valid device client certificate.
+
+    The device is identified by the mTLS client certificate; the legacy ?mac= query
+    parameter is accepted but ignored (the cert's device MAC is used instead).
+    """
+    return DeviceService.get_ledstrip_status(device.mac_address, db)
