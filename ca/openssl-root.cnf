@@ -1,0 +1,45 @@
+# OpenSSL config for the offline Root CA
+# Used only by setup-ca.sh to create the Root CA and sign the Intermediate CA.
+
+[ ca ]
+default_ca = CA_default
+
+[ CA_default ]
+dir               = DIR_PLACEHOLDER/root
+certs             = $dir/certs
+new_certs_dir     = $dir/newcerts
+database          = $dir/index.txt
+serial            = $dir/serial
+private_key       = $dir/private/ca.key
+certificate       = $dir/certs/ca.crt
+default_md        = sha256
+policy            = policy_strict
+x509_extensions   = v3_intermediate_ca
+default_days      = 1825
+
+[ policy_strict ]
+countryName             = optional
+organizationName        = supplied
+commonName              = supplied
+
+[ req ]
+default_bits        = 4096
+distinguished_name  = req_distinguished_name
+string_mask         = utf8only
+prompt              = no
+
+[ req_distinguished_name ]
+O  = Trillet
+CN = Trillet Device Root CA
+
+[ v3_ca ]
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints       = critical, CA:true
+keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
+
+[ v3_intermediate_ca ]
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints       = critical, CA:true, pathlen:0
+keyUsage               = critical, digitalSignature, cRLSign, keyCertSign

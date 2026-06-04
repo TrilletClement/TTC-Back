@@ -1,0 +1,13 @@
+# OpenSSL config for the Intermediate CA
+# Used only by setup-ca.sh to generate the Intermediate CA CSR.
+# Device cert signing is done in Python (provisioning.py), not via openssl ca.
+
+[ req ]
+default_bits        = 4096
+distinguished_name  = req_distinguished_name
+string_mask         = utf8only
+prompt              = no
+
+[ req_distinguished_name ]
+O  = Trillet
+CN = Trillet Device Intermediate CA

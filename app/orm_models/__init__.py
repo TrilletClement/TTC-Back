@@ -3,6 +3,7 @@
 from app.orm_models.models import (  # noqa: F401
     Agency,
     Board,
+    DeviceCertificate,
     ESP32Device,
     FirmwarePackage,
     Hardware,
@@ -27,6 +28,7 @@ __all__ = [
     "Role",
     "User",
     "UserRoles",
+    "DeviceCertificate",
     "ESP32Device",
     "FirmwarePackage",
     "Hardware",

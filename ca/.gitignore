@@ -1,0 +1,4 @@
+# Generated CA directories — contain private keys, never commit
+root/
+intermediate/
+.openssl-root-resolved.cnf
