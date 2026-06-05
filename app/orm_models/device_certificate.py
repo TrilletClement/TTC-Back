@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import relationship
 
 from app.orm_models.db import Base
@@ -20,7 +20,7 @@ class DeviceCertificate(Base):
     id                    = Column(Integer, primary_key=True)
     esp32_device_id       = Column(Integer, ForeignKey("esp32_device.id"), nullable=False, index=True)
     mac_address           = Column(String(17), nullable=False, index=True)
-    cert_serial           = Column(BigInteger, nullable=False, unique=True)
+    cert_serial           = Column(Numeric(scale=0), nullable=False, unique=True)
     cert_subject          = Column(String(255), nullable=False)
     cert_fingerprint_sha256 = Column(String(64), nullable=False, unique=True, index=True)
     cert_pem              = Column(Text, nullable=False)

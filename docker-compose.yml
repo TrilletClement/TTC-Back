@@ -9,7 +9,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
-    # Port 5434 kept for direct DB access during maintenance; remove in strict prod.
     ports:
       - "5434:5432"
 
@@ -25,9 +24,9 @@ services:
     environment:
       - DB_HOST=db
       - PYTHONPATH=/app
-    # No external port — nginx is the only entry point on 443.
-    expose:
-      - "8000"
+    # Port 8000 exposed to host — Apache on 192.168.14.150 proxies to it.
+    ports:
+      - "8000:8000"
     volumes:
       - ./firmware_packages:/data/firmware
       # Intermediate CA key + cert — used by FastAPI to sign device certs.
@@ -48,24 +47,6 @@ services:
     volumes:
       - ./firmware_packages:/data/firmware
     command: python -m app.routines.scheduler
-
-  nginx:
-    image: nginx:1.27-alpine
-    restart: always
-    depends_on:
-      - api
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      # nginx config (mTLS + reverse proxy)
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      # Let's Encrypt server TLS certs (managed by certbot on the host)
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      # CA chain for verifying device client certs (created by ca/setup-ca.sh)
-      - ./ca/intermediate/certs/ca-chain.pem:/etc/device-ca/ca-chain.pem:ro
-      # Certbot ACME challenge directory (HTTP-01 renewal)
-      - /var/www/certbot:/var/www/certbot:ro
 
   frontend:
     image: server-stib-frontend:latest

@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # --- CONFIGURATION ---
-SERVER_IP="192.168.14.14"
-SERVER_USER="clement"
+DOCKER_SERVER_IP="192.168.14.14"
+DOCKER_SERVER_USER="clement"
 API_IMAGE="stib-api:latest"
 FRONT_IMAGE="server-stib-frontend:latest"
 
@@ -10,7 +10,7 @@ echo "1. Sauvegarde et compression des images Docker..."
 docker save $FRONT_IMAGE | gzip > front.tar.gz
 docker save $API_IMAGE   | gzip > api.tar.gz
 
-echo "2. Compression des fichiers de configuration..."
+echo "2. Compression des fichiers de configuration CA..."
 # Bundle CA config files (setup script + OpenSSL configs only — NOT the
 # generated keys, which live permanently on the server and are gitignored).
 tar czf ca-config.tar.gz \
@@ -18,26 +18,21 @@ tar czf ca-config.tar.gz \
     ca/openssl-root.cnf \
     ca/openssl-inter.cnf
 
-# Bundle nginx config
-tar czf nginx-config.tar.gz nginx/nginx.conf
-
-echo "3. Transfert vers le serveur ($SERVER_IP)..."
+echo "3. Transfert vers le serveur Docker ($DOCKER_SERVER_IP)..."
 # .env is NOT transferred — the server keeps its own prod .env.
-# To set up a new server: ssh in and create /root/.env from .env.example.
 scp front.tar.gz api.tar.gz docker-compose.yml \
-    ca-config.tar.gz nginx-config.tar.gz \
-    $SERVER_USER@$SERVER_IP:/tmp/
+    ca-config.tar.gz \
+    $DOCKER_SERVER_USER@$DOCKER_SERVER_IP:/tmp/
 
-echo "4. Installation sur le serveur..."
-ssh -t $SERVER_USER@$SERVER_IP "su - root -c '
+echo "4. Installation sur le serveur Docker..."
+ssh -t $DOCKER_SERVER_USER@$DOCKER_SERVER_IP "su - root -c '
     mv /tmp/front.tar.gz /tmp/api.tar.gz /tmp/docker-compose.yml /root/
 
-    echo \"--- Extraction des configs CA et nginx ---\"
-    mkdir -p /root/ca /root/nginx
-    tar xzf /tmp/ca-config.tar.gz    -C /root/
-    tar xzf /tmp/nginx-config.tar.gz -C /root/
+    echo \"--- Extraction de la config CA ---\"
+    mkdir -p /root/ca
+    tar xzf /tmp/ca-config.tar.gz -C /root/
     chmod +x /root/ca/setup-ca.sh
-    rm /tmp/ca-config.tar.gz /tmp/nginx-config.tar.gz
+    rm /tmp/ca-config.tar.gz
 
     echo \"--- Configuration de l environnement frontend ---\"
     mkdir -p /root/stibFront/public
@@ -78,8 +73,13 @@ ssh -t $SERVER_USER@$SERVER_IP "su - root -c '
     echo \"--- Nettoyage ---\"
     rm front.tar.gz api.tar.gz
     docker image prune -f
-    echo \"Deploiement termine avec succes !\"
+    echo \"Serveur Docker: deploiement termine !\"
 '"
 
 echo "5. Nettoyage local..."
-rm -f front.tar.gz api.tar.gz ca-config.tar.gz nginx-config.tar.gz
+rm -f front.tar.gz api.tar.gz ca-config.tar.gz
+
+echo ""
+echo "=== Deploiement termine ==="
+echo "  API:      https://transport.trillet.be/api/"
+echo "  Frontend: https://transport.trillet.be/"
