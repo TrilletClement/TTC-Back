@@ -42,3 +42,4 @@ postgres_data/
 data/
 firmware_packages/
 ecosystem.ignore.config.js
+ca-config.tar.gz

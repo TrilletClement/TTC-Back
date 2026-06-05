@@ -42,7 +42,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.orm_models.db import get_db
-from app.orm_models.device import ESP32Device
+from app.orm_models.device import ESP32Device, Hardware
 from app.orm_models.device_certificate import DeviceCertificate
 
 logger = logging.getLogger(__name__)
@@ -197,17 +197,29 @@ def sign_device_csr(
             already_enrolled=True,
         )
 
+    # Validate hardware type is registered
+    hardware = db.query(Hardware).filter_by(hardware_type=payload.hardware_type).first()
+    if hardware is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown hardware type '{payload.hardware_type}' — add it to the Hardware table first",
+        )
+
     # Look up or create the ESP32Device (no owner until customer links it)
     device = db.query(ESP32Device).filter_by(mac_address=mac).first()
     if device is None:
         device = ESP32Device(
             mac_address=mac,
             owner_id=None,
+            hardware_id=hardware.id,
             registered_at=datetime.datetime.utcnow(),
         )
         db.add(device)
         db.flush()   # get the auto-generated id
-        logger.info("Created new ESP32Device id=%s for MAC %s", device.id, mac)
+        logger.info("Created new ESP32Device id=%s for MAC %s hardware=%s",
+                    device.id, mac, payload.hardware_type)
+    elif device.hardware_id is None:
+        device.hardware_id = hardware.id
 
     # Sign the CSR
     cert_pem, serial, fingerprint, subject, expires_at = _sign_csr(
@@ -225,6 +237,7 @@ def sign_device_csr(
         issued_at=datetime.datetime.utcnow(),
         expires_at=expires_at,
     )
+    device.last_connected = datetime.datetime.utcnow()
     db.add(device_cert)
     db.commit()
 

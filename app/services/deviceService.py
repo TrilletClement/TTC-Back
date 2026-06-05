@@ -30,46 +30,6 @@ class DeviceService:
         return {"esp_devices": esp, "boards": boards}
 
     @staticmethod
-    def delete_esp_device(esp_id: int, current_user: User, db: Session):
-        device = db.query(ESP32Device).filter_by(id=esp_id, owner_id=current_user.id).first()
-        if not device:
-            raise HTTPException(status_code=404, detail="Device not found or not owned by the user.")
-        db.delete(device)
-        db.commit()
-        return {"message": "Device deleted successfully."}
-
-    @staticmethod
-    def register_device_by_account(mac_address: str, name: str, current_user: User, db: Session):
-        if not mac_address:
-            raise HTTPException(status_code=400, detail="MAC address is required.")
-
-        mac_address = mac_address.lower().strip()
-        if not re.fullmatch(r"[0-9a-f]{12}", mac_address):
-            raise HTTPException(status_code=400, detail="Invalid MAC address. Must be 12 hex characters (0-9, a-e).")
-
-        formatted_mac = ":".join(mac_address[i : i + 2] for i in range(0, 12, 2))
-
-        if name:
-            name = name.strip()
-            if len(name) > 100:
-                raise HTTPException(status_code=400, detail="Device name too long (max 100 characters).")
-
-        existing = db.query(ESP32Device).filter_by(mac_address=formatted_mac).first()
-        if existing:
-            raise HTTPException(status_code=409, detail=f"MAC address already registered. Device ID: {existing.id}")
-
-        if name:
-            same_name = db.query(ESP32Device).filter_by(owner_id=current_user.id, name=name).first()
-            if same_name:
-                raise HTTPException(status_code=409, detail=f'You already have a device named "{name}".')
-
-        new_device = ESP32Device(mac_address=formatted_mac, name=name, owner_id=current_user.id)
-        db.add(new_device)
-        db.commit()
-        db.refresh(new_device)
-        return {"message": "Device registered successfully.", "id": new_device.id}
-
-    @staticmethod
     def link_device_to_board(esp_id: int, board_id: int, current_user: User, db: Session):
         if not esp_id or not board_id:
             raise HTTPException(status_code=400, detail="Both ESP ID and board ID are required.")

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.user_access import require_admin
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
-from app.orm_models.device import ESP32Device, FirmwarePackage
+from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware
 from app.orm_models.board import Board
 from app.orm_models.order import Order
 
@@ -43,6 +43,7 @@ class DevicePatch(BaseModel):
     unlink_board: bool = False
     target_firmware_id: Optional[int] = None
     clear_target_firmware: bool = False
+    hardware_id: Optional[int] = None
 
 
 class BoardListOut(BaseModel):
@@ -69,7 +70,7 @@ class DeviceAdminOut(BaseModel):
 @router.get("", response_model=list[DeviceAdminOut])
 @require_admin
 def list_all_devices(db: Session = Depends(get_db)):
-    devices = db.query(ESP32Device).order_by(ESP32Device.last_connected.desc().nullslast()).all()
+    devices = db.query(ESP32Device).order_by(ESP32Device.registered_at.desc().nullslast()).all()
 
     result = []
     for d in devices:
@@ -164,6 +165,12 @@ def patch_device(device_id: int, payload: DevicePatch, db: Session = Depends(get
         if not pkg:
             raise HTTPException(status_code=404, detail="Firmware package not found")
         device.target_firmware_id = payload.target_firmware_id
+
+    if payload.hardware_id is not None:
+        hw = db.query(Hardware).filter(Hardware.id == payload.hardware_id).first()
+        if not hw:
+            raise HTTPException(status_code=404, detail="Hardware type not found")
+        device.hardware_id = payload.hardware_id
 
     db.commit()
     db.refresh(device)

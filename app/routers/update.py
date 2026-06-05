@@ -1,3 +1,4 @@
+import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,6 +28,9 @@ async def get_update_versions(
     device: ESP32Device = Depends(get_device_from_cert),
 ):
     """OTA version check — requires a valid device client certificate."""
+    device.last_connected = datetime.datetime.utcnow()
+    db.commit()
+
     version_info = UpdateService.get_version_info(
         db=db,
         hardware=payload.hardware,

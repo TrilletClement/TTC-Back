@@ -1,6 +1,5 @@
-from typing import Optional
-
-from fastapi import APIRouter, Depends, HTTPException, Query
+import datetime
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 import re
@@ -15,14 +14,13 @@ from app.services.deviceService import DeviceService
 router = APIRouter(prefix="/api", tags=["devices"])
 
 
-class DeviceRegister(BaseModel):
-    mac_address: str
-    name: str | None = None
-
-
 class DeviceLink(BaseModel):
     esp_id: int
     board_id: int
+
+
+class DeviceRename(BaseModel):
+    name: str | None = None
 
 
 class LedStripStatusRow(BaseModel):
@@ -47,21 +45,6 @@ def _normalize_mac(mac: str) -> str:
     raise HTTPException(status_code=400, detail="Invalid MAC format")
 
 
-@router.post("/register_device_mac")
-@require_user
-def register_device_by_mac(
-    device_data: DeviceRegister,
-    current_user: User,
-    db: Session = Depends(get_db),
-):
-    return DeviceService.register_device_by_account(
-        device_data.mac_address,
-        device_data.name,
-        current_user,
-        db,
-    )
-
-
 @router.get("/esp-devices")
 @require_user
 def get_esp_devices(current_user: User, db: Session = Depends(get_db)):
@@ -69,10 +52,15 @@ def get_esp_devices(current_user: User, db: Session = Depends(get_db)):
     return [d.to_dict() for d in devices]
 
 
-@router.delete("/esp-devices/{esp_id}")
+@router.patch("/esp-devices/{esp_id}/name")
 @require_user
-def delete_esp_device(esp_id: int, current_user: User, db: Session = Depends(get_db)):
-    return DeviceService.delete_esp_device(esp_id, current_user, db)
+def rename_esp_device(esp_id: int, body: DeviceRename, current_user: User, db: Session = Depends(get_db)):
+    device = db.query(ESP32Device).filter_by(id=esp_id, owner_id=current_user.id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found.")
+    device.name = body.name.strip() if body.name else None
+    db.commit()
+    return {"id": device.id, "name": device.name}
 
 
 @router.post("/link-device-board")
@@ -104,11 +92,8 @@ def unlink_device_from_board(esp_id: int, current_user: User, db: Session = Depe
 def get_ledstrip_status(
     db: Session = Depends(get_db),
     device: ESP32Device = Depends(get_device_from_cert),
-    mac: Optional[str] = Query(default=None, include_in_schema=False),  # ignored — kept for old firmware compat
 ):
-    """LED strip state polled by ESP32 hardware — requires a valid device client certificate.
-
-    The device is identified by the mTLS client certificate; the legacy ?mac= query
-    parameter is accepted but ignored (the cert's device MAC is used instead).
-    """
+    """LED strip state polled by ESP32 hardware — requires a valid device client certificate."""
+    device.last_connected = datetime.datetime.utcnow()
+    db.commit()
     return DeviceService.get_ledstrip_status(device.mac_address, db)
