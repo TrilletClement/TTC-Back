@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
 
+    # Device mTLS provisioning
+    # Secret shared with the home-server enrollment proxy.
+    # Set to a strong random value in .env.prod; leave empty locally to disable
+    # the provisioning endpoint (requests will be rejected with 401).
+    HOME_SERVER_SECRET: str = ""
+    # Paths inside the Docker container (mounted from ./ca/intermediate/)
+    DEVICE_CA_KEY_PATH: str = "/etc/device-ca/inter.key"
+    DEVICE_CA_CERT_PATH: str = "/etc/device-ca/inter.crt"
+
     @computed_field  # type: ignore[misc]
     @property
     def GOOGLE_REDIRECT_URI(self) -> str:
