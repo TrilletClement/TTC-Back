@@ -46,12 +46,7 @@ BATCH_SIZE = 5000
 
 
 def refresh_active_intervals() -> None:
-    """Refresh the active_incoming_intervals materialized view.
-
-    Uses CONCURRENTLY so reads are not blocked during refresh (safe for the
-    every-30s RT poller).  Falls back to a plain refresh on first populate
-    (CONCURRENTLY requires the view to already have data and a unique index).
-    """
+    """Refresh the active_incoming_intervals materialized view."""
     tic = time.time()
     session = next(get_db())
     try:
@@ -74,8 +69,116 @@ def refresh_active_intervals() -> None:
         session.close()
 
 
+def _rebuild_trip_stop_led_links(session, agency_name: str) -> None:
+    """Répare les liens trip_stop_led_link qui pointent vers des trip_stop_id
+    qui n'existent plus, en les remappant via stop_stop_id + stop_agency_name.
+
+    Appelé après chaque import statique pour garantir la cohérence même si
+    les trip_stop ont été recréés avec de nouveaux IDs (ex: après --import).
+    """
+    tic = time.time()
+
+    # 1. Trouver les liens cassés (trip_stop_id inexistant)
+    broken = session.execute(sa.text("""
+        SELECT tsl.led_id, tsl.trip_stop_id
+        FROM trip_stop_led_link tsl
+        WHERE NOT EXISTS (
+            SELECT 1 FROM trip_stop ts WHERE ts.id = tsl.trip_stop_id
+        )
+    """)).all()
+
+    if not broken:
+        print(f"  trip_stop_led_link: no broken links found")
+        return
+
+    print(f"  trip_stop_led_link: {len(broken)} broken links found, rebuilding...")
+
+    # 2. Pour chaque lien cassé, retrouver le stop_stop_id via raw_gtfs_stop_time
+    #    ou via une table de mapping temporaire. On utilise une approche différente :
+    #    on cherche dans trip_stop le stop qui correspond à l'ancien lien via
+    #    la vue active_incoming_intervals (qui garde encore les anciens ids).
+    broken_ts_ids = list({row.trip_stop_id for row in broken})
+
+    # Récupérer les stop_stop_id depuis la vue matérialisée (qui a les anciens ids)
+    # via raw_gtfs_stop_time qui a canonical_trip_stop_id = ancien id
+    old_to_stop: dict[int, tuple[str, str]] = {}  # old_id -> (stop_stop_id, agency_name)
+    rows = session.execute(sa.text("""
+        SELECT DISTINCT rst.canonical_trip_stop_id, rst.stop_id, rgt.agency_name
+        FROM raw_gtfs_stop_time rst
+        JOIN raw_gtfs_trip rgt ON rgt.id = rst.raw_trip_id
+        WHERE rst.canonical_trip_stop_id = ANY(:ids)
+    """), {"ids": broken_ts_ids}).all()
+
+    for row in rows:
+        old_to_stop[row.canonical_trip_stop_id] = (row.stop_id, row.agency_name)
+
+    if not old_to_stop:
+        # Fallback: les anciens canonical_trip_stop_id ne sont plus dans raw_gtfs_stop_time
+        # On ne peut pas reconstruire sans info supplémentaire
+        print(f"  trip_stop_led_link: cannot rebuild — no stop mapping found in raw data")
+        # Supprimer les liens cassés pour éviter les fantômes
+        session.execute(sa.text("""
+            DELETE FROM trip_stop_led_link
+            WHERE NOT EXISTS (
+                SELECT 1 FROM trip_stop ts WHERE ts.id = trip_stop_led_link.trip_stop_id
+            )
+        """))
+        session.flush()
+        print(f"  trip_stop_led_link: {len(broken)} broken links deleted")
+        return
+
+    # 3. Trouver les nouveaux trip_stop_id via stop_stop_id
+    stop_ids_needed = list({v[0] for v in old_to_stop.values()})
+    new_stop_rows = session.execute(sa.text("""
+        SELECT id, stop_stop_id, stop_agency_name
+        FROM trip_stop
+        WHERE stop_stop_id = ANY(:ids)
+          AND stop_agency_name = :a
+    """), {"ids": stop_ids_needed, "a": agency_name}).all()
+
+    # stop_stop_id -> nouveau trip_stop_id (prend le premier trouvé)
+    stop_to_new_ts: dict[str, int] = {}
+    for row in new_stop_rows:
+        if row.stop_stop_id not in stop_to_new_ts:
+            stop_to_new_ts[row.stop_stop_id] = row.id
+
+    # 4. Reconstruire les liens
+    to_insert = []
+    to_delete = []
+    for led_id, old_ts_id in broken:
+        mapping = old_to_stop.get(old_ts_id)
+        if mapping:
+            stop_stop_id, _ = mapping
+            new_ts_id = stop_to_new_ts.get(stop_stop_id)
+            if new_ts_id:
+                to_insert.append({"trip_stop_id": new_ts_id, "led_id": led_id})
+            else:
+                to_delete.append({"led_id": led_id, "trip_stop_id": old_ts_id})
+        else:
+            to_delete.append({"led_id": led_id, "trip_stop_id": old_ts_id})
+
+    # Supprimer les liens cassés
+    if to_delete:
+        session.execute(sa.text("""
+            DELETE FROM trip_stop_led_link
+            WHERE led_id = :led_id AND trip_stop_id = :trip_stop_id
+        """), to_delete)
+
+    # Insérer les nouveaux liens
+    if to_insert:
+        session.execute(sa.text("""
+            INSERT INTO trip_stop_led_link (trip_stop_id, led_id)
+            VALUES (:trip_stop_id, :led_id)
+            ON CONFLICT DO NOTHING
+        """), to_insert)
+
+    session.flush()
+    print(f"  trip_stop_led_link: {len(to_insert)} rebuilt, {len(to_delete)} deleted"
+          f" in {time.time()-tic:.2f}s")
+
+
 # ---------------------------------------------------------------------------
-# Shared helpers (also importable by operator modules)
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 def _chunked(iterable, size):
@@ -90,7 +193,6 @@ def _chunked(iterable, size):
 
 
 def _parse_seconds(time_str: str):
-    """Convert GTFS HH:MM:SS (may exceed 24 h) to integer seconds from midnight."""
     if not time_str:
         return None
     try:
@@ -106,14 +208,12 @@ def _build_signature(line_id: int, direction: int, stop_ids: list) -> str:
 
 
 def _open_stop_times(zip_bytes: bytes):
-    """Open stop_times.txt for streaming. Caller must close the returned ZipFile."""
     zf  = zipfile.ZipFile(BytesIO(zip_bytes))
     raw = zf.open("stop_times.txt")
     return csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8")), zf
 
 
 def load_text_files(zip_bytes: bytes) -> dict[str, str]:
-    """Load all GTFS text files except stop_times.txt (stream that via _open_stop_times)."""
     result = {}
     with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
         for name in ("agency.txt", "routes.txt", "stops.txt", "trips.txt",
@@ -265,7 +365,7 @@ def _import_calendar(agency_name: str, calendar_csv_text: str, calendar_dates_cs
 
 
 def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
-    """Two-pass streaming trip import. See module docstring for memory rationale."""
+    """Two-pass streaming trip import."""
     tic = time.time()
 
     t0 = time.time()
@@ -280,7 +380,6 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         }
     print(f"  trips.txt parsed ({len(trip_data)} trips) in {time.time()-t0:.2f}s")
 
-    # ── Pre-filter: only keep trips that pass through a stop used on a board ──
     t0 = time.time()
     session = next(get_db())
     try:
@@ -308,7 +407,6 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
               f"in {time.time()-t0:.2f}s")
         trip_data = {k: v for k, v in trip_data.items() if k in relevant_trip_ids}
 
-    # ── Pass 1: build ordered stop list for relevant trips only ──────────────
     t0 = time.time()
     trip_stops_ordered: dict[str, list[tuple[int, str]]] = defaultdict(list)
     reader, zf = _open_stop_times(zip_bytes)
@@ -386,7 +484,6 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
                     setattr(line, f"best_trip_{d}_id", best.id)
         print(f"  best trips updated in {time.time()-t0:.2f}s")
 
-        # ── Supprimer les trips canoniques orphelins (signature disparue du ZIP) ──
         t0 = time.time()
         active_sigs = set(sig_counts.keys())
         orphan_trips = session.query(Trip).filter(
@@ -405,7 +502,6 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         else:
             print(f"  no orphan canonical trips to delete")
 
-        # ── DELETE all existing raw data, then reinsert everything cleanly ────
         t0 = time.time()
         session.execute(sa.text("""DELETE FROM raw_gtfs_stop_time
             WHERE raw_trip_id IN (SELECT id FROM raw_gtfs_trip WHERE agency_name = :a)"""),
@@ -414,7 +510,6 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         session.flush()
         print(f"  old raw rows deleted in {time.time()-t0:.2f}s")
 
-        # ── Single loop: insert ALL trips in trip_data (existing_raw is gone) ─
         t0 = time.time()
         raw_trip_rows = []
         for g_id, info in trip_data.items():
@@ -459,7 +554,6 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         }
         print(f"  trip_stop map built ({len(trip_stop_map)} entries) in {time.time()-t0:.2f}s")
 
-        # ── Pass 2: insert raw_gtfs_stop_time ─────────────────────────────────
         t0 = time.time()
         mapped = inserted = 0
         batch: list[dict] = []
@@ -497,6 +591,10 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         print(f"  committed in {time.time()-t0:.2f}s")
         print(f"{agency_name} Trips imported in {time.time()-tic:.2f}s")
 
+        # ── Réparer les liens trip_stop_led_link cassés ───────────────────────
+        _rebuild_trip_stop_led_links(session, agency_name)
+        session.commit()
+
         refresh_active_intervals()
 
     finally:
@@ -521,34 +619,19 @@ def import_gtfs_static(agency_name: str, zip_bytes: bytes, country: str = "Belgi
 # ---------------------------------------------------------------------------
 
 class GtfsOperator:
-    """Base class for a GTFS-compliant transit operator.
-
-    Subclass, set the class attributes, override _headers, and optionally
-    override _fetch_rt_raw() (if RT auth differs from static) or
-    parse_rt_feed() entirely (if the RT feed is not standard GTFS-RT protobuf).
-
-    The default parse_rt_feed() handles GTFS-RT VehiclePositions (protobuf)
-    with a sequence-map cache rebuilt from the static GTFS ZIP.
-    """
-
     AGENCY_NAME:     str = ""
     COUNTRY:         str = "Belgium"
     GTFS_STATIC_URL: str = ""
-    GTFS_RT_URL:     str = ""    # GTFS-RT TripUpdates feed (empty = RT disabled)
+    GTFS_RT_URL:     str = ""
     STATIC_TIMEOUT:  int = 120
     RT_TIMEOUT:      int = 10
 
     def __init__(self):
         pass
 
-    # ── Configuration hooks ───────────────────────────────────────────────────
-
     @property
     def _headers(self) -> dict:
-        """HTTP headers for static GTFS download. Override in subclass."""
         return {}
-
-    # ── Static import ─────────────────────────────────────────────────────────
 
     def _fetch_zip_bytes(self) -> bytes:
         print(f"[{time.strftime('%H:%M:%S')}] [{self.AGENCY_NAME}] Téléchargement GTFS statique…")
@@ -559,24 +642,15 @@ class GtfsOperator:
         return r.content
 
     def import_static(self) -> None:
-        """Download and import the full static GTFS dataset."""
         import_gtfs_static(self.AGENCY_NAME, self._fetch_zip_bytes(), self.COUNTRY)
 
-    # ── Realtime ──────────────────────────────────────────────────────────────
-
     def _fetch_rt_raw(self) -> bytes:
-        """Fetch raw GTFS-RT bytes. Override when RT auth differs from static."""
         r = requests.get(self.GTFS_RT_URL, headers=self._headers, timeout=self.RT_TIMEOUT)
         if r.status_code != 200:
             raise RuntimeError(f"[{self.AGENCY_NAME}] RT HTTP {r.status_code}: {r.text[:200]}")
         return r.content
 
     def update_realtime(self) -> None:
-        """Fetch GTFS-RT TripUpdates and upsert into realtime_stop_time_override.
-
-        No-op when GTFS_RT_URL is not set.
-        Override entirely in subclasses with non-standard feeds (e.g. StibOperator).
-        """
         if not self.GTFS_RT_URL:
             return
 
