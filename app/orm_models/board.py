@@ -30,7 +30,7 @@ class Board(Base):
     owner = relationship("User", backref="boards")
     svg_path = Column(String(255))
     archived = Column(Boolean, nullable=False, default=False)
-    board_type_id = Column(Integer, ForeignKey("board_type.id"), nullable=True)
+    board_type_id = Column(Integer, ForeignKey("board_type.id"), nullable=False)
     board_type = relationship("BoardType")
     led_strips = relationship("LedStrip", backref="board")
 

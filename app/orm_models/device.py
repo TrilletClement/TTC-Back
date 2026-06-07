@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from app.orm_models.db import Base
@@ -22,6 +22,7 @@ class Hardware(Base):
     hardware_type       = Column(String(100), nullable=False, unique=True)
     firmware_package_id = Column(Integer, ForeignKey("firmware_package.id"), nullable=True)
     created_at          = Column(DateTime, nullable=False, default=datetime.utcnow)
+    json_settings       = Column(Text, nullable=True)
 
     firmware = relationship("FirmwarePackage", foreign_keys=[firmware_package_id])
 
@@ -44,9 +45,11 @@ class ESP32Device(Base):
     target_firmware_id  = Column(Integer, ForeignKey("firmware_package.id"), nullable=True)
     current_firmware   = relationship("FirmwarePackage", foreign_keys=[current_firmware_id])
     target_firmware    = relationship("FirmwarePackage", foreign_keys=[target_firmware_id])
-    last_connected     = Column(DateTime)
-    last_ota_check     = Column(DateTime)
-    registered_at      = Column(DateTime, default=datetime.now())
+    last_connected             = Column(DateTime)
+    last_ota_check             = Column(DateTime)
+    registered_at              = Column(DateTime, default=datetime.now())
+    json_settings_override     = Column(Text, nullable=True)
+    last_settings_updated_at   = Column(DateTime, nullable=True)
 
     def to_dict(self):
         return {

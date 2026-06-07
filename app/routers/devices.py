@@ -1,10 +1,12 @@
 import datetime
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 import re
 
-from app.core.security.device_auth import get_device_from_cert
+from app.core.security.device_auth import get_device_from_mac
 from app.core.user_access import require_user
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
@@ -34,6 +36,7 @@ class LedStripStatusRow(BaseModel):
 
 class LedStripStatusResponse(BaseModel):
     strips: list[LedStripStatusRow]
+    settings_updated_at: Optional[str] = None
 
 
 def _normalize_mac(mac: str) -> str:
@@ -91,9 +94,19 @@ def unlink_device_from_board(esp_id: int, current_user: User, db: Session = Depe
 )
 def get_ledstrip_status(
     db: Session = Depends(get_db),
-    device: ESP32Device = Depends(get_device_from_cert),
+    device: ESP32Device = Depends(get_device_from_mac),
 ):
-    """LED strip state polled by ESP32 hardware — requires a valid device client certificate."""
+    """LED strip state polled by ESP32 hardware — requires a device cert (Apache gate) and X-Device-Mac header."""
     device.last_connected = datetime.datetime.utcnow()
     db.commit()
     return DeviceService.get_ledstrip_status(device.mac_address, db)
+
+
+@router.get("/esp/settings", summary="Get effective device settings")
+def get_esp_settings(
+    db: Session = Depends(get_db),
+    device: ESP32Device = Depends(get_device_from_mac),
+):
+    """Device settings merged from hardware defaults + device overrides."""
+    from app.services.settingsService import SettingsService
+    return SettingsService.get_effective_settings(device)

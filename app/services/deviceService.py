@@ -76,19 +76,34 @@ class DeviceService:
         if not board:
             raise HTTPException(status_code=404, detail="Linked board not found")
 
+        bt = board.board_type
+        max_strips = bt.max_ledstrip
+        max_leds   = bt.max_led
+
         # Reuse the canonical LED-state logic — single source of truth for isOn.
         strips_data = BoardService._build_led_strips_data(board, db)
 
-        response_data = []
+        # Build configured strips indexed by their h (order_index, 1-based).
+        configured: dict[int, list[list[int]]] = {}
         for idx, strip in enumerate(strips_data, start=1):
+            h = strip.get("orderIndex") if strip.get("orderIndex") is not None else idx
             rgb_array = [
                 DeviceService._parse_color_to_rgb(led.get("ledColor")) if led.get("isOn") else [0, 0, 0]
                 for led in strip.get("leds", [])
             ]
-            response_data.append({
-                "id": strip["id"],
-                "h":  strip.get("orderIndex") if strip.get("orderIndex") is not None else idx,
-                "v":  rgb_array,
-            })
+            # Pad or trim to exactly max_leds so the ESP always gets a fixed-size array.
+            if len(rgb_array) < max_leds:
+                rgb_array += [[0, 0, 0]] * (max_leds - len(rgb_array))
+            else:
+                rgb_array = rgb_array[:max_leds]
+            configured[h] = rgb_array
 
-        return {"strips": response_data}
+        # Always return exactly max_strips rows; unconfigured slots are all zeros.
+        empty_strip = [[0, 0, 0]] * max_leds
+        response_data = [
+            {"id": h, "h": h, "v": configured.get(h, empty_strip)}
+            for h in range(1, max_strips + 1)
+        ]
+
+        settings_ts = esp.last_settings_updated_at.isoformat() if esp.last_settings_updated_at else None
+        return {"strips": response_data, "settings_updated_at": settings_ts}

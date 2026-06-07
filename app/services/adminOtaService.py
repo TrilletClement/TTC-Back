@@ -83,9 +83,18 @@ class AdminOtaService:
 
         pkg_users = {p.id: cls._users_of_package(db, p.id) for p in packages}
 
+        # Devices linked to each hardware type (so frontend can warn before delete)
+        hw_devices: dict[int, list[str]] = {
+            hw.id: [
+                d.mac_address
+                for d in db.query(ESP32Device).filter(ESP32Device.hardware_id == hw.id).all()
+            ]
+            for hw in hardware
+        }
+
         return {
             "packages": [{**cls._pkg(p), **pkg_users[p.id]} for p in packages],
-            "hardware": [cls._hw(h) for h in hardware],
+            "hardware": [{**cls._hw(h), "device_macs": hw_devices[h.id]} for h in hardware],
             "device_overrides": [
                 {
                     "device_id":      d.id,
@@ -141,17 +150,26 @@ class AdminOtaService:
         return {"message": "Package updated", "package": cls._pkg(pkg)}
 
     @classmethod
-    def delete_package(cls, db: Session, package_id: int, delete_file: bool = False) -> dict:
+    def delete_package(cls, db: Session, package_id: int, delete_file: bool = False, force: bool = False) -> dict:
         pkg = db.query(FirmwarePackage).filter(FirmwarePackage.id == package_id).first()
         if not pkg:
             raise HTTPException(status_code=404, detail="Package not found")
 
         users = cls._users_of_package(db, package_id)
-        if users["hardware_types"] or users["device_macs"]:
+        if (users["hardware_types"] or users["device_macs"]) and not force:
             raise HTTPException(
                 status_code=409,
                 detail=f"Still used by hardware: {users['hardware_types']} / devices: {users['device_macs']}"
             )
+
+        if force:
+            db.query(Hardware).filter(
+                Hardware.firmware_package_id == package_id
+            ).update({"firmware_package_id": None}, synchronize_session=False)
+            db.query(ESP32Device).filter(
+                ESP32Device.target_firmware_id == package_id
+            ).update({"target_firmware_id": None}, synchronize_session=False)
+            db.flush()
 
         filename = pkg.filename
         db.delete(pkg)
@@ -193,9 +211,16 @@ class AdminOtaService:
         hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
         if not hw:
             raise HTTPException(status_code=404, detail="Hardware not found")
+
+        # Null out hardware_id on any devices that reference this type so the
+        # FK constraint doesn't fire.
+        linked = db.query(ESP32Device).filter(ESP32Device.hardware_id == hardware_id).all()
+        for device in linked:
+            device.hardware_id = None
+
         db.delete(hw)
         db.commit()
-        return {"message": "Hardware deleted"}
+        return {"message": "Hardware deleted", "devices_unlinked": len(linked)}
 
     @staticmethod
     def assign_device_firmware(db: Session, mac_address: str, firmware_package_id: Optional[int]) -> dict:

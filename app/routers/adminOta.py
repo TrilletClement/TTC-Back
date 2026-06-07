@@ -41,12 +41,13 @@ def archive_package(package_id: int, payload: ArchiveRequest, db: Session = Depe
 class DeletePackageRequest(BaseModel):
     package_id: int
     delete_file: bool = False
+    force: bool = False
 
 
 @router.delete("/packages")
 @require_admin
 def delete_package(payload: DeletePackageRequest, db: Session = Depends(get_db)):
-    return AdminOtaService.delete_package(db, payload.package_id, payload.delete_file)
+    return AdminOtaService.delete_package(db, payload.package_id, payload.delete_file, payload.force)
 
 
 class UpsertHardwareRequest(BaseModel):

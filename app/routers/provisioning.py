@@ -179,7 +179,11 @@ def sign_device_csr(
             detail=f"CSR CN '{csr_cn}' does not match declared MAC '{mac}'",
         )
 
-    # Idempotency: if an active cert already exists for this MAC, return it
+    # Idempotency: if an active cert already exists for this MAC, return it —
+    # but only if the CSR carries the same public key (i.e. same device key).
+    # If the public key changed (flash erased → new key generated), the old
+    # cert and the new private key would mismatch. Revoke the old cert so a
+    # fresh one is issued for the new key.
     existing_cert = (
         db.query(DeviceCertificate)
         .filter(
@@ -189,13 +193,39 @@ def sign_device_csr(
         .first()
     )
     if existing_cert:
-        logger.info("MAC %s already enrolled — returning existing cert", mac)
-        return SigningResponse(
-            cert_pem=existing_cert.cert_pem,
-            expires_at=existing_cert.expires_at.isoformat(),
-            device_id=existing_cert.esp32_device_id,
-            already_enrolled=True,
+        try:
+            existing_x509 = x509.load_pem_x509_certificate(existing_cert.cert_pem.encode())
+            same_key = (
+                existing_x509.public_key().public_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+                == csr.public_key().public_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+            )
+        except Exception:
+            same_key = False
+
+        if same_key:
+            logger.info("MAC %s already enrolled with same key — returning existing cert", mac)
+            return SigningResponse(
+                cert_pem=existing_cert.cert_pem,
+                expires_at=existing_cert.expires_at.isoformat(),
+                device_id=existing_cert.esp32_device_id,
+                already_enrolled=True,
+            )
+
+        # Public key changed (device flash was erased): revoke old cert and
+        # fall through to issue a fresh one for the new key.
+        logger.info(
+            "MAC %s submitted new public key — revoking old cert serial=%s and issuing new one",
+            mac, existing_cert.cert_serial,
         )
+        existing_cert.revoked_at = datetime.datetime.utcnow()
+        existing_cert.revocation_reason = "key_replacement"
+        db.flush()
 
     # Validate hardware type is registered
     hardware = db.query(Hardware).filter_by(hardware_type=payload.hardware_type).first()
