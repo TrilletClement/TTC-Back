@@ -25,6 +25,10 @@ class DeviceRename(BaseModel):
     name: str | None = None
 
 
+class DeviceLuminosity(BaseModel):
+    light_intensity_percent: float
+
+
 class LedStripStatusRow(BaseModel):
     id: int
     h: int = Field(..., description="Row index/order")
@@ -79,6 +83,32 @@ def link_device_to_board(
         current_user,
         db,
     )
+
+
+@router.get("/esp-devices/{esp_id}/settings")
+@require_user
+def get_device_luminosity(esp_id: int, current_user: User, db: Session = Depends(get_db)):
+    device = db.query(ESP32Device).filter_by(id=esp_id, owner_id=current_user.id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found.")
+    from app.services.settingsService import SettingsService
+    effective = SettingsService.get_effective_settings(device)
+    return {"light_intensity_percent": effective.get("light_intensity_percent", 100.0)}
+
+
+@router.patch("/esp-devices/{esp_id}/settings")
+@require_user
+def patch_device_luminosity(esp_id: int, body: DeviceLuminosity, current_user: User, db: Session = Depends(get_db)):
+    device = db.query(ESP32Device).filter_by(id=esp_id, owner_id=current_user.id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found.")
+    import json as _json
+    overrides = _json.loads(device.json_settings_override or '{}')
+    overrides['light_intensity_percent'] = max(0.0, min(100.0, body.light_intensity_percent))
+    device.json_settings_override = _json.dumps(overrides)
+    device.last_settings_updated_at = datetime.datetime.utcnow()
+    db.commit()
+    return {"light_intensity_percent": overrides['light_intensity_percent']}
 
 
 @router.post("/unlink-device-board/{esp_id}")

@@ -18,6 +18,10 @@ class UpdateRequest(BaseModel):
     hardware_version: Optional[str] = None
     firmware_name: Optional[str] = None
     current_version: Optional[str] = None
+    running_partition: Optional[str] = None
+    boot_partition: Optional[str] = None
+    update_partition: Optional[str] = None
+    ota_state: Optional[str] = None
 
 
 @router.post("/versions")
@@ -37,6 +41,10 @@ async def get_update_versions(
         hardware_version=payload.hardware_version,
         firmware_name=payload.firmware_name,
         current_version=payload.current_version,
+        running_partition=payload.running_partition,
+        boot_partition=payload.boot_partition,
+        update_partition=payload.update_partition,
+        ota_state=payload.ota_state,
     )
 
     if not version_info:

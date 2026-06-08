@@ -38,6 +38,7 @@ class BoardOut(BaseModel):
 
 
 class DevicePatch(BaseModel):
+    name: Optional[str] = None
     owner_email: Optional[str] = None
     board_id: Optional[int] = None
     unlink_board: bool = False
@@ -60,8 +61,13 @@ class DeviceAdminOut(BaseModel):
     board: Optional[BoardOut]
     hardware: Optional[HardwareOut]
     current_firmware: Optional[FirmwareOut]
+    current_firmware_version: Optional[str]
     target_firmware: Optional[FirmwareOut]
     version_updater: Optional[str]
+    running_partition: Optional[str]
+    boot_partition: Optional[str]
+    update_partition: Optional[str]
+    ota_state: Optional[str]
     last_connected: Optional[datetime]
     last_ota_check: Optional[datetime]
     registered_at: Optional[datetime]
@@ -97,11 +103,16 @@ def list_all_devices(db: Session = Depends(get_db)):
                 id=d.current_firmware.id,
                 filename=d.current_firmware.filename,
             ) if d.current_firmware else None,
+            current_firmware_version=d.current_firmware_version,
             target_firmware=FirmwareOut(
                 id=d.target_firmware.id,
                 filename=d.target_firmware.filename,
             ) if d.target_firmware else None,
             version_updater=d.version_updater,
+            running_partition=d.running_partition,
+            boot_partition=d.boot_partition,
+            update_partition=d.update_partition,
+            ota_state=d.ota_state,
             last_connected=d.last_connected,
             last_ota_check=d.last_ota_check,
             registered_at=d.registered_at,
@@ -142,6 +153,9 @@ def patch_device(device_id: int, payload: DevicePatch, db: Session = Depends(get
     device = db.query(ESP32Device).filter(ESP32Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
+
+    if payload.name is not None:
+        device.name = payload.name.strip() or None
 
     if payload.owner_email is not None:
         from app.orm_models.auth import User as UserModel
@@ -198,11 +212,16 @@ def patch_device(device_id: int, payload: DevicePatch, db: Session = Depends(get
             id=device.current_firmware.id,
             filename=device.current_firmware.filename,
         ) if device.current_firmware else None,
+        current_firmware_version=device.current_firmware_version,
         target_firmware=FirmwareOut(
             id=device.target_firmware.id,
             filename=device.target_firmware.filename,
         ) if device.target_firmware else None,
         version_updater=device.version_updater,
+        running_partition=device.running_partition,
+        boot_partition=device.boot_partition,
+        update_partition=device.update_partition,
+        ota_state=device.ota_state,
         last_connected=device.last_connected,
         last_ota_check=device.last_ota_check,
         registered_at=device.registered_at,

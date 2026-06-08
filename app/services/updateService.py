@@ -42,6 +42,10 @@ class UpdateService:
         hardware_version: Optional[str] = None,
         firmware_name: Optional[str] = None,
         current_version: Optional[str] = None,
+        running_partition: Optional[str] = None,
+        boot_partition: Optional[str] = None,
+        update_partition: Optional[str] = None,
+        ota_state: Optional[str] = None,
     ) -> Optional[dict]:
         normalized_mac = UpdateService.normalize_mac(mac)
         hardware_type  = (hardware or "").strip()
@@ -55,10 +59,22 @@ class UpdateService:
         if device:
             if hw:
                 device.hardware_id = hw.id
-            # Track current firmware by filename (firmware_name takes priority, fall back to current_version for compat)
-            cur_name = firmware_name or current_version or ""
-            if cur_name:
-                cur_pkg = db.query(FirmwarePackage).filter(FirmwarePackage.filename == cur_name).first()
+            # Always store the raw version string and partition state the device reported.
+            if current_version:
+                device.current_firmware_version = current_version
+            if running_partition is not None:
+                device.running_partition = running_partition
+            if boot_partition is not None:
+                device.boot_partition = boot_partition
+            if update_partition is not None:
+                device.update_partition = update_partition
+            if ota_state is not None:
+                device.ota_state = ota_state
+            # Try to match the version to a FirmwarePackage row.
+            # Build script produces filenames like "{firmware_name}-v{version}.bin".
+            if firmware_name and current_version:
+                expected = f"{firmware_name}-v{current_version}.bin"
+                cur_pkg = db.query(FirmwarePackage).filter(FirmwarePackage.filename == expected).first()
                 if cur_pkg:
                     device.current_firmware_id = cur_pkg.id
             now = datetime.utcnow()

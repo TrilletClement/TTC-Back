@@ -69,12 +69,17 @@ class DeviceService:
             mac = ":".join(mac[i : i + 2] for i in range(0, 12, 2))
 
         esp = db.query(ESP32Device).filter(ESP32Device.mac_address == mac).first()
-        if not esp or not esp.board:
-            raise HTTPException(status_code=401, detail="Invalid or unlinked ESP32 device.")
+        if not esp:
+            raise HTTPException(status_code=401, detail="Unknown ESP32 device.")
+
+        settings_ts = esp.last_settings_updated_at.isoformat() if esp.last_settings_updated_at else None
+
+        if not esp.board_id:
+            return {"strips": [], "settings_updated_at": settings_ts}
 
         board = db.query(Board).filter(Board.id == esp.board_id).first()
         if not board:
-            raise HTTPException(status_code=404, detail="Linked board not found")
+            return {"strips": [], "settings_updated_at": settings_ts}
 
         bt = board.board_type
         max_strips = bt.max_ledstrip
@@ -105,5 +110,4 @@ class DeviceService:
             for h in range(1, max_strips + 1)
         ]
 
-        settings_ts = esp.last_settings_updated_at.isoformat() if esp.last_settings_updated_at else None
         return {"strips": response_data, "settings_updated_at": settings_ts}
