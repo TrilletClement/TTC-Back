@@ -40,6 +40,7 @@ class BoardOut(BaseModel):
 class DevicePatch(BaseModel):
     name: Optional[str] = None
     owner_email: Optional[str] = None
+    clear_owner: bool = False
     board_id: Optional[int] = None
     unlink_board: bool = False
     target_firmware_id: Optional[int] = None
@@ -157,7 +158,9 @@ def patch_device(device_id: int, payload: DevicePatch, db: Session = Depends(get
     if payload.name is not None:
         device.name = payload.name.strip() or None
 
-    if payload.owner_email is not None:
+    if payload.clear_owner:
+        device.owner_id = None
+    elif payload.owner_email is not None:
         from app.orm_models.auth import User as UserModel
         user = db.query(UserModel).filter(UserModel.email == payload.owner_email).first()
         if not user:

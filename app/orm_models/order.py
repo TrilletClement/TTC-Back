@@ -67,5 +67,8 @@ class Order(Base):
     currency            = Column(String(10), default="eur")
     shipping_cost_cents = Column(Integer, nullable=True)
 
+    esp_device_id       = Column(Integer, ForeignKey("esp32_device.id"), nullable=True)
+    esp_device          = relationship("ESP32Device", foreign_keys=[esp_device_id], backref="linked_orders")
+
     created_at          = Column(DateTime, default=datetime.utcnow)
     paid_at             = Column(DateTime, nullable=True)

@@ -9,6 +9,7 @@ from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.orm_models.order import Order, OrderDetails
 from app.orm_models.board import Board
+from app.orm_models.device import ESP32Device
 
 router = APIRouter(prefix="/api/admin/orders", tags=["admin-orders"])
 
@@ -26,6 +27,7 @@ def _order_dict(o: Order, include_svg: bool = False) -> dict:
     sd = o.shipping_details
     bd = o.billing_details
     same_address = sd and bd and sd.id == bd.id
+    dev = o.esp_device
     return {
         "id":                  o.id,
         "cart_ref":            o.cart_ref,
@@ -41,6 +43,9 @@ def _order_dict(o: Order, include_svg: bool = False) -> dict:
         "board_name":      o.board.name if o.board else None,
         "user_id":         o.user_id,
         "user_email":      o.user.email if o.user else None,
+        "esp_device_id":   dev.id          if dev else None,
+        "esp_device_mac":  dev.mac_address  if dev else None,
+        "esp_device_name": dev.name or dev.mac_address if dev else None,
         "shipping_details": _addr_dict(sd),
         "billing_details":  None if same_address else _addr_dict(bd),
         "same_address":     same_address,
@@ -71,6 +76,7 @@ def _base_query(db: Session):
             joinedload(Order.billing_details),
             joinedload(Order.board),
             joinedload(Order.user),
+            joinedload(Order.esp_device),
         )
     )
 
@@ -108,6 +114,33 @@ def list_orders(
     return [_order_dict(o) for o in orders]
 
 
+@router.get("/unowned-devices")
+@require_admin
+def list_unowned_devices(current_user: User, db: Session = Depends(get_db)):
+    """Devices without an owner — eligible for assignment via the associate flow."""
+    devices = db.query(ESP32Device).filter(ESP32Device.owner_id.is_(None)).all()
+    return [
+        {"id": d.id, "mac_address": d.mac_address, "name": d.name}
+        for d in devices
+    ]
+
+
+@router.get("/devices")
+@require_admin
+def list_all_devices_for_select(current_user: User, db: Session = Depends(get_db)):
+    """All devices — used by the modal's device select (no automation)."""
+    devices = db.query(ESP32Device).order_by(ESP32Device.registered_at.desc().nullslast()).all()
+    return [
+        {
+            "id": d.id,
+            "mac_address": d.mac_address,
+            "name": d.name,
+            "owner_email": d.owner.email if d.owner else None,
+        }
+        for d in devices
+    ]
+
+
 @router.get("/{order_id}")
 @require_admin
 def get_order(order_id: int, current_user: User, db: Session = Depends(get_db)):
@@ -131,6 +164,8 @@ class OrderPatch(BaseModel):
     status:           Optional[str] = None
     tracking_number:  Optional[str] = None
     shipping_details: Optional[AddressPatch] = None
+    esp_device_id:    Optional[int] = None
+    clear_esp_device: bool = False
 
 
 @router.patch("/{order_id}")
@@ -159,6 +194,75 @@ def patch_order(order_id: int, payload: OrderPatch, current_user: User, db: Sess
         if sd.postalCode   is not None: d.postal_code   = sd.postalCode
         if sd.country      is not None: d.country       = sd.country
 
+    if payload.clear_esp_device:
+        o.esp_device_id = None
+    elif payload.esp_device_id is not None:
+        o.esp_device_id = payload.esp_device_id
+
     db.commit()
     db.refresh(o)
     return _order_dict(o, include_svg=False)
+
+
+class AssociateDevicePayload(BaseModel):
+    device_id: int
+
+
+@router.post("/{order_id}/associate-device")
+@require_admin
+def associate_device(order_id: int, payload: AssociateDevicePayload, current_user: User, db: Session = Depends(get_db)):
+    """
+    Full automation entry point (table button):
+    - Order must be in 'paid' status.
+    - Assigns device owner to the order's customer.
+    - Links device to the order's board.
+    - Renames device to '{board_name} Display' (increments if already taken).
+    - Sets order status to 'processing'.
+    - Sets order.esp_device_id.
+    """
+    o = _base_query(db).filter(Order.id == order_id).first()
+    if not o:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if o.status != "paid":
+        raise HTTPException(status_code=400, detail="Order must be in 'paid' status to associate a device.")
+
+    device = db.query(ESP32Device).filter(ESP32Device.id == payload.device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    if device.owner_id is not None:
+        raise HTTPException(status_code=400, detail="Device already has an owner.")
+
+    # Assign owner
+    device.owner_id = o.user_id
+
+    # Link to board
+    device.board_id = o.board_id
+
+    # Generate unique device name: '{board_name} Display', then 'Display 2', '3' …
+    board_name = o.board.name if o.board else "Display"
+    base_name = f"{board_name} Display"
+
+    existing_names = {
+        d.name for d in db.query(ESP32Device).filter(
+            ESP32Device.owner_id == o.user_id,
+            ESP32Device.id != device.id,
+        ).all()
+        if d.name
+    }
+
+    candidate = base_name
+    n = 2
+    while candidate in existing_names:
+        candidate = f"{base_name} {n}"
+        n += 1
+    device.name = candidate
+
+    # Advance order status
+    o.status = "processing"
+    o.esp_device_id = device.id
+
+    db.commit()
+    db.refresh(o)
+    return _order_dict(o)
