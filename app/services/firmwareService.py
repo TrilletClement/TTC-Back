@@ -5,9 +5,8 @@ from typing import Optional
 
 from fastapi import UploadFile
 
-from app.core.config import settings
 from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
-from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware
+from app.orm_models.device import FirmwarePackage, Hardware
 from app.repositories.firmware_repo import FirmwareRepository
 
 
@@ -41,8 +40,7 @@ class FirmwareStorage:
             os.remove(path)
 
     def list_files(self) -> dict[str, int]:
-        dir_path = self.firmware_dir
-        os.makedirs(dir_path, exist_ok=True)
+        dir_path = self._path("")
         return {
             f: os.path.getsize(os.path.join(dir_path, f))
             for f in sorted(os.listdir(dir_path))
@@ -54,7 +52,7 @@ class FirmwareStorage:
             raise ValidationError("Unsupported file type")
 
 
-class AdminOtaService:
+class FirmwareService:
     def __init__(self, repo: FirmwareRepository, storage: FirmwareStorage):
         self.repo = repo
         self.storage = storage
@@ -208,7 +206,7 @@ class AdminOtaService:
         mac    = _normalize_mac(mac_address)
         device = self.repo.get_device_by_mac(mac)
         if not device:
-            raise NotFoundError("Device", mac_address)
+            raise NotFoundError("Device", 0)
 
         if firmware_package_id is not None:
             if not self.repo.get_by_id(firmware_package_id):

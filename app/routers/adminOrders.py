@@ -1,268 +1,79 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
-from sqlalchemy.orm import Session, joinedload
 
-from app.core.config import settings
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
 from app.core.user_access import require_admin
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
-from app.orm_models.order import Order, OrderDetails
-from app.orm_models.board import Board
-from app.orm_models.device import ESP32Device
+from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
+from app.repositories.order_repo import OrderRepository
+from app.services.adminOrdersService import AdminOrdersService
+from app.schemas.order import OrderOut, OrderPatch, AssociateDevicePayload
 
 router = APIRouter(prefix="/api/admin/orders", tags=["admin-orders"])
 
-ORDER_STATUSES = {"pending", "paid", "processing", "shipped", "delivered", "cancelled", "refunded"}
+
+def get_service(db: Session = Depends(get_db)) -> AdminOrdersService:
+    return AdminOrdersService(OrderRepository(db))
 
 
-def _stripe_payment_url(payment_intent_id: Optional[str]) -> Optional[str]:
-    if not payment_intent_id:
-        return None
-    mode = "test/" if settings.STRIPE_SECRET_KEY.startswith("sk_test_") else ""
-    return f"https://dashboard.stripe.com/{mode}payments/{payment_intent_id}"
-
-
-def _order_dict(o: Order, include_svg: bool = False) -> dict:
-    sd = o.shipping_details
-    bd = o.billing_details
-    same_address = sd and bd and sd.id == bd.id
-    dev = o.esp_device
-    return {
-        "id":                  o.id,
-        "cart_ref":            o.cart_ref,
-        "status":              o.status,
-        "amount_cents":        o.amount_cents,
-        "shipping_cost_cents": o.shipping_cost_cents,
-        "currency":            o.currency,
-        "tracking_number":     o.tracking_number,
-        "created_at":          o.created_at.isoformat() if o.created_at else None,
-        "paid_at":             o.paid_at.isoformat() if o.paid_at else None,
-        "stripe_payment_url":  _stripe_payment_url(o.payment_intent_id),
-        "board_id":        o.board_id,
-        "board_name":      o.board.name if o.board else None,
-        "user_id":         o.user_id,
-        "user_email":      o.user.email if o.user else None,
-        "esp_device_id":   dev.id          if dev else None,
-        "esp_device_mac":  dev.mac_address  if dev else None,
-        "esp_device_name": dev.name or dev.mac_address if dev else None,
-        "shipping_details": _addr_dict(sd),
-        "billing_details":  None if same_address else _addr_dict(bd),
-        "same_address":     same_address,
-        **({"svg_content": o.svg_content} if include_svg else {}),
-    }
-
-
-def _addr_dict(d: Optional[OrderDetails]) -> Optional[dict]:
-    if not d:
-        return None
-    return {
-        "id":           d.id,
-        "firstName":    d.first_name,
-        "lastName":     d.last_name,
-        "phone":        d.phone,
-        "addressLine1": d.address_line1,
-        "city":         d.city,
-        "postalCode":   d.postal_code,
-        "country":      d.country,
-    }
-
-
-def _base_query(db: Session):
-    return (
-        db.query(Order)
-        .options(
-            joinedload(Order.shipping_details),
-            joinedload(Order.billing_details),
-            joinedload(Order.board),
-            joinedload(Order.user),
-            joinedload(Order.esp_device),
-        )
-    )
+def _handle(exc: Exception) -> HTTPException:
+    if isinstance(exc, NotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, BusinessError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, ValidationError):
+        return HTTPException(status_code=400, detail=str(exc))
+    raise exc
 
 
 @router.get("")
 @require_admin
 def list_orders(
     current_user: User,
-    db: Session = Depends(get_db),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     sort: str = Query("date_desc"),
+    svc: AdminOrdersService = Depends(get_service),
 ):
-    q = _base_query(db)
-
-    if status:
-        q = q.filter(Order.status == status)
-
-    orders = q.all()
-
-    if search:
-        s = search.strip().lower()
-        orders = [
-            o for o in orders
-            if s in (o.user.email or "").lower()
-            or (o.shipping_details and s in f"{o.shipping_details.first_name} {o.shipping_details.last_name}".lower())
-            or (o.board and s in (o.board.name or "").lower())
-            or s in str(o.id)
-        ]
-
-    reverse = sort in ("date_desc", "amount_desc")
-    key = (lambda o: o.amount_cents or 0) if "amount" in sort else (lambda o: o.created_at or "")
-    orders = sorted(orders, key=key, reverse=reverse)
-
-    return [_order_dict(o) for o in orders]
+    return svc.list_orders(status, search, sort)
 
 
 @router.get("/unowned-devices")
 @require_admin
-def list_unowned_devices(current_user: User, db: Session = Depends(get_db)):
-    """Devices without an owner — eligible for assignment via the associate flow."""
-    devices = db.query(ESP32Device).filter(ESP32Device.owner_id.is_(None)).all()
-    return [
-        {"id": d.id, "mac_address": d.mac_address, "name": d.name}
-        for d in devices
-    ]
+def list_unowned_devices(current_user: User, svc: AdminOrdersService = Depends(get_service)):
+    return svc.list_unowned_devices()
 
 
 @router.get("/devices")
 @require_admin
-def list_all_devices_for_select(current_user: User, db: Session = Depends(get_db)):
-    """All devices — used by the modal's device select (no automation)."""
-    devices = db.query(ESP32Device).order_by(ESP32Device.registered_at.desc().nullslast()).all()
-    return [
-        {
-            "id": d.id,
-            "mac_address": d.mac_address,
-            "name": d.name,
-            "owner_email": d.owner.email if d.owner else None,
-        }
-        for d in devices
-    ]
+def list_all_devices_for_select(current_user: User, svc: AdminOrdersService = Depends(get_service)):
+    return svc.list_all_devices()
 
 
 @router.get("/{order_id}")
 @require_admin
-def get_order(order_id: int, current_user: User, db: Session = Depends(get_db)):
-    o = _base_query(db).filter(Order.id == order_id).first()
-    if not o:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return _order_dict(o, include_svg=True)
-
-
-class AddressPatch(BaseModel):
-    firstName:    Optional[str] = None
-    lastName:     Optional[str] = None
-    phone:        Optional[str] = None
-    addressLine1: Optional[str] = None
-    city:         Optional[str] = None
-    postalCode:   Optional[str] = None
-    country:      Optional[str] = None
-
-
-class OrderPatch(BaseModel):
-    status:           Optional[str] = None
-    tracking_number:  Optional[str] = None
-    shipping_details: Optional[AddressPatch] = None
-    esp_device_id:    Optional[int] = None
-    clear_esp_device: bool = False
+def get_order(order_id: int, current_user: User, svc: AdminOrdersService = Depends(get_service)):
+    try:
+        return svc.get_order(order_id, include_svg=True)
+    except (NotFoundError, BusinessError, ValidationError) as e:
+        raise _handle(e)
 
 
 @router.patch("/{order_id}")
 @require_admin
-def patch_order(order_id: int, payload: OrderPatch, current_user: User, db: Session = Depends(get_db)):
-    o = _base_query(db).filter(Order.id == order_id).first()
-    if not o:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    if payload.status is not None:
-        if payload.status not in ORDER_STATUSES:
-            raise HTTPException(status_code=400, detail=f"Invalid status. Allowed: {ORDER_STATUSES}")
-        o.status = payload.status
-
-    if payload.tracking_number is not None:
-        o.tracking_number = payload.tracking_number or None
-
-    if payload.shipping_details and o.shipping_details:
-        sd = payload.shipping_details
-        d = o.shipping_details
-        if sd.firstName    is not None: d.first_name    = sd.firstName
-        if sd.lastName     is not None: d.last_name     = sd.lastName
-        if sd.phone        is not None: d.phone         = sd.phone or None
-        if sd.addressLine1 is not None: d.address_line1 = sd.addressLine1
-        if sd.city         is not None: d.city          = sd.city
-        if sd.postalCode   is not None: d.postal_code   = sd.postalCode
-        if sd.country      is not None: d.country       = sd.country
-
-    if payload.clear_esp_device:
-        o.esp_device_id = None
-    elif payload.esp_device_id is not None:
-        o.esp_device_id = payload.esp_device_id
-
-    db.commit()
-    db.refresh(o)
-    return _order_dict(o, include_svg=False)
-
-
-class AssociateDevicePayload(BaseModel):
-    device_id: int
+def patch_order(order_id: int, payload: OrderPatch, current_user: User, svc: AdminOrdersService = Depends(get_service)):
+    try:
+        return svc.patch_order(order_id, payload)
+    except (NotFoundError, BusinessError, ValidationError) as e:
+        raise _handle(e)
 
 
 @router.post("/{order_id}/associate-device")
 @require_admin
-def associate_device(order_id: int, payload: AssociateDevicePayload, current_user: User, db: Session = Depends(get_db)):
-    """
-    Full automation entry point (table button):
-    - Order must be in 'paid' status.
-    - Assigns device owner to the order's customer.
-    - Links device to the order's board.
-    - Renames device to '{board_name} Display' (increments if already taken).
-    - Sets order status to 'processing'.
-    - Sets order.esp_device_id.
-    """
-    o = _base_query(db).filter(Order.id == order_id).first()
-    if not o:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    if o.status != "paid":
-        raise HTTPException(status_code=400, detail="Order must be in 'paid' status to associate a device.")
-
-    device = db.query(ESP32Device).filter(ESP32Device.id == payload.device_id).first()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
-
-    if device.owner_id is not None:
-        raise HTTPException(status_code=400, detail="Device already has an owner.")
-
-    # Assign owner
-    device.owner_id = o.user_id
-
-    # Link to board
-    device.board_id = o.board_id
-
-    # Generate unique device name: '{board_name} Display', then 'Display 2', '3' …
-    board_name = o.board.name if o.board else "Display"
-    base_name = f"{board_name} Display"
-
-    existing_names = {
-        d.name for d in db.query(ESP32Device).filter(
-            ESP32Device.owner_id == o.user_id,
-            ESP32Device.id != device.id,
-        ).all()
-        if d.name
-    }
-
-    candidate = base_name
-    n = 2
-    while candidate in existing_names:
-        candidate = f"{base_name} {n}"
-        n += 1
-    device.name = candidate
-
-    # Advance order status
-    o.status = "processing"
-    o.esp_device_id = device.id
-
-    db.commit()
-    db.refresh(o)
-    return _order_dict(o)
+def associate_device(order_id: int, payload: AssociateDevicePayload, current_user: User, svc: AdminOrdersService = Depends(get_service)):
+    try:
+        return svc.associate_device(order_id, payload)
+    except (NotFoundError, BusinessError, ValidationError) as e:
+        raise _handle(e)

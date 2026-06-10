@@ -1,83 +1,61 @@
-from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
 from typing import Optional
 
+from app.domain.exceptions import NotFoundError, BusinessError
 from app.orm_models.auth import User, Role, UserRoles
+from app.repositories.user_repo import UserRepository
 
 
 class AdminUserService:
+    def __init__(self, repo: UserRepository):
+        self.repo = repo
 
-    @staticmethod
-    def list_users(db: Session) -> list[User]:
-        return db.query(User).all()
+    def list_users(self) -> list[User]:
+        return self.repo.list_all()
 
-    @staticmethod
-    def toggle_user_active(user_id: int, active: bool, current_user: User, db: Session) -> dict:
-        user = db.query(User).filter(User.id == user_id).first()
+    def toggle_user_active(self, user_id: int, active: bool, current_user: User) -> dict:
+        user = self.repo.get_by_id(user_id)
         if not user:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise NotFoundError("User", user_id)
         if user.id == current_user.id:
-            raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
+            raise BusinessError("Cannot deactivate your own account")
         user.active = active
-        db.commit()
+        self.repo.commit()
         return {"message": f"User {'activated' if active else 'deactivated'}", "user_id": user_id}
 
-    @staticmethod
-    def assign_role(user_id: int, role_id: int, db: Session) -> dict:
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        role = db.query(Role).filter(Role.id == role_id).first()
+    def assign_role(self, user_id: int, role_id: int) -> dict:
+        if not self.repo.get_by_id(user_id):
+            raise NotFoundError("User", user_id)
+        role = self.repo.get_role_by_id(role_id)
         if not role:
-            raise HTTPException(status_code=404, detail="Role not found")
-
-        already = db.query(UserRoles).filter(
-            UserRoles.user_id == user_id,
-            UserRoles.role_id == role_id
-        ).first()
-        if already:
-            raise HTTPException(status_code=400, detail="User already has this role")
-
-        db.add(UserRoles(user_id=user_id, role_id=role_id))
-        db.commit()
+            raise NotFoundError("Role", role_id)
+        if self.repo.get_user_role(user_id, role_id):
+            raise BusinessError("User already has this role")
+        self.repo.save(UserRoles(user_id=user_id, role_id=role_id))
         return {"message": f"Role '{role.name}' assigned to user {user_id}"}
 
-    @staticmethod
-    def remove_role(user_id: int, role_id: int, db: Session) -> dict:
-        link = db.query(UserRoles).filter(
-            UserRoles.user_id == user_id,
-            UserRoles.role_id == role_id
-        ).first()
+    def remove_role(self, user_id: int, role_id: int) -> dict:
+        link = self.repo.get_user_role(user_id, role_id)
         if not link:
-            raise HTTPException(status_code=404, detail="User does not have this role")
-        db.delete(link)
-        db.commit()
+            raise NotFoundError("UserRole", f"{user_id}/{role_id}")
+        self.repo.delete(link)
         return {"message": f"Role {role_id} removed from user {user_id}"}
 
-    @staticmethod
-    def list_roles(db: Session) -> list[Role]:
-        return db.query(Role).all()
+    def list_roles(self) -> list[Role]:
+        return self.repo.list_roles()
 
-    @staticmethod
-    def create_role(name: str, description: Optional[str], db: Session) -> Role:
-        existing = db.query(Role).filter(Role.name == name).first()
-        if existing:
-            raise HTTPException(status_code=400, detail="Role already exists")
+    def create_role(self, name: str, description: Optional[str]) -> Role:
+        if self.repo.get_role_by_name(name):
+            raise BusinessError("Role already exists")
         role = Role(name=name, description=description)
-        db.add(role)
-        db.commit()
-        db.refresh(role)
+        self.repo.save(role)
         return role
 
-    @staticmethod
-    def delete_role(role_id: int, db: Session) -> dict:
-        role = db.query(Role).filter(Role.id == role_id).first()
+    def delete_role(self, role_id: int) -> dict:
+        role = self.repo.get_role_by_id(role_id)
         if not role:
-            raise HTTPException(status_code=404, detail="Role not found")
+            raise NotFoundError("Role", role_id)
         if role.name == "admin":
-            raise HTTPException(status_code=400, detail="Cannot delete the admin role")
-        db.query(UserRoles).filter(UserRoles.role_id == role_id).delete()
-        db.delete(role)
-        db.commit()
+            raise BusinessError("Cannot delete the admin role")
+        self.repo.delete_role_links(role_id)
+        self.repo.delete(role)
         return {"message": f"Role '{role.name}' deleted"}

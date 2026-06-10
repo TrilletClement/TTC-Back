@@ -1,111 +1,126 @@
-from datetime import datetime, timedelta
 import secrets
 import uuid
+from datetime import datetime, timedelta
+from typing import Optional
 import logging
-
-from fastapi import HTTPException, status
-from fastapi.responses import RedirectResponse
-from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.mail import send_confirmation_email
 from app.core.security.jwt import create_access_token, hash_password, verify_password
+from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
 from app.orm_models.auth import User
+from app.repositories.auth_repo import AuthRepository
 
 logger = logging.getLogger(__name__)
 
+
 class AuthService:
+    def __init__(self, repo: AuthRepository):
+        self.repo = repo
 
-    @staticmethod
-    def login(email: str, password: str, db: Session) -> dict:
-        user = db.query(User).filter(User.email == email).first()
+    def login(self, email: str, password: str) -> dict:
+        user = self.repo.get_by_email(email)
         if not user or not verify_password(password, user.password):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                                detail="Incorrect email or password",
-                                headers={"WWW-Authenticate": "Bearer"})
+            raise BusinessError("Incorrect email or password")
         if not user.active:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail="Compte non confirmé. Vérifiez votre email.")
-
+            raise BusinessError("Compte non confirmé. Vérifiez votre email.")
         roles = [role.name for role in user.roles]
-        access_token = create_access_token(user.email, roles=roles)
-        return {"access_token": access_token, "token_type": "bearer"}
+        return {"access_token": create_access_token(user.email, roles=roles), "token_type": "bearer"}
 
-    @staticmethod
-    async def register(email: str, password: str, db: Session, base_url: str, preferred_agency: str | None = None) -> dict:
+    async def register(self, email: str, password: str, base_url: str, preferred_agency: str = "") -> dict:
         if not email or not password:
-            raise HTTPException(status_code=400, detail="Email and password are required")
-        
-        existing_user = db.query(User).filter(User.email == email).first()
-        if existing_user:
-            if existing_user.active:
-                raise HTTPException(status_code=400, detail="Email already registered")
-            else:
-                raise HTTPException(status_code=400, detail="email-not-confirmed")
+            raise ValidationError("Email and password are required")
 
-        confirmation_token = secrets.token_urlsafe(32)
-        new_user = User(
+        existing = self.repo.get_by_email(email)
+        if existing:
+            raise BusinessError("Email already registered" if existing.active else "email-not-confirmed")
+
+        token = secrets.token_urlsafe(32)
+        user  = User(
             email=email,
             password=hash_password(password),
             fs_uniquifier=str(uuid.uuid4()),
             active=False,
-            confirmation_token=confirmation_token,
+            confirmation_token=token,
             confirmation_token_expiry=datetime.utcnow() + timedelta(hours=24),
-            preferred_agency=preferred_agency 
+            preferred_agency=preferred_agency,
         )
-        db.add(new_user)
-        db.commit()
-
-        confirmation_url = f"{settings.FRONTEND_URL}/confirm-email?token={confirmation_token}"
-        await send_confirmation_email(email, confirmation_url)
-
+        self.repo.save(user)
+        await send_confirmation_email(email, f"{settings.FRONTEND_URL}/confirm-email?token={token}")
         return {"message": "Inscription réussie. Vérifiez votre email pour confirmer votre compte."}
 
-    @staticmethod
-    def confirm_email(token: str, db: Session) -> dict:
-        try:
-            user = db.query(User).filter(
-                User.confirmation_token == token
-            ).first()
+    def confirm_email(self, token: str) -> dict:
+        user = self.repo.get_by_confirmation_token(token)
+        if not user:
+            raise ValidationError("invalid-token")
+        if user.active:
+            raise ValidationError("already-confirmed")
+        if user.confirmation_token_expiry < datetime.utcnow():
+            raise ValidationError("token-expired")
 
-            if not user:
-                raise HTTPException(status_code=400, detail="invalid-token")
-            if user.active:
-                raise HTTPException(status_code=400, detail="already-confirmed")
-            if user.confirmation_token_expiry < datetime.utcnow():
-                raise HTTPException(status_code=400, detail="token-expired")
+        user.active = True
+        user.confirmation_token = None
+        user.confirmation_token_expiry = None
+        self.repo.commit()
+        return {"status": "confirmed"}
 
-            user.active = True
-            user.confirmation_token = None
-            user.confirmation_token_expiry = None
-            db.commit()
-
-            return {"status": "confirmed"}
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Erreur confirm_email: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="server-error")
-
-    @staticmethod
-    def get_user_by_email(user: User, db: Session):
+    def get_current_user_info(self, user: User) -> dict:
         return {
-            "id": user.id,
-            "email": user.email,
-            "active": user.active,
-            "roleId": [role.id for role in user.roles],
-            "roleName": [role.name for role in user.roles],
+            "id":              user.id,
+            "email":           user.email,
+            "active":          user.active,
+            "roleId":          [role.id   for role in user.roles],
+            "roleName":        [role.name for role in user.roles],
             "preferredAgency": user.preferred_agency,
         }
-        
-    @staticmethod
-    def get_or_create_google_user(email: str, google_id: str, db: Session) -> User:
-        user = db.query(User).filter(User.email == email).first()
+
+    def update_preferences(self, user: User, preferred_agency: Optional[str]) -> dict:
+        user.preferred_agency = preferred_agency
+        self.repo.commit()
+        return {"message": "Préférences mises à jour"}
+
+    async def forgot_password(self, email: str) -> dict:
+        user = self.repo.get_by_email(email)
+        if user:
+            token = secrets.token_urlsafe(32)
+            user.reset_token        = token
+            user.reset_token_expiry = datetime.utcnow() + timedelta(hours=1)
+            self.repo.commit()
+            try:
+                from app.core.mail import send_reset_email
+                await send_reset_email(user.email, f"{settings.FRONTEND_URL}/reset-password?token={token}")
+                logger.info(f"Email envoyé à {user.email}")
+            except Exception as e:
+                logger.error(f"Erreur envoi email: {e}")
+        return {"message": "Si cet email existe, un lien a été envoyé"}
+
+    def reset_password(self, token: str, password: str) -> dict:
+        user = self.repo.get_by_reset_token(token)
+        if not user or user.reset_token_expiry < datetime.utcnow():
+            raise ValidationError("Token invalide ou expiré")
+        user.password           = hash_password(password)
+        user.reset_token        = None
+        user.reset_token_expiry = None
+        self.repo.commit()
+        return {"message": "Mot de passe mis à jour"}
+
+    async def resend_confirmation(self, email: str) -> dict:
+        user = self.repo.get_by_email(email)
+        if user and not user.active:
+            token = secrets.token_urlsafe(32)
+            user.confirmation_token        = token
+            user.confirmation_token_expiry = datetime.utcnow() + timedelta(hours=24)
+            self.repo.commit()
+            await send_confirmation_email(user.email, f"{settings.FRONTEND_URL}/confirm-email?token={token}")
+            logger.info(f"Email renvoyé à {user.email}")
+        return {"message": "Si ce compte existe, un nouvel email a été envoyé"}
+
+    def get_or_create_google_user(self, email: str, google_id: str) -> User:
+        user = self.repo.get_by_email(email)
         if user:
             if not user.google_id:
                 user.google_id = google_id
-                db.commit()
+                self.repo.commit()
             return user
 
         user = User(
@@ -113,8 +128,6 @@ class AuthService:
             password=None,
             google_id=google_id,
             fs_uniquifier=str(uuid.uuid4()),
-            active=True,  # pas besoin de confirmation email
+            active=True,
         )
-        db.add(user)
-        db.commit()
-        return user
+        return self.repo.save(user)

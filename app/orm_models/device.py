@@ -52,7 +52,7 @@ class ESP32Device(Base):
     ota_state                  = Column(String(20),  nullable=True)
     last_connected             = Column(DateTime)
     last_ota_check             = Column(DateTime)
-    registered_at              = Column(DateTime, default=datetime.now())
+    registered_at              = Column(DateTime, default=datetime.utcnow())
     json_settings_override     = Column(Text, nullable=True)
     last_settings_updated_at   = Column(DateTime, nullable=True)
 

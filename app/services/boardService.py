@@ -1,47 +1,48 @@
 import logging
 import time
 
+import sqlalchemy as sa
 from fastapi import HTTPException
-
-logger = logging.getLogger(__name__)
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
-import sqlalchemy as sa
 
 from app.orm_models.auth import User
 from app.orm_models.board import Board, BoardType, Led, LedStrip
-from app.orm_models.price import BoardTypePrice, PriceVersion
 from app.orm_models.gtfs import Line, Stop, Trip
+from app.orm_models.price import BoardTypePrice, PriceVersion
+from app.repositories.board_repo import BoardRepository
 
+# logger = logging.getLogger(__name__)
 
 class BoardService:
-    @staticmethod
-    def get_boards(current_user: User, db: Session, owner_email: str | None = None):
+    BOARD_LIMIT = 10
+
+    def __init__(self, repo: BoardRepository):
+        self.repo = repo
+
+    # ── public methods ────────────────────────────────────────────────────────
+
+    def get_boards(self, current_user: User, owner_email: str | None = None):
         is_admin = "admin" in [role.name for role in current_user.roles]
 
         if is_admin and owner_email:
-            owner = db.query(User).filter(func.lower(User.email) == owner_email.strip().lower()).first()
+            owner = self.repo.get_user_by_email(owner_email)
             owner_id = owner.id if owner else -1
         else:
             owner_id = current_user.id
 
-        boards = db.query(Board).filter_by(owner_id=owner_id, archived=False).all()
+        boards = self.repo.get_boards_for_owner(owner_id)
         return [{"id": b.id, "name": b.name, "owner_id": b.owner_id} for b in boards]
 
-    @staticmethod
-    def get_board_types(db: Session):
-        latest_version = (
-            db.query(PriceVersion)
-            .order_by(PriceVersion.created_at.desc())
-            .first()
-        )
+    def get_board_types(self):
+        latest_version = self.repo.get_latest_price_version()
 
         prices: dict[int, BoardTypePrice] = {}
         if latest_version:
-            for p in db.query(BoardTypePrice).filter_by(price_version_id=latest_version.id).all():
+            for p in self.repo.get_prices_for_version(latest_version.id):
                 prices[p.board_type_id] = p
 
-        types = db.query(BoardType).all()
+        types = self.repo.get_all_board_types()
         return [
             {
                 "id": t.id,
@@ -54,64 +55,41 @@ class BoardService:
             for t in types
         ]
 
-    BOARD_LIMIT = 10
-
-    @staticmethod
-    def create_board(name: str, current_user: User, db: Session, board_type_id: int | None = None):
+    def create_board(self, name: str, current_user: User, board_type_id: int | None = None):
         name = (name or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="Board name is required")
 
-        active_count = db.query(Board).filter_by(owner_id=current_user.id, archived=False).count()
-        if active_count >= BoardService.BOARD_LIMIT:
+        active_count = self.repo.count_active_boards(current_user.id)
+        if active_count >= self.BOARD_LIMIT:
             raise HTTPException(
                 status_code=409,
-                detail=f"Board limit reached ({BoardService.BOARD_LIMIT} active boards maximum)"
+                detail=f"Board limit reached ({self.BOARD_LIMIT} active boards maximum)",
             )
 
-        duplicate = db.query(Board).filter(
-            Board.owner_id == current_user.id,
-            Board.archived == False,
-            func.lower(Board.name) == name.lower(),
-        ).first()
-        if duplicate:
+        if self.repo.find_duplicate_name(current_user.id, name):
             raise HTTPException(status_code=409, detail="You already have a board with this name")
 
         if board_type_id is not None:
-            board_type = db.query(BoardType).filter_by(id=board_type_id).first()
-            if not board_type:
+            if not self.repo.get_board_type_by_id(board_type_id):
                 raise HTTPException(status_code=400, detail="Invalid board type")
 
         new_board = Board(name=name, owner=current_user, board_type_id=board_type_id)
-        db.add(new_board)
-        db.commit()
-        db.refresh(new_board)
+        new_board = self.repo.add(new_board)
         return {"message": "Board added successfully!", "board_id": new_board.id}
 
-    @staticmethod
-    def delete_board(board_id: int, current_user: User, db: Session, force_unlink_devices: bool = False):
+    def delete_board(self, board_id: int, current_user: User, force_unlink_devices: bool = False):
         from app.orm_models.device import ESP32Device
-        from app.orm_models.order import Order
 
-        board = (
-            db.query(Board)
-            .options(
-                joinedload(Board.led_strips)
-                .joinedload(LedStrip.leds)
-                .joinedload(Led.trip_stops)
-            )
-            .filter_by(id=board_id)
-            .first()
-        )
-
+        board = self.repo.get_board_with_strips(board_id)
         if not board:
             raise HTTPException(status_code=404, detail="Board not found")
 
-        if "admin" not in [role.name for role in current_user.roles] and board.owner_id != current_user.id:
+        is_admin = "admin" in [role.name for role in current_user.roles]
+        if not is_admin and board.owner_id != current_user.id:
             raise HTTPException(status_code=403, detail="Unauthorized")
 
-        # Devices linked — require explicit confirmation before proceeding
-        linked_devices = db.query(ESP32Device).filter_by(board_id=board_id).all()
+        linked_devices = self.repo.get_devices_linked_to_board(board_id)
         if linked_devices and not force_unlink_devices:
             raise HTTPException(
                 status_code=409,
@@ -124,70 +102,33 @@ class BoardService:
                 },
             )
 
-        # Unlink devices if confirmed
         for device in linked_devices:
             device.board_id = None
 
-        # Orders exist — archive instead of hard-delete
-        has_orders = db.query(Order).filter_by(board_id=board_id).first() is not None
-        if has_orders:
-            board.archived = True
-            db.commit()
+        if self.repo.board_has_orders(board_id):
+            self.repo.archive(board)
             return {"archived": True, "id": board_id, "message": "Board archived (linked orders preserved)"}
 
-        # Hard delete: cascade strips → leds → trip_stop links
-        for strip in board.led_strips:
-            for led in strip.leds:
-                led.trip_stops.clear()
-                db.delete(led)
-            db.delete(strip)
-        db.delete(board)
-        db.commit()
-
+        self.repo.delete_cascade(board)
         return {"archived": False, "id": board_id, "message": "Board deleted successfully"}
 
-    @staticmethod
-    def get_board_details(board_id: int, current_user: User, db: Session):
-        from sqlalchemy.orm import joinedload as jl
-        query = db.query(Board).options(
-            jl(Board.board_type),
-            joinedload(Board.led_strips)
-            .joinedload(LedStrip.line)
-            .joinedload(Line.best_trip_b)
-            .joinedload(Trip.terminus),
-            joinedload(Board.led_strips)
-            .joinedload(LedStrip.line)
-            .joinedload(Line.best_trip_f)
-            .joinedload(Trip.terminus),
-            joinedload(Board.led_strips)
-            .joinedload(LedStrip.leds)
-            .joinedload(Led.trip_stops),
-        )
-
-        if "admin" in [role.name for role in current_user.roles]:
-            board = query.filter_by(id=board_id).first()
-        else:
-            board = query.filter_by(id=board_id, owner_id=current_user.id).first()
+    def get_board_details(self, board_id: int, current_user: User):
+        is_admin = "admin" in [role.name for role in current_user.roles]
+        board = self.repo.get_board_details_full(board_id)
 
         if not board:
             raise HTTPException(status_code=404, detail="Board not found")
+        if not is_admin and board.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Board not found")
 
-        led_strips_data = BoardService._build_led_strips_data(board, db)
+        led_strips_data = self._build_led_strips_data(board, self.repo.db)
         bt = board.board_type
 
         board_price = None
         if bt:
-            current_version = (
-                db.query(PriceVersion)
-                .order_by(PriceVersion.created_at.desc())
-                .first()
-            )
+            current_version = self.repo.get_latest_price_version()
             if current_version:
-                board_price = (
-                    db.query(BoardTypePrice)
-                    .filter_by(price_version_id=current_version.id, board_type_id=bt.id)
-                    .first()
-                )
+                board_price = self.repo.get_price_for_board_type(current_version.id, bt.id)
 
         return {
             "id": board.id,
@@ -202,11 +143,10 @@ class BoardService:
             "ledStrips": led_strips_data,
         }
 
-    # ── Interval-based realtime helpers ─────────────────────────────────────
+    # ── interval-based realtime helpers ──────────────────────────────────────
 
     @staticmethod
     def _collect_trip_stop_ids(board) -> list[int]:
-        """Gather every TripStop id linked to any LED on this board."""
         ids = []
         for strip in board.led_strips:
             for led in strip.leds:
@@ -215,12 +155,7 @@ class BoardService:
         return ids
 
     @staticmethod
-    def _get_interval_active_trip_stop_ids(
-        db: Session, trip_stop_ids: list[int]
-    ) -> dict[int, bool]:
-        """
-        Return a mapping of currently active trip_stop_ids to their is_realtime flag.
-        """
+    def _get_interval_active_trip_stop_ids(db: Session, trip_stop_ids: list[int]) -> dict[int, bool]:
         if not trip_stop_ids:
             return {}
 
@@ -233,53 +168,27 @@ class BoardService:
             """), {"ts_ids": trip_stop_ids}).all()
 
             active = {row.canonical_trip_stop_id: row.is_realtime for row in rows}
-
-            if rows:
-                for row in rows:
-                    logger.info(
-                        "interval active ts_id=%s is_realtime=%s led_on_from=%s led_on_until=%s now=%s",
-                        row.canonical_trip_stop_id,
-                        row.is_realtime,
-                        row.led_on_from,
-                        row.led_on_until,
-                        int(__import__("time").time()),
-                    )
-            else:
-                # Log ranges for requested ids to help diagnose misses
-                debug_rows = db.execute(sa.text("""
-                    SELECT canonical_trip_stop_id, led_on_from, led_on_until
-                    FROM active_incoming_intervals
-                    WHERE canonical_trip_stop_id = ANY(:ts_ids)
-                    LIMIT 20
-                """), {"ts_ids": trip_stop_ids}).all()
-                now = int(__import__("time").time())
-                for row in debug_rows:
-                    logger.info(
-                        "interval miss ts_id=%s led_on_from=%s led_on_until=%s now=%s",
-                        row.canonical_trip_stop_id,
-                        row.led_on_from,
-                        row.led_on_until,
-                        now,
-                    )
+            debug_rows = db.execute(sa.text("""
+                SELECT canonical_trip_stop_id, led_on_from, led_on_until
+                FROM active_incoming_intervals
+                WHERE canonical_trip_stop_id = ANY(:ts_ids)
+                LIMIT 20
+            """), {"ts_ids": trip_stop_ids}).all()
+            now = int(time.time())
 
             return active
 
         except Exception as e:
-            logger.warning("interval query failed: %s", e)
             return {}
 
-    # ── LED strip / LED builders ─────────────────────────────────────────────
+    # ── LED strip / LED builders ──────────────────────────────────────────────
 
     @staticmethod
     def _build_led_strips_data(board, db: Session):
         t0 = time.perf_counter()
-
         trip_stop_ids = BoardService._collect_trip_stop_ids(board)
         t1 = time.perf_counter()
-
-        interval_active_ids = BoardService._get_interval_active_trip_stop_ids(
-            db, trip_stop_ids
-        )
+        interval_active_ids = BoardService._get_interval_active_trip_stop_ids(db, trip_stop_ids)
         t2 = time.perf_counter()
 
         led_strips_data = []
@@ -303,10 +212,8 @@ class BoardService:
             }
 
             if line_obj:
-                terminus0 = line_obj.best_trip_b
-                terminus1 = line_obj.best_trip_f
-                term0_name = BoardService._resolve_terminus_name(terminus0, db)
-                term1_name = BoardService._resolve_terminus_name(terminus1, db)
+                term0_name = BoardService._resolve_terminus_name(line_obj.best_trip_b, db)
+                term1_name = BoardService._resolve_terminus_name(line_obj.best_trip_f, db)
                 strip_data["line"] = {
                     "id": line_obj.id,
                     "routeId": line_obj.route_id,
@@ -331,7 +238,6 @@ class BoardService:
                 for led_obj in leds_sorted
             ]
 
-            # Backward compatibility with old payload shape: led1..ledN
             for led_obj in leds_sorted:
                 if led_obj.ledstrip_index and led_obj.ledstrip_index > 0:
                     strip_data[f"led{led_obj.ledstrip_index}"] = BoardService._build_led_data(
@@ -341,14 +247,7 @@ class BoardService:
             led_strips_data.append(strip_data)
 
         t3 = time.perf_counter()
-        logger.info(
-            "board=%s collect=%.1fms interval_query=%.1fms build=%.1fms total=%.1fms",
-            board.id,
-            (t1 - t0) * 1000,
-            (t2 - t1) * 1000,
-            (t3 - t2) * 1000,
-            (t3 - t0) * 1000,
-        )
+
         return led_strips_data
 
     @staticmethod
@@ -367,30 +266,24 @@ class BoardService:
 
     @staticmethod
     def _build_led_data(led_obj: Led, interval_active_ids: dict[int, bool] | None = None):
-        """
-        Build the LED payload.
-        """
         _interval = interval_active_ids or {}
 
         trip_stops_data = []
         for ts in led_obj.trip_stops:
-            legacy_incoming   = bool(ts.vehicle_incoming)
+            legacy_incoming = bool(ts.vehicle_incoming)
             interval_incoming = ts.id in _interval
-            
-            # Si c'est actif via l'intervalle, on récupère le vrai état temps réel de la vue,
-            # sinon par défaut (legacy STIB) on considère que c'est du temps réel (True).
-            is_realtime_flag  = _interval[ts.id] if interval_incoming else True
+            is_realtime_flag = _interval[ts.id] if interval_incoming else True
 
             trip_stops_data.append({
-                "tripStopId":        ts.id,
-                "ledId":             led_obj.id,
-                "vehicleIncoming":   legacy_incoming,
-                "intervalActive":    interval_incoming,
-                "isOn":              legacy_incoming or interval_incoming,
-                "isRealtime":        is_realtime_flag,
-                "stopStopId":        ts.stop_stop_id,
-                "stopAgencyName":    ts.stop_agency_name,
-                "stopName":          ts.stop.name if ts.stop else None,
+                "tripStopId":      ts.id,
+                "ledId":           led_obj.id,
+                "vehicleIncoming": legacy_incoming,
+                "intervalActive":  interval_incoming,
+                "isOn":            legacy_incoming or interval_incoming,
+                "isRealtime":      is_realtime_flag,
+                "stopStopId":      ts.stop_stop_id,
+                "stopAgencyName":  ts.stop_agency_name,
+                "stopName":        ts.stop.name if ts.stop else None,
             })
 
         led_is_on = any(ts["isOn"] for ts in trip_stops_data)

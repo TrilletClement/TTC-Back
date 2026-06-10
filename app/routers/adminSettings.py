@@ -1,70 +1,51 @@
-from typing import Any
-
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.user_access import require_admin
+from app.domain.exceptions import NotFoundError
 from app.orm_models.db import get_db
-from app.orm_models.device import ESP32Device, Hardware
-from app.services.settingsService import SettingsService
+from app.repositories.settings_repo import SettingsRepository
+from app.schemas.settings import OverridesPayload, SchemaPayload
+from app.services.adminSettingsService import adminSettingsService
 
 router = APIRouter(prefix="/api/admin/settings", tags=["admin-settings"])
 
 
-class SchemaPayload(BaseModel):
-    schema: dict  # {sections: [{key, label, settings: [{key, label, type, default, ...}]}]}
-
-
-class OverridesPayload(BaseModel):
-    overrides: dict[str, Any]
+def get_service(db: Session = Depends(get_db)) -> adminSettingsService:
+    return adminSettingsService(SettingsRepository(db))
 
 
 @router.get("/hardware/{hardware_id}")
 @require_admin
-def get_hardware_settings(hardware_id: int, db: Session = Depends(get_db)):
-    hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
-    if not hw:
-        raise HTTPException(status_code=404, detail="Hardware not found")
-    return {"hardware_id": hardware_id, "schema": SettingsService.get_hardware_schema(hw)}
+def get_hardware_settings(hardware_id: int, svc: adminSettingsService = Depends(get_service)):
+    try:
+        return svc.get_hardware_settings(hardware_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.put("/hardware/{hardware_id}")
 @require_admin
-def update_hardware_settings(hardware_id: int, payload: SchemaPayload, db: Session = Depends(get_db)):
-    hw = SettingsService.update_hardware_schema(db, hardware_id, payload.schema)
-    return {"hardware_id": hardware_id, "schema": SettingsService.get_hardware_schema(hw)}
+def update_hardware_settings(hardware_id: int, payload: SchemaPayload, svc: adminSettingsService = Depends(get_service)):
+    try:
+        return svc.update_hardware_schema(hardware_id, payload.schema)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/device/{device_id}")
 @require_admin
-def get_device_settings(device_id: int, db: Session = Depends(get_db)):
-    device = db.query(ESP32Device).filter(ESP32Device.id == device_id).first()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
-    schema = SettingsService.get_hardware_schema(device.hardware) if device.hardware else {"sections": []}
-    overrides = SettingsService.get_device_overrides(device)
-    effective = SettingsService.get_effective_settings(device)
-    return {
-        "device_id": device_id,
-        "schema": schema,
-        "overrides": overrides,
-        "effective": effective,
-        "last_updated_at": device.last_settings_updated_at.isoformat() if device.last_settings_updated_at else None,
-    }
+def get_device_settings(device_id: int, svc: adminSettingsService = Depends(get_service)):
+    try:
+        return svc.get_device_settings(device_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.put("/device/{device_id}")
 @require_admin
-def update_device_settings(device_id: int, payload: OverridesPayload, db: Session = Depends(get_db)):
-    device = SettingsService.update_device_overrides(db, device_id, payload.overrides)
-    schema = SettingsService.get_hardware_schema(device.hardware) if device.hardware else {"sections": []}
-    overrides = SettingsService.get_device_overrides(device)
-    effective = SettingsService.get_effective_settings(device)
-    return {
-        "device_id": device_id,
-        "schema": schema,
-        "overrides": overrides,
-        "effective": effective,
-        "last_updated_at": device.last_settings_updated_at.isoformat() if device.last_settings_updated_at else None,
-    }
+def update_device_settings(device_id: int, payload: OverridesPayload, svc: adminSettingsService = Depends(get_service)):
+    try:
+        return svc.update_device_overrides(device_id, payload.overrides)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))

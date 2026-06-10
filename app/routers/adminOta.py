@@ -1,84 +1,117 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.user_access import require_admin
+from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
-from app.services.adminOtaService import AdminOtaService
+from app.repositories.firmware_repo import FirmwareRepository
+from app.schemas.ota import ArchiveRequest, AssignDeviceFirmwareRequest, DeletePackageRequest, UpsertHardwareRequest
+from app.services.adminOtaService import AdminOtaService, FirmwareStorage
+from app.core.config import settings
 
 router = APIRouter(prefix="/api/admin/ota", tags=["admin-ota"])
 
 
+def get_service(db: Session = Depends(get_db)) -> AdminOtaService:
+    return AdminOtaService(
+        repo=FirmwareRepository(db),
+        storage=FirmwareStorage(settings.FIRMWARE_DIR),
+    )
+
+
+def _handle(exc: Exception) -> HTTPException:
+    if isinstance(exc, NotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, BusinessError):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, ValidationError):
+        return HTTPException(status_code=400, detail=str(exc))
+    raise exc
+
+
 @router.get("/versions")
 @require_admin
-def get_data(db: Session = Depends(get_db)):
-    return AdminOtaService.get_data(db)
+def get_data(svc: AdminOtaService = Depends(get_service)):
+    return svc.get_data()
 
 
 @router.post("/upload")
 @require_admin
 async def upload_firmware(
     file: UploadFile = File(...),
-    current_user: User = None,
-    db: Session = Depends(get_db),
+    svc: AdminOtaService = Depends(get_service),
 ):
-    return AdminOtaService.upload_firmware(db=db, file=file)
-
-
-class ArchiveRequest(BaseModel):
-    archived: bool
+    try:
+        return svc.upload_firmware(file)
+    except (NotFoundError, BusinessError, ValidationError) as e:
+        raise _handle(e)
 
 
 @router.patch("/packages/{package_id}/archive")
 @require_admin
-def archive_package(package_id: int, payload: ArchiveRequest, db: Session = Depends(get_db)):
-    return AdminOtaService.set_archived(db, package_id, payload.archived)
-
-
-class DeletePackageRequest(BaseModel):
-    package_id: int
-    delete_file: bool = False
-    force: bool = False
+def archive_package(
+    package_id: int,
+    payload: ArchiveRequest,
+    svc: AdminOtaService = Depends(get_service),
+):
+    try:
+        return svc.set_archived(package_id, payload.archived)
+    except (NotFoundError, BusinessError, ValidationError) as e:
+        raise _handle(e)
 
 
 @router.delete("/packages")
 @require_admin
-def delete_package(payload: DeletePackageRequest, db: Session = Depends(get_db)):
-    return AdminOtaService.delete_package(db, payload.package_id, payload.delete_file, payload.force)
-
-
-class UpsertHardwareRequest(BaseModel):
-    hardware_type: str
-    firmware_package_id: Optional[int] = None
+def delete_package(
+    payload: DeletePackageRequest,
+    svc: AdminOtaService = Depends(get_service),
+):
+    try:
+        return svc.delete_package(payload.package_id, payload.delete_file, payload.force)
+    except (NotFoundError, BusinessError, ValidationError) as e:
+        raise _handle(e)
 
 
 @router.post("/hardware")
 @require_admin
-def upsert_hardware(payload: UpsertHardwareRequest, db: Session = Depends(get_db)):
-    return AdminOtaService.upsert_hardware(db, payload.hardware_type, payload.firmware_package_id)
+def upsert_hardware(
+    payload: UpsertHardwareRequest,
+    svc: AdminOtaService = Depends(get_service),
+):
+    try:
+        return svc.upsert_hardware(payload.hardware_type, payload.firmware_package_id)
+    except (NotFoundError, BusinessError, ValidationError) as e:
+        raise _handle(e)
 
 
 @router.delete("/hardware/{hardware_id}")
 @require_admin
-def delete_hardware(hardware_id: int, db: Session = Depends(get_db)):
-    return AdminOtaService.delete_hardware(db, hardware_id)
-
-
-class AssignDeviceFirmwareRequest(BaseModel):
-    mac_address: str
-    firmware_package_id: Optional[int] = None
+def delete_hardware(
+    hardware_id: int,
+    svc: AdminOtaService = Depends(get_service),
+):
+    try:
+        return svc.delete_hardware(hardware_id)
+    except (NotFoundError, BusinessError, ValidationError) as e:
+        raise _handle(e)
 
 
 @router.post("/device-assignments")
 @require_admin
-def assign_device_firmware(payload: AssignDeviceFirmwareRequest, db: Session = Depends(get_db)):
-    return AdminOtaService.assign_device_firmware(db, payload.mac_address, payload.firmware_package_id)
+def assign_device_firmware(
+    payload: AssignDeviceFirmwareRequest,
+    svc: AdminOtaService = Depends(get_service),
+):
+    try:
+        return svc.assign_device_firmware(payload.mac_address, payload.firmware_package_id)
+    except (NotFoundError, BusinessError, ValidationError) as e:
+        raise _handle(e)
 
 
 @router.get("/files")
 @require_admin
-def list_firmware_files(db: Session = Depends(get_db)):
-    return AdminOtaService.list_firmware_files(db)
+def list_firmware_files(svc: AdminOtaService = Depends(get_service)):
+    return svc.list_firmware_files()
