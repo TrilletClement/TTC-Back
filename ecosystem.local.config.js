@@ -125,5 +125,14 @@ module.exports = {
       error_file:  path.join(LOGS_DIR, 'stripe-error.log'),
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
     },
+    {
+      name:        'stib-sendcloud',
+      script:      'cloudflared',
+      args:        ['tunnel', '--url', 'http://localhost:8000'],
+      interpreter: 'none',
+      autorestart: false,
+      out_file:    path.join(LOGS_DIR, 'sendcloud-tunnel-out.log'),
+      error_file:  path.join(LOGS_DIR, 'sendcloud-tunnel-error.log'),
+    },
   ],
 };

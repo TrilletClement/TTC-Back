@@ -32,6 +32,8 @@ class OrderOut(BaseModel):
     esp_device_id:       Optional[int]
     esp_device_mac:      Optional[str]
     esp_device_name:     Optional[str]
+    sendcloud_parcel_id: Optional[str] = None
+    label_url:           Optional[str] = None
     shipping_details:    Optional[AddressOut]
     billing_details:     Optional[AddressOut]
     same_address:        Optional[bool]
