@@ -1,32 +1,53 @@
 import logging
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.orm_models.db import get_db
 from app.orm_models.order import Order
-from app.orm_models.price import PriceVersion
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/shipping", tags=["shipping"])
 
+_KG_PER_ITEM = 0.5
 
-@router.get("/rates")
-def get_shipping_rates(db: Session = Depends(get_db)):
-    """Public endpoint: returns shipping rates from the latest price version."""
-    latest = db.query(PriceVersion).order_by(PriceVersion.created_at.desc()).first()
-    if not latest or not latest.shipping_rates:
+
+@router.get("/countries")
+def get_shipping_countries(db: Session = Depends(get_db)):
+    """Public endpoint: ISO-2 country codes the store ships to."""
+    from app.services.adminShippingService import list_countries
+    return [c.country_code for c in list_countries(db)]
+
+
+@router.get("/options")
+def get_shipping_options(
+    country_code: str = Query(...),
+    item_count:   int = Query(default=1, ge=1),
+    db: Session = Depends(get_db),
+):
+    """
+    Public endpoint: admin-allowed SendCloud options for a given country.
+    Returns [] when the country is not in the allowed list or SendCloud is not configured.
+    """
+    from app.services import sendcloudService, adminShippingService
+
+    cc = country_code.upper()
+
+    if cc not in adminShippingService.get_allowed_country_codes(db):
         return []
-    return [
-        {
-            "countryCode":     r.country_code,
-            "countryName":     r.country_name,
-            "costCents":       r.cost_cents,
-            "deliveryDaysMin": r.delivery_days_min,
-            "deliveryDaysMax": r.delivery_days_max,
-        }
-        for r in latest.shipping_rates
-    ]
+
+    if not sendcloudService._enabled():
+        return []
+
+    allowed = set(adminShippingService.get_enabled_codes(db))
+    if not allowed:
+        return []
+
+    weight_kg   = item_count * _KG_PER_ITEM
+    all_options = sendcloudService.get_shipping_options(cc, weight_kg=weight_kg)
+    filtered    = [o for o in all_options if o["code"] in allowed]
+    filtered.sort(key=lambda x: x["price_cents"] or 99_999)
+    return filtered
 
 
 # ── SendCloud webhook ──────────────────────────────────────────────────────────
@@ -58,10 +79,22 @@ async def sendcloud_webhook(
     if action != "parcel_status_changed":
         return {"accepted": True, "action": action}
 
-    parcel      = data.get("parcel", {})
-    parcel_id   = str(parcel.get("id", ""))
-    status_id   = (parcel.get("status") or {}).get("id")
-    tracking_nr = parcel.get("tracking_number")
+    parcel       = data.get("parcel", {})
+    parcel_id    = str(parcel.get("id", ""))
+    status_id    = (parcel.get("status") or {}).get("id")
+    tracking_nr  = parcel.get("tracking_number")
+    tracking_url = parcel.get("tracking_url")
+
+    label_obj = parcel.get("label") or {}
+    label_url = (
+        label_obj.get("label_printer")
+        or (label_obj.get("normal_printer") or [None])[0]
+    )
+
+    logger.info(
+        "SendCloud webhook: parcel=%s status=%s tracking=%s tracking_url=%s label=%s",
+        parcel_id, status_id, tracking_nr, tracking_url, label_url,
+    )
 
     if not parcel_id or status_id is None:
         return {"accepted": True}
@@ -76,6 +109,10 @@ async def sendcloud_webhook(
         order.status = new_status
     if tracking_nr and not order.tracking_number:
         order.tracking_number = tracking_nr
+    if tracking_url:
+        order.tracking_url = tracking_url
+    if label_url and not order.label_url:
+        order.label_url = label_url
 
     db.commit()
     logger.info("SendCloud webhook: parcel %s → status %s (order #%s)", parcel_id, status_id, order.id)

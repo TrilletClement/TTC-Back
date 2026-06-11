@@ -26,16 +26,6 @@ class AdminPricesService:
                     }
                     for p in sorted(v.prices, key=lambda p: p.board_type_id)
                 ],
-                "shippingRates": [
-                    {
-                        "countryCode":     r.country_code,
-                        "countryName":     r.country_name,
-                        "costCents":       r.cost_cents,
-                        "deliveryDaysMin": r.delivery_days_min,
-                        "deliveryDaysMax": r.delivery_days_max,
-                    }
-                    for r in v.shipping_rates
-                ],
             }
             for v in versions
         ]
@@ -49,16 +39,6 @@ class AdminPricesService:
                 entry.board_type_id,
                 entry.base_price_cents,
                 entry.reduced_price_cents,
-            )
-
-        for rate in payload.shipping:
-            self.repo.add_shipping_rate(
-                version.id,
-                rate.country_code,
-                rate.country_name,
-                rate.cost_cents,
-                rate.delivery_days_min,
-                rate.delivery_days_max,
             )
 
         self.repo.commit_and_refresh(version)

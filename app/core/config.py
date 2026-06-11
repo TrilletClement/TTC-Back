@@ -72,18 +72,13 @@ class Settings(BaseSettings):
 
     # SendCloud shipping (API v3)
     # Get API key + secret from SendCloud panel → Settings → Integrations.
-    # Set SENDCLOUD_SANDBOX=True locally — uses the free "Unstamped letter" option
-    # so no carrier is ever charged during development/testing.
-    SENDCLOUD_API_KEY:              str  = ""
-    SENDCLOUD_API_SECRET:           str  = ""
-    SENDCLOUD_SANDBOX:              bool = False
+    # Available shipping options are managed per-country in the admin Shipping tab.
+    SENDCLOUD_API_KEY:          str = ""
+    SENDCLOUD_API_SECRET:       str = ""
     # Sender address ID — find it in SendCloud panel → Settings → Addresses
-    SENDCLOUD_FROM_ADDRESS_ID:      int  = 0
-    # Shipping option code (v3) — leave empty to use the default (bpost:athome-bpack24hpro).
-    # Find available codes via POST /api/v3/shipping-options with from/to country + weight.
-    SENDCLOUD_SHIPPING_OPTION_CODE: str  = ""
+    SENDCLOUD_FROM_ADDRESS_ID:  int = 0
     # Webhook secret — set in SendCloud panel → Settings → Integrations → Webhooks
-    SENDCLOUD_WEBHOOK_SECRET:       str  = ""
+    SENDCLOUD_WEBHOOK_SECRET:   str = ""
 
     # Device mTLS provisioning
     # Secret shared with the home-server enrollment proxy.

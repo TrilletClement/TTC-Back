@@ -57,6 +57,8 @@ def _build_order_out(o: Order, include_svg: bool = False) -> OrderOut:
         esp_device_name=dev.name or dev.mac_address if dev else None,
         sendcloud_parcel_id=o.sendcloud_parcel_id,
         label_url=o.label_url,
+        tracking_url=o.tracking_url,
+        shipping_option_code=o.shipping_option_code,
         shipping_details=_addr_dict(sd),
         billing_details=None if same_address else _addr_dict(bd),
         same_address=same_address,
@@ -172,7 +174,7 @@ class AdminOrdersService:
         self.repo.save(o)
         return _build_order_out(o)
 
-    def ship_order(self, order_id: int) -> OrderOut:
+    def ship_order(self, order_id: int, fallback_option_code: Optional[str] = None) -> OrderOut:
         from app.services import sendcloudService
 
         o = self.repo.get_by_id(order_id)
@@ -186,6 +188,12 @@ class AdminOrdersService:
         if not sd:
             raise BusinessError("Order has no shipping address.")
 
+        option_code = o.shipping_option_code or fallback_option_code or ""
+        if not option_code:
+            raise BusinessError(
+                "No shipping option configured. Add at least one option in the admin Shipping tab."
+            )
+
         try:
             result = sendcloudService.create_parcel(
                 name=f"{sd.first_name} {sd.last_name}".strip(),
@@ -196,12 +204,14 @@ class AdminOrdersService:
                 email=o.user.email if o.user else "",
                 telephone=sd.phone or None,
                 order_ref=o.cart_ref or str(o.id),
+                shipping_option_code=option_code,
             )
         except RuntimeError as exc:
             raise BusinessError(str(exc))
 
         o.sendcloud_parcel_id = result.parcel_id
         o.label_url           = result.label_url
+        o.tracking_url        = result.tracking_url
         if result.tracking_number:
             o.tracking_number = result.tracking_number
         o.status = "shipped"

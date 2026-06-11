@@ -70,8 +70,10 @@ class Order(Base):
     esp_device_id       = Column(Integer, ForeignKey("esp32_device.id"), nullable=True)
     esp_device          = relationship("ESP32Device", foreign_keys=[esp_device_id], backref="linked_orders")
 
-    sendcloud_parcel_id = Column(String(50),  nullable=True)
-    label_url           = Column(String(500), nullable=True)
+    sendcloud_parcel_id  = Column(String(50),  nullable=True)
+    label_url            = Column(String(500), nullable=True)
+    tracking_url         = Column(String(500), nullable=True)
+    shipping_option_code = Column(String(100), nullable=True)
 
     created_at          = Column(DateTime, default=datetime.utcnow)
     paid_at             = Column(DateTime, nullable=True)

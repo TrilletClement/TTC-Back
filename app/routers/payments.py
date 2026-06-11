@@ -18,8 +18,10 @@ class CartItem(BaseModel):
 
 
 class CartPayload(BaseModel):
-    items: list[CartItem]
-    shipping_country: str = ""
+    items:                list[CartItem]
+    shipping_country:     str = ""
+    shipping_postal_code: str = ""
+    shipping_option_code: str = ""
 
 
 @router.post("/create-session")

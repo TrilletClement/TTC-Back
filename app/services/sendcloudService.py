@@ -1,12 +1,7 @@
 """
 SendCloud REST API v3 client.
-
 Docs: https://sendcloud.dev/api/v3/
-
 Authentication: HTTP Basic — API key as username, API secret as password.
-Sandbox:        Set SENDCLOUD_SANDBOX=True to use the free "Unstamped letter" option,
-                which creates real parcels that are never charged (no label produced by
-                a real carrier). Safe for local dev and testing.
 """
 import hashlib
 import hmac
@@ -19,9 +14,8 @@ from app.core.config import settings
 
 _BASE = "https://panel.sendcloud.sc/api/v3"
 
-# Shipping option codes (v3)
-_OPTION_SANDBOX = "sendcloud:letter"          # Free test option, no carrier charge
-_OPTION_DEFAULT = "bpost:athome-bpack24hpro"  # bpost @home domestic
+_FROM_COUNTRY = "BE"
+_FROM_POSTAL  = "4020"
 
 
 def _auth() -> tuple[str, str]:
@@ -32,11 +26,87 @@ def _enabled() -> bool:
     return bool(settings.SENDCLOUD_API_KEY and settings.SENDCLOUD_API_SECRET)
 
 
-def _shipping_option_code() -> str:
-    if settings.SENDCLOUD_SANDBOX:
-        return _OPTION_SANDBOX
-    code = getattr(settings, "SENDCLOUD_SHIPPING_OPTION_CODE", "").strip()
-    return code if code else _OPTION_DEFAULT
+def get_shipping_options(
+    to_country_code: str,
+    to_postal_code: str = "",
+    weight_kg: float = 1.0,
+) -> list[dict]:
+    """
+    Return all home-delivery shipping options with live prices from SendCloud.
+    Does NOT apply the admin allowlist — callers are responsible for filtering.
+    Filters out service-point-required and pure-B2B options as a baseline.
+    """
+    if not _enabled():
+        return []
+
+    body: dict = {
+        "from_country_code": _FROM_COUNTRY,
+        "from_postal_code":  _FROM_POSTAL,
+        "to_country_code":   to_country_code.upper(),
+        "parcels": [{"weight": {"value": f"{weight_kg:.3f}", "unit": "kg"}}],
+        "calculate_quotes":  True,
+    }
+    if to_postal_code:
+        body["to_postal_code"] = to_postal_code
+
+    try:
+        resp = requests.post(
+            f"{_BASE}/shipping-options",
+            json=body,
+            auth=_auth(),
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return []
+
+        result = []
+        for opt in resp.json().get("data", []):
+            code  = opt.get("code", "")
+            req   = opt.get("requirements", {})
+            funcs = opt.get("functionalities", {})
+            if req.get("is_service_point_required"):
+                continue
+            if funcs.get("b2b") and not funcs.get("b2c"):
+                continue
+
+            quotes = opt.get("quotes", [])
+            price_cents: Optional[int] = None
+            currency = "EUR"
+            if quotes:
+                total = quotes[0].get("price", {}).get("total", {})
+                price_str = total.get("value")
+                currency  = total.get("currency", "EUR")
+                if price_str is not None:
+                    try:
+                        price_cents = round(float(price_str) * 100)
+                    except (ValueError, TypeError):
+                        pass
+
+            result.append({
+                "code":         code,
+                "name":         opt.get("name", code),
+                "carrier_code": opt.get("carrier", {}).get("code", ""),
+                "carrier_name": opt.get("carrier", {}).get("name", ""),
+                "price_cents":  price_cents,
+                "currency":     currency,
+            })
+
+        return sorted(result, key=lambda x: x["price_cents"] or 99_999)
+    except Exception:
+        return []
+
+
+def get_option_price_cents(
+    option_code: str,
+    to_country_code: str,
+    to_postal_code: str = "",
+    weight_kg: float = 1.0,
+) -> Optional[int]:
+    """Return price in cents for a specific option code, or None if not found."""
+    for opt in get_shipping_options(to_country_code, to_postal_code, weight_kg):
+        if opt["code"] == option_code:
+            return opt["price_cents"]
+    return None
 
 
 @dataclass
@@ -44,46 +114,47 @@ class ParcelResult:
     parcel_id:       str
     tracking_number: Optional[str]
     label_url:       Optional[str]
-    sandbox:         bool = False
+    tracking_url:    Optional[str] = None
 
 
 def create_parcel(
     *,
-    name:        str,
-    address:     str,
-    city:        str,
-    postal_code: str,
-    country_iso: str,   # ISO-2 e.g. "BE"
-    email:       str,
-    telephone:   Optional[str] = None,
-    weight_kg:   float = 1.0,
-    order_ref:   Optional[str] = None,
+    name:                 str,
+    address:              str,
+    city:                 str,
+    postal_code:          str,
+    country_iso:          str,
+    email:                str,
+    telephone:            Optional[str] = None,
+    weight_kg:            float = 1.0,
+    order_ref:            Optional[str] = None,
+    shipping_option_code: str,
 ) -> ParcelResult:
     """
     Create a parcel via SendCloud API v3 and return the parcel ID + label URL.
-    When SENDCLOUD_SANDBOX=True the 'Unstamped letter' option is used —
-    a real parcel record is created but no carrier is charged and no delivery happens.
-    Raises RuntimeError on configuration or API errors.
+    shipping_option_code is required — use the admin-configured code for the order.
     """
     if not _enabled():
         raise RuntimeError(
             "SendCloud is not configured (SENDCLOUD_API_KEY / SENDCLOUD_API_SECRET missing)."
         )
-
-    option_code = _shipping_option_code()
+    if not shipping_option_code:
+        raise RuntimeError(
+            "No shipping option code provided. Configure one in the admin shipping panel."
+        )
 
     body: dict = {
         "ship_with": {
             "type": "shipping_option_code",
-            "properties": {"shipping_option_code": option_code},
+            "properties": {"shipping_option_code": shipping_option_code},
         },
         "to_address": {
-            "name":          name,
+            "name":           name,
             "address_line_1": address,
-            "city":          city,
-            "postal_code":   postal_code,
-            "country_code":  country_iso.upper(),
-            "email":         email,
+            "city":           city,
+            "postal_code":    postal_code,
+            "country_code":   country_iso.upper(),
+            "email":          email,
         },
         "from_address": {
             "sender_address_id": settings.SENDCLOUD_FROM_ADDRESS_ID,
@@ -113,17 +184,16 @@ def create_parcel(
         raise RuntimeError(f"SendCloud API error {resp.status_code}: {detail}")
 
     data        = resp.json()["data"]
-    shipment_id = data.get("id")   # UUID — used only for polling
+    shipment_id = data.get("id")
     parcels     = data.get("parcels", [])
     if not parcels:
         raise RuntimeError("SendCloud API returned a shipment with no parcels.")
 
     parcel          = parcels[0]
-    parcel_id_int   = parcel["id"]            # integer — stored in DB, matched by webhook
+    parcel_id_int   = parcel["id"]
     tracking_number = parcel.get("tracking_number") or None
 
-    # Poll up to ~6 s for the carrier to announce the shipment and attach a label.
-    label_url, tracking_number = _poll_shipment(
+    label_url, tracking_number, tracking_url = _poll_shipment(
         shipment_id,
         tracking_number,
         max_attempts=4,
@@ -134,7 +204,7 @@ def create_parcel(
         parcel_id=str(parcel_id_int),
         tracking_number=tracking_number or None,
         label_url=label_url,
-        sandbox=settings.SENDCLOUD_SANDBOX,
+        tracking_url=tracking_url,
     )
 
 
@@ -143,11 +213,8 @@ def _poll_shipment(
     tracking_number: Optional[str],
     max_attempts: int = 4,
     delay: float = 1.5,
-) -> tuple[Optional[str], Optional[str]]:
-    """
-    Poll the v3 shipment until the first parcel has a label document.
-    Returns (label_url, tracking_number) — either may be None if still announcing.
-    """
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Poll for label attachment. Returns (label_url, tracking_number, tracking_url)."""
     for attempt in range(max_attempts):
         if attempt > 0:
             time.sleep(delay)
@@ -163,23 +230,20 @@ def _poll_shipment(
             parcels = data.get("parcels", [])
             if not parcels:
                 continue
-            parcel = parcels[0]
-            trk    = parcel.get("tracking_number") or tracking_number
+            parcel       = parcels[0]
+            trk          = parcel.get("tracking_number") or tracking_number
+            tracking_url = parcel.get("tracking_url") or None
             for doc in parcel.get("documents", []):
                 if doc.get("type") == "label":
-                    return doc.get("link"), trk or None
+                    return doc.get("link"), trk or None, tracking_url
         except Exception:
             continue
-    return None, tracking_number
+    return None, tracking_number, None
 
 
 # ── Webhook signature verification ────────────────────────────────────────────
 
 def verify_webhook(body: bytes, signature_header: str) -> bool:
-    """
-    Verify an incoming SendCloud webhook signature (HMAC-SHA256).
-    If SENDCLOUD_WEBHOOK_SECRET is empty (free plan), verification is skipped.
-    """
     if not settings.SENDCLOUD_WEBHOOK_SECRET:
         return True
     expected = hmac.new(
@@ -193,17 +257,16 @@ def verify_webhook(body: bytes, signature_header: str) -> bool:
 # ── Webhook status mapping ─────────────────────────────────────────────────────
 
 _STATUS_MAP: dict[int, Optional[str]] = {
-    1000: None,         # Ready to send
-    1002: "shipped",    # Being sorted / in transit
-    3:    "shipped",    # En route to sorting centre
-    11:   "delivered",  # Delivered
-    12:   "delivered",  # Awaiting customer pickup
-    2000: "delivered",  # Shipment delivered
-    1998: None,         # No label
-    13:   None,         # Return parcel — don't auto-change status
+    1000: None,
+    1002: "shipped",
+    3:    "shipped",
+    11:   "delivered",
+    12:   "delivered",
+    2000: "delivered",
+    1998: None,
+    13:   None,
 }
 
 
 def map_sendcloud_status(status_id: int) -> Optional[str]:
-    """Return our order status string, or None if no transition should happen."""
     return _STATUS_MAP.get(status_id)

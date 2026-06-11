@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from app.orm_models.board import BoardType
-from app.orm_models.price import PriceVersion, BoardTypePrice, ShippingRate
+from app.orm_models.price import PriceVersion, BoardTypePrice
 
 
 class PriceRepository:
@@ -25,16 +25,6 @@ class PriceRepository:
             board_type_id=board_type_id,
             base_price_cents=base,
             reduced_price_cents=reduced,
-        ))
-
-    def add_shipping_rate(self, version_id: int, country_code: str, country_name: str, cost: int, days_min: int, days_max: int) -> None:
-        self.db.add(ShippingRate(
-            price_version_id=version_id,
-            country_code=country_code.upper().strip(),
-            country_name=country_name.strip(),
-            cost_cents=cost,
-            delivery_days_min=days_min,
-            delivery_days_max=days_max,
         ))
 
     def commit_and_refresh(self, obj) -> None:

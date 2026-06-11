@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.orm_models.auth import User
 from app.orm_models.board import Board
 from app.orm_models.order import Order, OrderDetails
-from app.orm_models.price import BoardTypePrice, PriceVersion, ShippingRate
+from app.orm_models.price import BoardTypePrice, PriceVersion
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 WEBHOOK_SECRET = settings.STRIPE_WEBHOOK_SECRET
@@ -45,38 +45,46 @@ def _compute_price(board: Board, version: PriceVersion, db: Session) -> int:
     return entry.reduced_price_cents or entry.base_price_cents
 
 
-def _get_shipping_for_country(country: str, db: Session) -> tuple[ShippingRate, list[str]]:
-    """Return (ShippingRate row, allowed_countries) from the DB.
+_KG_PER_ITEM = 0.5
 
-    Restricts allowed_countries to the single selected country so the Stripe
-    address form cannot be changed to a different country after selection.
+
+def _resolve_shipping(
+    country: str,
+    postal_code: str,
+    option_code: str,
+    item_count: int,
+    db: Session,
+) -> tuple[int, str, list[str]]:
+    """Return (cost_cents, display_name, allowed_countries).
+
+    Priority:
+    1. Live SendCloud price for the chosen option_code
+    2. DB ShippingRate fallback
+    Raises HTTPException when no rate can be determined.
     """
-    code     = country.upper().strip()
-    latest   = db.query(PriceVersion).order_by(PriceVersion.created_at.desc()).first()
-    rate_row = (
-        db.query(ShippingRate)
-        .filter_by(price_version_id=latest.id, country_code=code)
-        .first()
-        if latest else None
+    from app.services import sendcloudService
+
+    code = country.upper().strip()
+
+    if option_code and sendcloudService._enabled():
+        weight_kg = max(item_count, 1) * _KG_PER_ITEM
+        price = sendcloudService.get_option_price_cents(option_code, code, "", weight_kg)
+        if price is not None:
+            label = option_code.split(":")[0].upper() + " — " + option_code.split(":")[-1].split("/")[0]
+            return price, label, [code]
+
+    raise HTTPException(
+        status_code=400,
+        detail="Could not determine shipping cost. Please select a valid shipping option.",
     )
-    if not rate_row:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Shipping to {code} is not configured. Please select an available country.",
-        )
-    return rate_row, [code]
 
 
-def _build_stripe_shipping_option(rate_row: ShippingRate) -> dict:
+def _build_stripe_shipping_option(cost_cents: int, display_name: str) -> dict:
     return {
         "shipping_rate_data": {
             "type": "fixed_amount",
-            "fixed_amount": {"amount": rate_row.cost_cents, "currency": "eur"},
-            "display_name": f"Shipping to {rate_row.country_name}",
-            "delivery_estimate": {
-                "minimum": {"unit": "business_day", "value": rate_row.delivery_days_min},
-                "maximum": {"unit": "business_day", "value": rate_row.delivery_days_max},
-            },
+            "fixed_amount": {"amount": cost_cents, "currency": "eur"},
+            "display_name": display_name,
         }
     }
 
@@ -110,8 +118,14 @@ class PaymentService:
             item_boards.append((item, board, unit_amount))
 
         cart_ref = _generate_cart_ref()
-        rate_row, allowed_countries = _get_shipping_for_country(payload.shipping_country, db)
-        shipping_options = [_build_stripe_shipping_option(rate_row)]
+        cost_cents, ship_label, allowed_countries = _resolve_shipping(
+            payload.shipping_country,
+            getattr(payload, "shipping_postal_code", ""),
+            getattr(payload, "shipping_option_code", ""),
+            len(payload.items),
+            db,
+        )
+        shipping_options = [_build_stripe_shipping_option(cost_cents, ship_label)]
 
         try:
             line_items = []
@@ -153,17 +167,19 @@ class PaymentService:
 
             session = stripe.checkout.Session.create(**session_params)
 
+            opt_code = getattr(payload, "shipping_option_code", "") or None
             for item, board, unit_amount in item_boards:
                 order = Order(
-                    stripe_session_id = session.id,
-                    cart_ref          = cart_ref,
-                    status            = "pending",
-                    board_id          = item.boardId,
-                    user_id           = current_user.id,
-                    svg_content       = item.svg,
-                    amount_cents      = unit_amount,
-                    currency          = "eur",
-                    price_version_id  = current_version.id,
+                    stripe_session_id    = session.id,
+                    cart_ref             = cart_ref,
+                    status               = "pending",
+                    board_id             = item.boardId,
+                    user_id              = current_user.id,
+                    svg_content          = item.svg,
+                    amount_cents         = unit_amount,
+                    currency             = "eur",
+                    price_version_id     = current_version.id,
+                    shipping_option_code = opt_code,
                 )
                 db.add(order)
 

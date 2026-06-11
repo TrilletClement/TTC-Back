@@ -82,9 +82,16 @@ def associate_device(order_id: int, payload: AssociateDevicePayload, current_use
 
 @router.post("/{order_id}/ship")
 @require_admin
-def ship_order(order_id: int, current_user: User, svc: AdminOrdersService = Depends(get_service)):
+def ship_order(
+    order_id: int,
+    current_user: User,
+    db: Session = Depends(get_db),
+    svc: AdminOrdersService = Depends(get_service),
+):
+    from app.services import adminShippingService
+    fallback_code = adminShippingService.get_first_enabled(db)
     try:
-        return svc.ship_order(order_id)
+        return svc.ship_order(order_id, fallback_option_code=fallback_code)
     except (NotFoundError, BusinessError, ValidationError) as e:
         raise _handle(e)
 

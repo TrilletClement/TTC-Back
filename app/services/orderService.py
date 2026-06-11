@@ -114,6 +114,8 @@ class OrderService:
                 "currency":            o.currency,
                 "created_at":          o.created_at.isoformat() if o.created_at else None,
                 "svg_content":         o.svg_content,
+                "tracking_number":     o.tracking_number,
+                "tracking_url":        o.tracking_url,
                 "shipping_details": {
                     "firstName":    o.shipping_details.first_name,
                     "lastName":     o.shipping_details.last_name,

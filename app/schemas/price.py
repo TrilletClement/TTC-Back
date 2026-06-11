@@ -8,15 +8,6 @@ class PriceEntryIn(BaseModel):
     reduced_price_cents: int
 
 
-class ShippingRateIn(BaseModel):
-    country_code:      str
-    country_name:      str
-    cost_cents:        int
-    delivery_days_min: int
-    delivery_days_max: int
-
-
 class PriceVersionCreate(BaseModel):
-    label:    Optional[str] = None
-    prices:   list[PriceEntryIn]
-    shipping: list[ShippingRateIn] = []
+    label:  Optional[str] = None
+    prices: list[PriceEntryIn]
