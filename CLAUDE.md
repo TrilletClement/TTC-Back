@@ -109,12 +109,46 @@ All components are standalone (no NgModules). Declare imports in the `@Component
 })
 ```
 
+### Interfaces and models
+
+**Before creating any interface, check `models/` first.** The canonical model files are:
+
+| File | What lives there |
+|------|-----------------|
+| `models/order.ts` | `Order`, `OrderItem`, `AdminOrder`, `AdminOrderItem`, `OrderAddress`, `OrderStatus`, `OrderPatch`, `DeviceSelectOption`, `CreateOrderPayload` |
+| `models/shipping.ts` | `ShippingOption`, `AvailableShippingOption` |
+| `models/device-admin.ts` | `DeviceAdminOut`, `DeviceBoardOut`, `DeviceFirmwareOut`, `DeviceHardwareOut`, `DeviceOrderOut`, `BoardListOut` |
+| `models/ota.ts` | `FirmwarePackage`, `HardwareConfig`, `DeviceOverride`, `OtaData`, all settings types |
+| `models/admin-user.ts` | `RoleInfo`, `UserAdminOut` |
+| `models/autocomplete.ts` | `AutocompleteOption` |
+| `models/led.ts` | `Led`, `LedTripStop` (not `TripStop` — that's the GTFS model in `models/tripStop.ts`) |
+
+**Layering rule — dependency direction:**
+```
+models/ → services/ → Components/
+```
+- Services import from `models/`, never from `Components/`.
+- Components import from `models/` directly (preferred) or from services (acceptable).
+- **Never** import from a component file in a service.
+
+**Where to put a new interface:**
+- Used by more than one file → `models/`
+- Only used inside one service and its direct component → can stay in the service file
+- Local UI view-model (e.g. a draft row, a preview state) → stays in the component
+
+**Re-exporting from services for backward compat:**
+When moving a type out of a service to `models/`, keep a re-export shim in the service so existing callers don't break. Use `export type` (required by `isolatedModules`):
+```typescript
+import { MyType } from '../models/my-model';
+export type { MyType };  // NOT export { MyType } — isolatedModules requires export type for interfaces
+```
+
 ### Services
 
 - One service per backend domain (`shipping.service.ts`, `order.service.ts`, …).
 - Admin-only services are prefixed `admin-` (`admin-orders.service.ts`).
 - Use `HttpClient` directly; no wrapper layer.
-- Define interfaces for all API payloads and responses in the service file.
+- Do not define interfaces that are already in `models/` — import them instead.
 
 ### Translations
 
