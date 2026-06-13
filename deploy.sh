@@ -31,11 +31,20 @@ echo "3. Transfert vers le serveur Docker ($DOCKER_SERVER_IP)..."
 # .env is NOT transferred — the server keeps its own prod .env.
 scp front.tar.gz api.tar.gz docker-compose.yml \
     ca-config.tar.gz \
+    scripts/db-backup.sh \
     $DOCKER_SERVER_USER@$DOCKER_SERVER_IP:/tmp/
 
 echo "4. Installation sur le serveur Docker..."
 ssh -t $DOCKER_SERVER_USER@$DOCKER_SERVER_IP "su - root -c '
     mv /tmp/front.tar.gz /tmp/api.tar.gz /tmp/docker-compose.yml /root/
+
+    echo \"--- Installation du script de backup automatique ---\"
+    mkdir -p /root/scripts
+    mv /tmp/db-backup.sh /root/scripts/db-backup.sh
+    chmod +x /root/scripts/db-backup.sh
+    CRON_LINE=\"0 3 * * * /root/scripts/db-backup.sh >> /root/db-backups/backup.log 2>&1\"
+    ( crontab -l 2>/dev/null | grep -v \"db-backup.sh\"; echo \"\$CRON_LINE\" ) | crontab -
+    echo \"  Cron installé : \$CRON_LINE\"
 
     echo \"--- Extraction de la config CA ---\"
     mkdir -p /root/ca
@@ -65,6 +74,19 @@ ssh -t $DOCKER_SERVER_USER@$DOCKER_SERVER_IP "su - root -c '
         echo \"\"
     else
         echo \"  CA already initialised, skipping.\"
+    fi
+
+    echo \"--- Sauvegarde de la base de donnees ---\"
+    DUMP_DIR=/root/db-backups
+    mkdir -p \$DUMP_DIR
+    DUMP_FILE=\"\$DUMP_DIR/dump_\$(date +%Y%m%d_%H%M%S).sql.gz\"
+    if docker compose ps -q db 2>/dev/null | grep -q .; then
+        docker compose exec -T db pg_dump -U mylocaldb mylocaldb | gzip > \"\$DUMP_FILE\"
+        echo \"  Backup: \$DUMP_FILE (\$(du -sh \"\$DUMP_FILE\" | cut -f1))\"
+        ls -t \"\$DUMP_DIR\"/dump_*.sql.gz 2>/dev/null | tail -n +11 | xargs rm -f
+        echo \"  (anciens backups > 10 supprimes)\"
+    else
+        echo \"  DB non demarree — backup ignore.\"
     fi
 
     echo \"--- Relance des services ---\"
