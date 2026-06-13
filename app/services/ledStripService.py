@@ -75,7 +75,7 @@ class LedStripService:
                     detail=f"Maximum number of LED strips reached ({board.board_type.max_ledstrip}) for this board type",
                 )
 
-        next_order = order_index_override or (
+        next_order = order_index_override if order_index_override is not None else (
             (db.query(sa.func.max(LedStrip.order_index)).filter(LedStrip.board_id == board.id).scalar() or 0) + 1
         )
 
@@ -235,6 +235,23 @@ class LedStripService:
 
         db.commit()
         return {"message": "LED strip updated successfully", "led_strip_id": strip.id}
+
+    @staticmethod
+    def move_strip_to_slot(board_id: int, strip_id: int, order_index: int, db: Session):
+        strip = db.query(LedStrip).filter_by(id=strip_id, board_id=board_id).first()
+        if not strip:
+            raise HTTPException(status_code=404, detail="LED strip not found")
+        other = db.query(LedStrip).filter(
+            LedStrip.board_id == board_id,
+            LedStrip.order_index == order_index,
+            LedStrip.id != strip_id,
+        ).first()
+        old_index = strip.order_index
+        strip.order_index = order_index
+        if other:
+            other.order_index = old_index
+        db.commit()
+        return {"message": "OK"}
 
     @staticmethod
     def reorder_strips(board_id: int, ordered_ids: list[int], db: Session):

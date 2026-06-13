@@ -20,6 +20,7 @@ class LedStripCreate(BaseModel):
     pre_stop_left_minutes: Optional[int] = Field(default=None, ge=1, le=300)
     pre_stop_right_name: Optional[str] = None
     pre_stop_right_minutes: Optional[int] = Field(default=None, ge=1, le=300)
+    order_index: Optional[int] = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def check_central_stop_present(self) -> "LedStripCreate":
@@ -50,6 +51,10 @@ class ReorderPayload(BaseModel):
     ordered_ids: list[int]
 
 
+class MoveSlotPayload(BaseModel):
+    order_index: int = Field(..., ge=1)
+
+
 @router.post("/boards/{board_id}/add_led_strip", status_code=201)
 @require_user
 def add_led_strip(
@@ -69,6 +74,7 @@ def add_led_strip(
         pre_stop_left_minutes=payload.pre_stop_left_minutes,
         pre_stop_right_name=payload.pre_stop_right_name,
         pre_stop_right_minutes=payload.pre_stop_right_minutes,
+        order_index_override=payload.order_index,
         db=db,
     )
 
@@ -82,6 +88,18 @@ def reorder_led_strips(
     db: Session = Depends(get_db),
 ):
     return LedStripService.reorder_strips(board_id, payload.ordered_ids, db)
+
+
+@router.patch("/boards/{board_id}/led_strips/{strip_id}/slot")
+@require_user
+def move_strip_to_slot(
+    board_id: int,
+    strip_id: int,
+    payload: MoveSlotPayload,
+    current_user: User,
+    db: Session = Depends(get_db),
+):
+    return LedStripService.move_strip_to_slot(board_id, strip_id, payload.order_index, db)
 
 
 @router.get("/boards/{board_id}/led_strips/{strip_id}")

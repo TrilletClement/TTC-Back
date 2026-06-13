@@ -6,6 +6,7 @@ Create Date: 2026-06-13
 """
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 revision = '20260613_01'
 down_revision = '20260611_03'
@@ -13,7 +14,17 @@ branch_labels = None
 depends_on = None
 
 
+def _svg_col(conn):
+    """Return the actual SVG column name on orders (svg_content on a clean history,
+    svg_path on DBs where 20260516_06 was never applied)."""
+    cols = {c['name'] for c in inspect(conn).get_columns('orders')}
+    return 'svg_content' if 'svg_content' in cols else 'svg_path'
+
+
 def upgrade():
+    conn = op.get_bind()
+    svg = _svg_col(conn)
+
     # 1. Create order_item table
     op.create_table(
         'order_item',
@@ -31,7 +42,7 @@ def upgrade():
 
     # 2. For each existing order row, create an order_item pointing to the
     #    canonical order for that cart_ref (min id in group, or self for no cart_ref).
-    op.execute("""
+    conn.execute(sa.text(f"""
         INSERT INTO order_item (order_id, board_id, svg_content, amount_cents, esp_device_id)
         SELECT
             COALESCE(
@@ -42,11 +53,11 @@ def upgrade():
                 o.id
             ) AS order_id,
             o.board_id,
-            o.svg_content,
+            o.{svg},
             o.amount_cents,
             o.esp_device_id
         FROM orders o
-    """)
+    """))
 
     # 3. Set amount_cents on canonical orders to sum of their items' prices
     op.execute("""
@@ -71,21 +82,24 @@ def upgrade():
 
     # 5. Drop the columns that moved to order_item
     op.drop_column('orders', 'board_id')
-    op.drop_column('orders', 'svg_content')
+    op.drop_column('orders', svg)
     op.drop_column('orders', 'esp_device_id')
 
 
 def downgrade():
+    conn = op.get_bind()
+    cols = {c['name'] for c in inspect(conn).get_columns('orders')}
+    # Restore the same column name that was there before
+    svg = 'svg_content' if 'svg_content' not in cols else 'svg_path'
+
     op.add_column('orders', sa.Column('board_id',      sa.Integer(), nullable=True))
-    op.add_column('orders', sa.Column('svg_content',   sa.Text(),    nullable=True))
+    op.add_column('orders', sa.Column(svg,             sa.Text(),    nullable=True))
     op.add_column('orders', sa.Column('esp_device_id', sa.Integer(), nullable=True))
 
-    # Restore single-item orders (one row per item, each gets its own cart_ref entry).
-    # For simplicity, copy the first item's data back into the order row.
-    op.execute("""
+    conn.execute(sa.text(f"""
         UPDATE orders o
         SET board_id      = oi.board_id,
-            svg_content   = oi.svg_content,
+            {svg}         = oi.svg_content,
             amount_cents  = oi.amount_cents,
             esp_device_id = oi.esp_device_id
         FROM (
@@ -94,6 +108,6 @@ def downgrade():
             ORDER BY order_id, id
         ) oi
         WHERE oi.order_id = o.id
-    """)
+    """))
 
     op.drop_table('order_item')
