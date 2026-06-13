@@ -10,9 +10,8 @@ from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.orm_models.auth import User
-from app.orm_models.board import Board
 from app.orm_models.order import Order, OrderDetails, OrderItem
-from app.orm_models.price import BoardTypePrice, PriceVersion
+from app.repositories.order_repo import OrderRepository
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 WEBHOOK_SECRET = settings.STRIPE_WEBHOOK_SECRET
@@ -26,17 +25,13 @@ def _generate_cart_ref() -> str:
     return "C-" + datetime.utcnow().strftime("%Y%m%d") + "-" + secrets.token_hex(2).upper()
 
 
-def _compute_price(board: Board, version: PriceVersion, db: Session) -> int:
-    """Return the server-authoritative unit price in cents for a board."""
+def _compute_price(board, version, repo: OrderRepository) -> int:
     if not board.board_type_id:
         raise HTTPException(
             status_code=400,
             detail=f"Board '{board.name}' has no board type assigned — cannot compute price",
         )
-    entry = db.query(BoardTypePrice).filter_by(
-        price_version_id=version.id,
-        board_type_id=board.board_type_id,
-    ).first()
+    entry = repo.get_price_entry(version.id, board.board_type_id)
     if not entry:
         raise HTTPException(
             status_code=400,
@@ -53,15 +48,7 @@ def _resolve_shipping(
     postal_code: str,
     option_code: str,
     item_count: int,
-    db: Session,
 ) -> tuple[int, str, list[str]]:
-    """Return (cost_cents, display_name, allowed_countries).
-
-    Priority:
-    1. Live SendCloud price for the chosen option_code
-    2. DB ShippingRate fallback
-    Raises HTTPException when no rate can be determined.
-    """
     from app.services import sendcloudService
 
     code = country.upper().strip()
@@ -98,23 +85,20 @@ class PaymentService:
         if not payload.shipping_country:
             raise HTTPException(status_code=400, detail="Shipping country is required")
 
-        current_version = (
-            db.query(PriceVersion)
-            .order_by(PriceVersion.created_at.desc())
-            .first()
-        )
+        repo = OrderRepository(db)
+        current_version = repo.get_current_price_version()
         if not current_version:
             raise HTTPException(status_code=400, detail="No price version configured")
 
         item_boards: list[tuple] = []
         for item in payload.items:
-            board = db.query(Board).filter_by(id=item.boardId, owner_id=current_user.id).first()
+            board = repo.get_board_for_user(item.boardId, current_user.id)
             if not board:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Board #{item.boardId} not found or not owned by you",
                 )
-            unit_amount = _compute_price(board, current_version, db)
+            unit_amount = _compute_price(board, current_version, repo)
             item_boards.append((item, board, unit_amount))
 
         cart_ref = _generate_cart_ref()
@@ -123,14 +107,12 @@ class PaymentService:
             getattr(payload, "shipping_postal_code", ""),
             getattr(payload, "shipping_option_code", ""),
             len(payload.items),
-            db,
         )
         shipping_options = [_build_stripe_shipping_option(cost_cents, ship_label)]
 
         try:
-            line_items = []
-            for item, board, unit_amount in item_boards:
-                line_items.append({
+            line_items = [
+                {
                     "price_data": {
                         "currency": "eur",
                         "unit_amount": unit_amount,
@@ -142,7 +124,9 @@ class PaymentService:
                         },
                     },
                     "quantity": 1,
-                })
+                }
+                for _, board, unit_amount in item_boards
+            ]
 
             session_params: dict = {
                 "payment_method_types": ["card"],
@@ -151,9 +135,7 @@ class PaymentService:
                 "customer_email": current_user.email,
                 "phone_number_collection": {"enabled": True},
                 "invoice_creation": {"enabled": True},
-                "shipping_address_collection": {
-                    "allowed_countries": allowed_countries,
-                },
+                "shipping_address_collection": {"allowed_countries": allowed_countries},
                 "metadata": {
                     "user_id":   str(current_user.id),
                     "board_ids": ",".join(str(i.boardId) for i in payload.items),
@@ -161,16 +143,15 @@ class PaymentService:
                 },
                 "success_url": SUCCESS_URL,
                 "cancel_url":  CANCEL_URL,
+                "shipping_options": shipping_options,
             }
-
-            session_params["shipping_options"] = shipping_options
 
             session = stripe.checkout.Session.create(**session_params)
 
             opt_code     = getattr(payload, "shipping_option_code", "") or None
             total_amount = sum(unit_amount for _, _, unit_amount in item_boards)
 
-            order = Order(
+            order = repo.create_order(Order(
                 stripe_session_id    = session.id,
                 cart_ref             = cart_ref,
                 status               = "pending",
@@ -179,12 +160,10 @@ class PaymentService:
                 currency             = "eur",
                 price_version_id     = current_version.id,
                 shipping_option_code = opt_code,
-            )
-            db.add(order)
-            db.flush()
+            ))
 
-            for item, board, unit_amount in item_boards:
-                db.add(OrderItem(
+            for item, _, unit_amount in item_boards:
+                repo.create_order_item(OrderItem(
                     order_id    = order.id,
                     board_id    = item.boardId,
                     svg_content = item.svg,
@@ -199,10 +178,8 @@ class PaymentService:
 
     @staticmethod
     def get_payment_status(session_id: str, current_user: User, db: Session):
-        order = db.query(Order).filter_by(
-            stripe_session_id=session_id,
-            user_id=current_user.id,
-        ).first()
+        repo = OrderRepository(db)
+        order = repo.get_order_by_session_and_user(session_id, current_user.id)
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
 
@@ -243,37 +220,33 @@ class PaymentService:
     @staticmethod
     def _confirm_order(session_event, db: Session):
         session_id = session_event["id"]
-        # Retrieve fresh session so all fields (shipping_details, customer_details,
-        # shipping_cost, payment_intent) are guaranteed to be present.
         try:
             session = stripe.checkout.Session.retrieve(session_id)
         except stripe.StripeError:
             session = session_event
 
-        orders = db.query(Order).filter_by(stripe_session_id=session_id).all()
+        repo   = OrderRepository(db)
+        orders = repo.get_orders_by_session(session_id)
         if not orders:
             return
 
         stripe_total   = getattr(session, "amount_total", None) or 0
-        expected_total = sum(o.amount_cents for o in orders)  # should be 1 order now
+        expected_total = sum(o.amount_cents for o in orders)
         if stripe_total != expected_total:
             log.warning(
                 "Amount mismatch for session %s: expected %d¢, Stripe reports %d¢",
-                session["id"], expected_total, stripe_total,
+                session_id, expected_total, stripe_total,
             )
 
-        # Extract shipping details collected by Stripe
-        # In newer Stripe API versions, shipping is under collected_information.shipping_details
-        shipping_details_id  = None
-        collected_info       = getattr(session, "collected_information", None)
-        shipping_detail_obj  = (
-            getattr(collected_info, "shipping_details", None)
-            if collected_info else None
+        collected_info      = getattr(session, "collected_information", None)
+        shipping_detail_obj = (
+            getattr(collected_info, "shipping_details", None) if collected_info else None
         ) or getattr(session, "shipping_details", None)
-        customer_details    = getattr(session, "customer_details", None)
-        shipping_cost_obj   = getattr(session, "shipping_cost", None)
-        payment_intent_id   = getattr(session, "payment_intent", None)
+        customer_details  = getattr(session, "customer_details", None)
+        shipping_cost_obj = getattr(session, "shipping_cost", None)
+        payment_intent_id = getattr(session, "payment_intent", None)
 
+        shipping_details_id = None
         if shipping_detail_obj:
             addr = getattr(shipping_detail_obj, "address", None)
             name = getattr(shipping_detail_obj, "name", "") or ""
@@ -282,9 +255,8 @@ class PaymentService:
             last_name  = name_parts[1] if len(name_parts) > 1 else ""
             phone      = getattr(customer_details, "phone", None) if customer_details else None
 
-            user_id = orders[0].user_id
-            od = OrderDetails(
-                user_id       = user_id,
+            od = repo.create_order_details(OrderDetails(
+                user_id       = orders[0].user_id,
                 first_name    = first_name,
                 last_name     = last_name,
                 phone         = phone,
@@ -292,14 +264,10 @@ class PaymentService:
                 city          = getattr(addr, "city", "") or "",
                 postal_code   = getattr(addr, "postal_code", "") or "",
                 country       = getattr(addr, "country", "") or "",
-            )
-            db.add(od)
-            db.flush()
+            ))
             shipping_details_id = od.id
 
-        shipping_cost_cents = None
-        if shipping_cost_obj:
-            shipping_cost_cents = getattr(shipping_cost_obj, "amount_total", None)
+        shipping_cost_cents = getattr(shipping_cost_obj, "amount_total", None) if shipping_cost_obj else None
 
         for order in orders:
             if order.status == "pending":
@@ -315,12 +283,8 @@ class PaymentService:
 
     @staticmethod
     def cancel_session(session_id: str, current_user: User, db: Session):
-        """Immediately cancel pending orders when the user abandons the checkout."""
-        orders = db.query(Order).filter_by(
-            stripe_session_id=session_id,
-            user_id=current_user.id,
-            status="pending",
-        ).all()
+        repo   = OrderRepository(db)
+        orders = repo.get_pending_orders_by_session(session_id, current_user.id)
         for order in orders:
             order.status = "cancelled"
         db.commit()
@@ -328,11 +292,11 @@ class PaymentService:
 
     @staticmethod
     def _refund_orders(charge, db: Session):
-        """Mark orders as refunded when Stripe fires charge.refunded."""
         payment_intent_id = getattr(charge, "payment_intent", None)
         if not payment_intent_id:
             return
-        for order in db.query(Order).filter_by(payment_intent_id=payment_intent_id).all():
+        repo = OrderRepository(db)
+        for order in repo.get_orders_by_payment_intent(payment_intent_id):
             if order.status not in ("cancelled", "refunded"):
                 order.status = "refunded"
         db.commit()
@@ -345,6 +309,7 @@ class PaymentService:
         )
         if not session_id:
             return
-        for order in db.query(Order).filter_by(stripe_session_id=session_id, status="pending").all():
+        repo = OrderRepository(db)
+        for order in repo.get_pending_orders_by_session(session_id):
             order.status = "cancelled"
         db.commit()

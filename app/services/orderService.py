@@ -1,10 +1,11 @@
 import json
+
 from fastapi import HTTPException
 from fastapi.responses import Response
-from sqlalchemy.orm import Session, joinedload
-from app.orm_models.board import Board
+from sqlalchemy.orm import Session
+
 from app.orm_models.order import Order, OrderDetails, OrderItem
-from app.orm_models.price import PriceVersion
+from app.repositories.order_repo import OrderRepository
 
 
 class OrderService:
@@ -15,24 +16,24 @@ class OrderService:
         svg_content: str,
         details: str | dict | None,
         user_id: int | None,
-        db: Session
+        db: Session,
     ):
         if not board_id or not svg_content:
             raise HTTPException(
                 status_code=400,
-                detail="board_id and svg_content are required"
+                detail="board_id and svg_content are required",
             )
 
-        board = db.query(Board).filter_by(id=board_id).first()
+        repo = OrderRepository(db)
+        board = repo.get_board_by_id(board_id)
         if not board:
             raise HTTPException(status_code=404, detail="Board not found")
 
         shipping_details = None
-
         if details:
             try:
                 payload = details if isinstance(details, dict) else json.loads(details)
-                shipping_details = OrderDetails(
+                od = OrderDetails(
                     first_name    = payload.get("firstName") or "",
                     last_name     = payload.get("lastName") or "",
                     address_line1 = payload.get("addressLine1") or "",
@@ -42,50 +43,35 @@ class OrderService:
                     phone         = payload.get("phone"),
                     user_id       = user_id,
                 )
-                db.add(shipping_details)
-                db.flush()
+                shipping_details = repo.create_order_details(od)
             except Exception:
                 pass
 
-        current_price_version = (
-            db.query(PriceVersion)
-            .order_by(PriceVersion.created_at.desc())
-            .first()
-        )
+        current_version = repo.get_current_price_version()
 
-        order = Order(
+        order = repo.create_order(Order(
             shipping_details_id = shipping_details.id if shipping_details else None,
             billing_details_id  = shipping_details.id if shipping_details else None,
             status              = "pending",
-            price_version_id    = current_price_version.id if current_price_version else None,
+            price_version_id    = current_version.id if current_version else None,
             user_id             = user_id,
             amount_cents        = 0,
-        )
-        db.add(order)
-        db.flush()
+        ))
 
-        item = OrderItem(
-            order_id    = order.id,
-            board_id    = board_id,
-            svg_content = svg_content,
+        repo.create_order_item(OrderItem(
+            order_id     = order.id,
+            board_id     = board_id,
+            svg_content  = svg_content,
             amount_cents = 0,
-        )
-        db.add(item)
+        ))
         db.commit()
 
-        return {
-            "message": "Order created",
-            "order_id": order.id
-        }
+        return {"message": "Order created", "order_id": order.id}
 
     @staticmethod
     def get_order_svg(order_id: int, user_id: int, db: Session):
-        order = (
-            db.query(Order)
-            .options(joinedload(Order.items))
-            .filter(Order.id == order_id, Order.user_id == user_id)
-            .first()
-        )
+        repo = OrderRepository(db)
+        order = repo.get_for_user_with_items(order_id, user_id)
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
 
@@ -97,17 +83,8 @@ class OrderService:
 
     @staticmethod
     def list_orders(user_id: int, db: Session):
-        orders = (
-            db.query(Order)
-            .options(
-                joinedload(Order.shipping_details),
-                joinedload(Order.items).joinedload(OrderItem.board),
-                joinedload(Order.items).joinedload(OrderItem.esp_device),
-            )
-            .filter(Order.user_id == user_id)
-            .order_by(Order.created_at.desc())
-            .all()
-        )
+        repo = OrderRepository(db)
+        orders = repo.list_for_user(user_id)
         return [
             {
                 "id":                  o.id,
@@ -130,11 +107,11 @@ class OrderService:
                 } if o.shipping_details else None,
                 "items": [
                     {
-                        "id":           i.id,
-                        "board_id":     i.board_id,
-                        "board_name":   i.board.name if i.board else None,
-                        "svg_content":  i.svg_content,
-                        "amount_cents": i.amount_cents,
+                        "id":            i.id,
+                        "board_id":      i.board_id,
+                        "board_name":    i.board.name if i.board else None,
+                        "svg_content":   i.svg_content,
+                        "amount_cents":  i.amount_cents,
                         "esp_device_id": i.esp_device_id,
                     }
                     for i in o.items

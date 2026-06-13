@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.orm_models.db import get_db
-from app.orm_models.order import Order
+from app.repositories.shipping_repo import ShippingRepository
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,8 @@ async def sendcloud_webhook(
     if not parcel_id or status_id is None:
         return {"accepted": True}
 
-    order = db.query(Order).filter(Order.sendcloud_parcel_id == parcel_id).first()
+    repo = ShippingRepository(db)
+    order = repo.get_order_by_parcel_id(parcel_id)
     if not order:
         logger.warning("SendCloud webhook: unknown parcel_id %s", parcel_id)
         return {"accepted": True}
@@ -114,6 +115,6 @@ async def sendcloud_webhook(
     if label_url and not order.label_url:
         order.label_url = label_url
 
-    db.commit()
+    repo.commit()
     logger.info("SendCloud webhook: parcel %s → status %s (order #%s)", parcel_id, status_id, order.id)
     return {"accepted": True}

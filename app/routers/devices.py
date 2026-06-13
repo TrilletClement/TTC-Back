@@ -1,5 +1,3 @@
-import datetime
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -63,8 +61,7 @@ def get_ledstrip_status(
     device: ESP32Device = Depends(get_device_from_mac),
 ):
     svc = DeviceService(DeviceRepository(db))
-    device.last_connected = datetime.datetime.utcnow()
-    db.commit()
+    svc.record_connection(device)
     return svc.get_ledstrip_status(device.mac_address)
 
 

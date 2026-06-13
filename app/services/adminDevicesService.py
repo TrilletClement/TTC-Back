@@ -1,8 +1,7 @@
 from app.domain.exceptions import NotFoundError
 from app.orm_models.device import ESP32Device
 from app.repositories.device_repo import DeviceRepository
-from app.routers.adminDevices import DeviceAdminOut
-from app.schemas.device import BoardOut, BoardListOut, OrderOut, HardwareOut, FirmwareOut
+from app.schemas.device import DeviceAdminOut, BoardOut, BoardListOut, OrderOut, HardwareOut, FirmwareOut
 
 
 class AdminDevicesService:

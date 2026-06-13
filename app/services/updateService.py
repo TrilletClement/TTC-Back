@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware
+from app.repositories.update_repo import UpdateRepository
 
 
 class UpdateService:
@@ -25,7 +25,7 @@ class UpdateService:
         return f"{UpdateService.PACKAGE_BASE_URL}/api/update/package/{filename}"
 
     @staticmethod
-    def _serialize(pkg: FirmwarePackage) -> dict:
+    def _serialize(pkg) -> dict:
         return {
             "package_id":    pkg.id,
             "app_version":   pkg.filename,
@@ -47,19 +47,16 @@ class UpdateService:
         update_partition: Optional[str] = None,
         ota_state: Optional[str] = None,
     ) -> Optional[dict]:
+        repo = UpdateRepository(db)
         normalized_mac = UpdateService.normalize_mac(mac)
         hardware_type  = (hardware or "").strip()
 
-        device = None
-        if normalized_mac:
-            device = db.query(ESP32Device).filter(ESP32Device.mac_address == normalized_mac).first()
-
-        hw = db.query(Hardware).filter(Hardware.hardware_type == hardware_type).first()
+        device = repo.get_device_by_mac(normalized_mac) if normalized_mac else None
+        hw = repo.get_hardware_by_type(hardware_type)
 
         if device:
             if hw:
                 device.hardware_id = hw.id
-            # Always store the raw version string and partition state the device reported.
             if current_version:
                 device.current_firmware_version = current_version
             if running_partition is not None:
@@ -70,41 +67,24 @@ class UpdateService:
                 device.update_partition = update_partition
             if ota_state is not None:
                 device.ota_state = ota_state
-            # Try to match the version to a FirmwarePackage row.
-            # Build script produces filenames like "{firmware_name}-v{version}.bin".
             if firmware_name and current_version:
                 expected = f"{firmware_name}-v{current_version}.bin"
-                cur_pkg = db.query(FirmwarePackage).filter(FirmwarePackage.filename == expected).first()
+                cur_pkg = repo.get_firmware_by_filename(expected)
                 if cur_pkg:
                     device.current_firmware_id = cur_pkg.id
             now = datetime.utcnow()
             device.last_ota_check = now
             device.last_connected = now
-            db.commit()
+            repo.commit()
 
-        # Resolve target firmware: device override > hardware default
         pkg = None
-
         if device and device.target_firmware_id:
-            candidate = db.query(FirmwarePackage).filter(
-                FirmwarePackage.id == device.target_firmware_id,
-                FirmwarePackage.archived == False,
-            ).first()
-            if candidate:
-                pkg = candidate
-
+            pkg = repo.get_active_firmware_by_id(device.target_firmware_id)
         if not pkg and hw and hw.firmware_package_id:
-            candidate = db.query(FirmwarePackage).filter(
-                FirmwarePackage.id == hw.firmware_package_id,
-                FirmwarePackage.archived == False,
-            ).first()
-            if candidate:
-                pkg = candidate
+            pkg = repo.get_active_firmware_by_id(hw.firmware_package_id)
 
         if not pkg:
             return None
-
-        # Already up to date
         if device and device.current_firmware_id == pkg.id:
             return None
 
@@ -115,8 +95,8 @@ class UpdateService:
 
     @staticmethod
     def get_package_file(db: Session, filename: str) -> FileResponse:
-        allowed = db.query(FirmwarePackage.id).filter(FirmwarePackage.filename == filename).first()
-        if not allowed:
+        repo = UpdateRepository(db)
+        if not repo.firmware_exists(filename):
             raise HTTPException(status_code=403, detail="Access forbidden")
 
         path = os.path.join(settings.FIRMWARE_DIR, filename)

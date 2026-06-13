@@ -74,6 +74,9 @@ class DeviceService:
         result = self.repo.update_luminosity(device, value)
         return {"light_intensity_percent": result}
 
+    def record_connection(self, device) -> None:
+        self.repo.touch_last_connected(device)
+
     # ── ESP hardware-facing ───────────────────────────────────────────────────
 
     def get_ledstrip_status(self, mac: str):
