@@ -2,10 +2,9 @@ from typing import Optional
 
 from app.core.config import settings
 from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
-from app.orm_models.order import Order
-from app.orm_models.device import ESP32Device
+from app.orm_models.order import Order, OrderItem
 from app.repositories.order_repo import OrderRepository
-from app.schemas.order import OrderOut, AddressOut, OrderPatch, AssociateDevicePayload
+from app.schemas.order import OrderOut, OrderItemOut, AddressOut, OrderPatch, AssociateDevicePayload
 
 ORDER_STATUSES = {"pending", "paid", "processing", "shipped", "delivered", "cancelled", "refunded"}
 
@@ -32,11 +31,24 @@ def _addr_dict(d) -> Optional[AddressOut]:
     )
 
 
+def _item_out(item: OrderItem, include_svg: bool = False) -> OrderItemOut:
+    dev = item.esp_device
+    return OrderItemOut(
+        id=item.id,
+        board_id=item.board_id,
+        board_name=item.board.name if item.board else None,
+        svg_content=item.svg_content if include_svg else None,
+        amount_cents=item.amount_cents,
+        esp_device_id=dev.id if dev else None,
+        esp_device_mac=dev.mac_address if dev else None,
+        esp_device_name=dev.name or dev.mac_address if dev else None,
+    )
+
+
 def _build_order_out(o: Order, include_svg: bool = False) -> OrderOut:
     sd = o.shipping_details
     bd = o.billing_details
     same_address = sd and bd and sd.id == bd.id
-    dev = o.esp_device
     return OrderOut(
         id=o.id,
         cart_ref=o.cart_ref,
@@ -48,13 +60,8 @@ def _build_order_out(o: Order, include_svg: bool = False) -> OrderOut:
         created_at=o.created_at,
         paid_at=o.paid_at,
         stripe_payment_url=_stripe_payment_url(o.payment_intent_id),
-        board_id=o.board_id,
-        board_name=o.board.name if o.board else None,
         user_id=o.user_id,
         user_email=o.user.email if o.user else None,
-        esp_device_id=dev.id if dev else None,
-        esp_device_mac=dev.mac_address if dev else None,
-        esp_device_name=dev.name or dev.mac_address if dev else None,
         sendcloud_parcel_id=o.sendcloud_parcel_id,
         label_url=o.label_url,
         tracking_url=o.tracking_url,
@@ -62,7 +69,7 @@ def _build_order_out(o: Order, include_svg: bool = False) -> OrderOut:
         shipping_details=_addr_dict(sd),
         billing_details=None if same_address else _addr_dict(bd),
         same_address=same_address,
-        svg_content=o.svg_content if include_svg else None,
+        items=[_item_out(i, include_svg) for i in o.items],
     )
 
 
@@ -88,8 +95,9 @@ class AdminOrdersService:
                 o for o in orders
                 if s in (o.user.email or "").lower()
                 or (o.shipping_details and s in f"{o.shipping_details.first_name} {o.shipping_details.last_name}".lower())
-                or (o.board and s in (o.board.name or "").lower())
+                or any(i.board and s in (i.board.name or "").lower() for i in o.items)
                 or s in str(o.id)
+                or s in (o.cart_ref or "").lower()
             ]
 
         reverse = sort in ("date_desc", "amount_desc")
@@ -140,20 +148,16 @@ class AdminOrdersService:
             if sd.postalCode   is not None: d.postal_code   = sd.postalCode
             if sd.country      is not None: d.country       = sd.country
 
-        if payload.clear_esp_device:
-            o.esp_device_id = None
-        elif payload.esp_device_id is not None:
-            o.esp_device_id = payload.esp_device_id
-
         self.repo.save(o)
         return _build_order_out(o)
 
-    def associate_device(self, order_id: int, payload: AssociateDevicePayload) -> OrderOut:
-        o = self.repo.get_by_id(order_id)
-        if not o:
-            raise NotFoundError("Order", order_id)
-        if o.status != "paid":
-            raise BusinessError("Order must be in 'paid' status to associate a device.")
+    def associate_device(self, item_id: int, payload: AssociateDevicePayload) -> OrderOut:
+        item = self.repo.get_item_by_id(item_id)
+        if not item:
+            raise NotFoundError("OrderItem", item_id)
+        o = item.order
+        if o.status not in {"paid", "processing"}:
+            raise BusinessError("Order must be in 'paid' or 'processing' status to associate a device.")
 
         device = self.repo.get_device_by_id(payload.device_id)
         if not device:
@@ -162,17 +166,17 @@ class AdminOrdersService:
             raise BusinessError("Device already has an owner.")
 
         device.owner_id = o.user_id
-        device.board_id = o.board_id
+        device.board_id = item.board_id
 
-        base_name = f"{o.board.name if o.board else 'Display'} Display"
+        base_name = f"{item.board.name if item.board else 'Display'} Display"
         existing  = self.repo.get_device_names_for_owner(o.user_id, device.id)
         device.name = _unique_device_name(base_name, existing)
 
+        item.esp_device_id = device.id
         o.status = "processing"
-        o.esp_device_id = device.id
 
         self.repo.save(o)
-        return _build_order_out(o)
+        return _build_order_out(o, include_svg=True)
 
     def ship_order(self, order_id: int, fallback_option_code: Optional[str] = None) -> OrderOut:
         from app.services import sendcloudService
@@ -180,10 +184,12 @@ class AdminOrdersService:
         o = self.repo.get_by_id(order_id)
         if not o:
             raise NotFoundError("Order", order_id)
-        if o.status not in {"paid", "processing"}:
+        if o.status != "processing":
             raise BusinessError(
-                f"Cannot ship an order with status '{o.status}'. Must be 'paid' or 'processing'."
+                f"Cannot ship an order with status '{o.status}'. Must be 'processing'."
             )
+        if not o.items:
+            raise BusinessError("Order has no items.")
         sd = o.shipping_details
         if not sd:
             raise BusinessError("Order has no shipping address.")
@@ -205,6 +211,7 @@ class AdminOrdersService:
                 telephone=sd.phone or None,
                 order_ref=o.cart_ref or str(o.id),
                 shipping_option_code=option_code,
+                weight_kg=len(o.items) * 0.5,
             )
         except RuntimeError as exc:
             raise BusinessError(str(exc))

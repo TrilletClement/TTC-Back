@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.orm_models.auth import User
 from app.orm_models.board import Board
-from app.orm_models.order import Order, OrderDetails
+from app.orm_models.order import Order, OrderDetails, OrderItem
 from app.orm_models.price import BoardTypePrice, PriceVersion
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -167,21 +167,29 @@ class PaymentService:
 
             session = stripe.checkout.Session.create(**session_params)
 
-            opt_code = getattr(payload, "shipping_option_code", "") or None
+            opt_code     = getattr(payload, "shipping_option_code", "") or None
+            total_amount = sum(unit_amount for _, _, unit_amount in item_boards)
+
+            order = Order(
+                stripe_session_id    = session.id,
+                cart_ref             = cart_ref,
+                status               = "pending",
+                user_id              = current_user.id,
+                amount_cents         = total_amount,
+                currency             = "eur",
+                price_version_id     = current_version.id,
+                shipping_option_code = opt_code,
+            )
+            db.add(order)
+            db.flush()
+
             for item, board, unit_amount in item_boards:
-                order = Order(
-                    stripe_session_id    = session.id,
-                    cart_ref             = cart_ref,
-                    status               = "pending",
-                    board_id             = item.boardId,
-                    user_id              = current_user.id,
-                    svg_content          = item.svg,
-                    amount_cents         = unit_amount,
-                    currency             = "eur",
-                    price_version_id     = current_version.id,
-                    shipping_option_code = opt_code,
-                )
-                db.add(order)
+                db.add(OrderItem(
+                    order_id    = order.id,
+                    board_id    = item.boardId,
+                    svg_content = item.svg,
+                    amount_cents = unit_amount,
+                ))
 
             db.commit()
             return {"url": session.url}
@@ -247,7 +255,7 @@ class PaymentService:
             return
 
         stripe_total   = getattr(session, "amount_total", None) or 0
-        expected_total = sum(o.amount_cents for o in orders)
+        expected_total = sum(o.amount_cents for o in orders)  # should be 1 order now
         if stripe_total != expected_total:
             log.warning(
                 "Amount mismatch for session %s: expected %d¢, Stripe reports %d¢",

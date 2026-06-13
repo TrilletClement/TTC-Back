@@ -116,8 +116,8 @@ class BoardRepository:
         return self.db.query(ESP32Device).filter_by(board_id=board_id).all()
 
     def board_has_orders(self, board_id: int) -> bool:
-        from app.orm_models.order import Order
-        return self.db.query(Order).filter_by(board_id=board_id).first() is not None
+        from app.orm_models.order import OrderItem
+        return self.db.query(OrderItem).filter_by(board_id=board_id).first() is not None
     
     def get_user_by_email(self, email: str) -> User | None:
         return self.db.query(User).filter(User.email == email).first()

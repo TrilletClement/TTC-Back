@@ -157,6 +157,20 @@ this.countryOptions = this.countryService.getAllOptions();
 
 ---
 
+## Order model
+
+One cart session = one `Order` + one or more `OrderItem`s.
+
+| Table | Fields |
+|-------|--------|
+| `orders` | `id`, `cart_ref`, `user_id`, `status`, `amount_cents` (total boards), `shipping_cost_cents`, `currency`, `created_at`, `paid_at`, `stripe_session_id`, `payment_intent_id`, `price_version_id`, `shipping_details_id`, `billing_details_id`, `shipping_option_code`, `sendcloud_parcel_id`, `tracking_number`, `tracking_url`, `label_url` |
+| `order_item` | `id`, `order_id` FK (CASCADE), `board_id`, `svg_content`, `amount_cents` (per-board), `esp_device_id` |
+
+- **Device association** is per item: `POST /api/admin/orders/items/{item_id}/associate-device`
+- **Shipping** is per order (one SendCloud parcel per cart); weight = `len(items) * 0.5 kg`
+- `canShip` requires `status === 'processing'` AND no existing `sendcloud_parcel_id`
+- `status → 'processing'` when the first item gets a device linked
+
 ## What NOT to do
 
 - Do not add `SENDCLOUD_SANDBOX` or `SENDCLOUD_SHIPPING_OPTION_CODE` env vars — removed intentionally.
@@ -165,3 +179,5 @@ this.countryOptions = this.countryService.getAllOptions();
 - Do not query the DB directly in a router — go through a service.
 - Do not add `countries` column back to `shipping_option_config` — options are global.
 - Do not create standalone `.md` documentation files for features — put knowledge here.
+- Do not add `board_id`, `svg_content`, or `esp_device_id` back to the `orders` table — those fields live on `order_item`.
+- Do not create multiple `Order` rows for the same cart session — one `Order` + N `OrderItem`s.

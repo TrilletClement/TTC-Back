@@ -14,6 +14,17 @@ class AddressOut(BaseModel):
     country:      Optional[str]
 
 
+class OrderItemOut(BaseModel):
+    id:              int
+    board_id:        Optional[int]
+    board_name:      Optional[str]
+    svg_content:     Optional[str]
+    amount_cents:    int
+    esp_device_id:   Optional[int]
+    esp_device_mac:  Optional[str]
+    esp_device_name: Optional[str]
+
+
 class OrderOut(BaseModel):
     id:                  int
     cart_ref:            Optional[str]
@@ -25,13 +36,8 @@ class OrderOut(BaseModel):
     created_at:          Optional[datetime]
     paid_at:             Optional[datetime]
     stripe_payment_url:  Optional[str]
-    board_id:            Optional[int]
-    board_name:          Optional[str]
     user_id:             Optional[int]
     user_email:          Optional[str]
-    esp_device_id:       Optional[int]
-    esp_device_mac:      Optional[str]
-    esp_device_name:     Optional[str]
     sendcloud_parcel_id:  Optional[str] = None
     label_url:            Optional[str] = None
     tracking_url:         Optional[str] = None
@@ -39,7 +45,7 @@ class OrderOut(BaseModel):
     shipping_details:    Optional[AddressOut]
     billing_details:     Optional[AddressOut]
     same_address:        Optional[bool]
-    svg_content:         Optional[str] = None
+    items:               list[OrderItemOut] = []
 
 
 class AddressPatch(BaseModel):
@@ -56,8 +62,6 @@ class OrderPatch(BaseModel):
     status:           Optional[str] = None
     tracking_number:  Optional[str] = None
     shipping_details: Optional[AddressPatch] = None
-    esp_device_id:    Optional[int] = None
-    clear_esp_device: bool = False
 
 
 class AssociateDevicePayload(BaseModel):

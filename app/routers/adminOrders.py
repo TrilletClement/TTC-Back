@@ -71,11 +71,11 @@ def patch_order(order_id: int, payload: OrderPatch, current_user: User, svc: Adm
         raise _handle(e)
 
 
-@router.post("/{order_id}/associate-device")
+@router.post("/items/{item_id}/associate-device")
 @require_admin
-def associate_device(order_id: int, payload: AssociateDevicePayload, current_user: User, svc: AdminOrdersService = Depends(get_service)):
+def associate_device(item_id: int, payload: AssociateDevicePayload, current_user: User, svc: AdminOrdersService = Depends(get_service)):
     try:
-        return svc.associate_device(order_id, payload)
+        return svc.associate_device(item_id, payload)
     except (NotFoundError, BusinessError, ValidationError) as e:
         raise _handle(e)
 

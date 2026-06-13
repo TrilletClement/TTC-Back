@@ -1,12 +1,12 @@
 import datetime
 import json
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.orm_models.auth import User
 from app.orm_models.board import Board
 from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware
-from app.orm_models.order import Order
+from app.orm_models.order import Order, OrderItem
 
 
 class DeviceRepository:
@@ -22,7 +22,13 @@ class DeviceRepository:
         return self.db.query(ESP32Device).filter(ESP32Device.id == device_id).first()
 
     def get_orders_for_board(self, board_id: int) -> list[Order]:
-        return self.db.query(Order).filter(Order.board_id == board_id).order_by(Order.created_at.desc()).all()
+        return (
+            self.db.query(Order)
+            .join(OrderItem, OrderItem.order_id == Order.id)
+            .filter(OrderItem.board_id == board_id)
+            .order_by(Order.created_at.desc())
+            .all()
+        )
 
     def get_user_by_email(self, email: str) -> User | None:
         return self.db.query(User).filter(User.email == email).first()
@@ -31,7 +37,7 @@ class DeviceRepository:
         return [u.email for u in self.db.query(User.email).order_by(User.email).all()]
 
     def list_boards(self, owner_id: int | None = None) -> list[Board]:
-        query = self.db.query(Board)
+        query = self.db.query(Board).options(joinedload(Board.owner))
         if owner_id is not None:
             query = query.filter(Board.owner_id == owner_id)
         return query.order_by(Board.name).all()

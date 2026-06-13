@@ -2,7 +2,7 @@ from app.domain.exceptions import NotFoundError
 from app.orm_models.device import ESP32Device
 from app.repositories.device_repo import DeviceRepository
 from app.routers.adminDevices import DeviceAdminOut
-from app.schemas.device import BoardOut, OrderOut, HardwareOut, FirmwareOut
+from app.schemas.device import BoardOut, BoardListOut, OrderOut, HardwareOut, FirmwareOut
 
 
 class AdminDevicesService:
@@ -45,14 +45,18 @@ class AdminDevicesService:
     def list_user_emails(self) -> list[str]:
         return self.repo.list_user_emails()
 
-    def list_boards(self, owner_email: str | None) -> list:
+    def list_boards(self, owner_email: str | None) -> list[BoardListOut]:
         owner_id = None
         if owner_email:
             user = self.repo.get_user_by_email(owner_email)
             if not user:
                 return []
             owner_id = user.id
-        return self.repo.list_boards(owner_id)
+        boards = self.repo.list_boards(owner_id)
+        return [
+            BoardListOut(id=b.id, name=b.name, owner_email=b.owner.email if b.owner else None)
+            for b in boards
+        ]
 
     def patch_device(self, device_id: int, payload) -> DeviceAdminOut:
         device = self.repo.get_by_id(device_id)

@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session, joinedload
-from app.orm_models.order import Order, OrderDetails
+from app.orm_models.order import Order, OrderDetails, OrderItem
 from app.orm_models.device import ESP32Device
 
 
@@ -13,9 +13,9 @@ class OrderRepository:
             .options(
                 joinedload(Order.shipping_details),
                 joinedload(Order.billing_details),
-                joinedload(Order.board),
                 joinedload(Order.user),
-                joinedload(Order.esp_device),
+                joinedload(Order.items).joinedload(OrderItem.board),
+                joinedload(Order.items).joinedload(OrderItem.esp_device),
             )
         )
 
@@ -27,6 +27,22 @@ class OrderRepository:
 
     def get_by_id(self, order_id: int) -> Order | None:
         return self._base_query().filter(Order.id == order_id).first()
+
+    def get_item_by_id(self, item_id: int) -> OrderItem | None:
+        return (
+            self.db.query(OrderItem)
+            .options(
+                joinedload(OrderItem.board),
+                joinedload(OrderItem.esp_device),
+                joinedload(OrderItem.order).joinedload(Order.user),
+                joinedload(OrderItem.order).joinedload(Order.shipping_details),
+                joinedload(OrderItem.order).joinedload(Order.billing_details),
+                joinedload(OrderItem.order).joinedload(Order.items).joinedload(OrderItem.board),
+                joinedload(OrderItem.order).joinedload(Order.items).joinedload(OrderItem.esp_device),
+            )
+            .filter(OrderItem.id == item_id)
+            .first()
+        )
 
     def get_device_by_id(self, device_id: int) -> ESP32Device | None:
         return self.db.query(ESP32Device).filter(ESP32Device.id == device_id).first()

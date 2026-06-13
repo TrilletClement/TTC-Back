@@ -3,7 +3,7 @@ from fastapi import HTTPException
 from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 from app.orm_models.board import Board
-from app.orm_models.order import Order, OrderDetails
+from app.orm_models.order import Order, OrderDetails, OrderItem
 from app.orm_models.price import PriceVersion
 
 
@@ -54,16 +54,23 @@ class OrderService:
         )
 
         order = Order(
-            board_id            = board_id,
             shipping_details_id = shipping_details.id if shipping_details else None,
             billing_details_id  = shipping_details.id if shipping_details else None,
-            svg_content         = svg_content,
             status              = "pending",
             price_version_id    = current_price_version.id if current_price_version else None,
             user_id             = user_id,
+            amount_cents        = 0,
         )
-
         db.add(order)
+        db.flush()
+
+        item = OrderItem(
+            order_id    = order.id,
+            board_id    = board_id,
+            svg_content = svg_content,
+            amount_cents = 0,
+        )
+        db.add(item)
         db.commit()
 
         return {
@@ -75,30 +82,28 @@ class OrderService:
     def get_order_svg(order_id: int, user_id: int, db: Session):
         order = (
             db.query(Order)
-            .join(Board, Order.board_id == Board.id)
-            .filter(Order.id == order_id)
+            .options(joinedload(Order.items))
+            .filter(Order.id == order_id, Order.user_id == user_id)
             .first()
         )
-
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
 
-        if order.board.owner_id != user_id:
-            raise HTTPException(status_code=403, detail="Forbidden")
-
-        if not order.svg_content:
+        svg = next((i.svg_content for i in order.items if i.svg_content), None)
+        if not svg:
             raise HTTPException(status_code=404, detail="No SVG stored for this order")
 
-        return Response(
-            content=order.svg_content,
-            media_type="image/svg+xml",
-        )
+        return Response(content=svg, media_type="image/svg+xml")
 
     @staticmethod
     def list_orders(user_id: int, db: Session):
         orders = (
             db.query(Order)
-            .options(joinedload(Order.shipping_details))
+            .options(
+                joinedload(Order.shipping_details),
+                joinedload(Order.items).joinedload(OrderItem.board),
+                joinedload(Order.items).joinedload(OrderItem.esp_device),
+            )
             .filter(Order.user_id == user_id)
             .order_by(Order.created_at.desc())
             .all()
@@ -107,13 +112,11 @@ class OrderService:
             {
                 "id":                  o.id,
                 "cart_ref":            o.cart_ref,
-                "board_id":            o.board_id,
                 "status":              o.status,
                 "amount_cents":        o.amount_cents,
                 "shipping_cost_cents": o.shipping_cost_cents,
                 "currency":            o.currency,
                 "created_at":          o.created_at.isoformat() if o.created_at else None,
-                "svg_content":         o.svg_content,
                 "tracking_number":     o.tracking_number,
                 "tracking_url":        o.tracking_url,
                 "shipping_details": {
@@ -125,6 +128,17 @@ class OrderService:
                     "postalCode":   o.shipping_details.postal_code,
                     "country":      o.shipping_details.country,
                 } if o.shipping_details else None,
+                "items": [
+                    {
+                        "id":           i.id,
+                        "board_id":     i.board_id,
+                        "board_name":   i.board.name if i.board else None,
+                        "svg_content":  i.svg_content,
+                        "amount_cents": i.amount_cents,
+                        "esp_device_id": i.esp_device_id,
+                    }
+                    for i in o.items
+                ],
             }
             for o in orders
         ]

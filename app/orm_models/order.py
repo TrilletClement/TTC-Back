@@ -37,10 +37,6 @@ class Order(Base):
     cart_ref            = Column(String(20),  nullable=True)
     payment_intent_id   = Column(String(255), nullable=True)
     status              = Column(String(50), default="pending", nullable=False)
-    # pending | paid | cancelled
-
-    board_id            = Column(Integer, ForeignKey("board.id"), nullable=True)
-    board               = relationship("Board", backref="orders")
 
     user_id             = Column(Integer, ForeignKey("user.id"), nullable=False)
     user                = relationship("User", backref="orders")
@@ -60,15 +56,11 @@ class Order(Base):
 
     price_version_id    = Column(Integer, ForeignKey("price_version.id"), nullable=True)
 
-    svg_content         = Column(Text, nullable=True)
     tracking_number     = Column(String(100), nullable=True)
 
     amount_cents        = Column(Integer, nullable=False, default=0)
     currency            = Column(String(10), default="eur")
     shipping_cost_cents = Column(Integer, nullable=True)
-
-    esp_device_id       = Column(Integer, ForeignKey("esp32_device.id"), nullable=True)
-    esp_device          = relationship("ESP32Device", foreign_keys=[esp_device_id], backref="linked_orders")
 
     sendcloud_parcel_id  = Column(String(50),  nullable=True)
     label_url            = Column(String(500), nullable=True)
@@ -77,3 +69,20 @@ class Order(Base):
 
     created_at          = Column(DateTime, default=datetime.utcnow)
     paid_at             = Column(DateTime, nullable=True)
+
+    items               = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+
+
+class OrderItem(Base):
+    __tablename__ = "order_item"
+
+    id            = Column(Integer, primary_key=True)
+    order_id      = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
+    board_id      = Column(Integer, ForeignKey("board.id"), nullable=True)
+    svg_content   = Column(Text, nullable=True)
+    amount_cents  = Column(Integer, nullable=False, default=0)
+    esp_device_id = Column(Integer, ForeignKey("esp32_device.id"), nullable=True)
+
+    order      = relationship("Order", back_populates="items")
+    board      = relationship("Board")
+    esp_device = relationship("ESP32Device", foreign_keys=[esp_device_id])
