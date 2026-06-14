@@ -32,9 +32,10 @@ R_SW     = 0.8    # station circle stroke-width mm
 RAIL_W   = 1.8    # rail line stroke-width mm (STIB)
 RAIL_W_T = 1.2    # rail line stroke-width mm (TEC)
 
-# Terminus indicators: [RouteNum square][TerminusName rect]  (no gap, only outer edges rounded)
+# Terminus indicators: [RouteNum square] [gap] [TerminusName rect]
 TB_H     = 10.0   # mm — height of both boxes
 ROUTE_SZ = 10.0   # mm — route-number square (width = height)
+TB_GAP   =  1.5   # mm — white gap between route square and name rect
 TB_RX    =  1.5   # mm — outer corner radius
 # Width of the name box is auto-computed from text length (see _est_name_w).
 # Char width estimate for Brusseline Bold at 5 mm: ~2.8 mm/char
@@ -268,27 +269,27 @@ def _terminus_box(
 
     if side == "left":
         rx = left_led_x               # route square: starts at leftmost LED
-        nx = rx + ROUTE_SZ            # name rect: immediately to the right
+        nx = rx + ROUTE_SZ + TB_GAP  # name rect: gap after route square
     else:
         # Route on LEFT, name on RIGHT — block ends at rightmost LED
         nx = right_led_x - name_w    # name rect right edge = right_led_x
-        rx = nx - ROUTE_SZ            # route square to the left of name rect
+        rx = nx - ROUTE_SZ - TB_GAP  # route square: gap before name rect
 
     parts: list[str] = []
 
-    # Route square — rounded LEFT corners only
+    # Route square — all corners rounded (standalone element with gap)
     parts.append(
-        f'<path d="{_path_round_left(rx, box_top, ROUTE_SZ, TB_H, TB_RX)}" fill="{lc}"/>'
+        f'<rect x="{_p(rx)}" y="{_p(box_top)}" width="{_p(ROUTE_SZ)}" height="{_p(TB_H)}" rx="{_p(TB_RX)}" fill="{lc}"/>'
     )
-    # Name rect — rounded RIGHT corners only
+    # Name rect — all corners rounded (standalone element with gap)
     parts.append(
-        f'<path d="{_path_round_right(nx, box_top, name_w, TB_H, TB_RX)}" fill="{tb_fill}"/>'
+        f'<rect x="{_p(nx)}" y="{_p(box_top)}" width="{_p(name_w)}" height="{_p(TB_H)}" rx="{_p(TB_RX)}" fill="{tb_fill}"/>'
     )
     # Route number text (centred in square)
     if route:
         parts.append(
             f'<text x="{_p(rx + ROUTE_SZ/2)}" y="{_p(mid_y)}" '
-            f'text-anchor="middle" dominant-baseline="middle" '
+            f'text-anchor="middle" dominant-baseline="central" '
             f'font-family="Inter,Arial,sans-serif" font-size="{_p(min(ROUTE_SZ*0.65, 6.5))}" '
             f'font-weight="700" fill="{tc}">{_esc(route[:5])}</text>'
         )
@@ -296,7 +297,7 @@ def _terminus_box(
     if terminus:
         parts.append(
             f'<text x="{_p(nx + 2)}" y="{_p(mid_y)}" '
-            f'dominant-baseline="middle" '
+            f'dominant-baseline="central" '
             f'font-family="Brusseline,Arial Narrow,Arial,sans-serif" '
             f'font-size="{_p(TB_H * 0.52)}" font-weight="700" fill="white">'
             f'{_esc(terminus)}</text>'
@@ -314,15 +315,15 @@ def _build_strip(
     if not leds:
         return ""
 
-    is_stib = (strip.line_agency_name or "").lower() != "tec"
-    line    = strip.line
+    is_tec   = (strip.line_agency_name or "").lower() == "tec"
+    line     = strip.line
 
-    lc       = _c(line.color if line else None, "#d84b3a") if is_stib else "#FFD34E"
-    tc       = _c(line.text_color if line else None, "#ffffff") if is_stib else "#1a1a1a"
-    s_stroke = "#1f3c88"                      # same blue for both STIB and TEC
-    tb_fill  = "#1f3c88" if is_stib else lc
-    l_color  = "#1f3c88" if is_stib else "#555555"
-    lw       = str(RAIL_W) if is_stib else str(RAIL_W_T)
+    lc       = "#FFD34E" if is_tec else _c(line.color if line else None, "#d84b3a")
+    tc       = _c(line.text_color if line else None, "#ffffff")
+    s_stroke = "#1f3c88"
+    tb_fill  = "#1f3c88"
+    l_color  = "#1f3c88"
+    lw       = str(RAIL_W)
 
     has_cl = any(l.type == "c_left"  for l in leds)
     has_cr = any(l.type == "c_right" for l in leds)
@@ -408,12 +409,13 @@ def _build_strip(
             raw = (ts.stop.name if ts.stop else None) or ""
         if not raw:
             raw = led.custom_name or ""
-        cased  = _tec_stop_name(raw) if not is_stib else _smart_title(raw)
+        cased  = _tec_stop_name(raw) if is_tec else _smart_title(raw)
         name   = (cased[:17] + ".") if len(cased) > 17 else cased
         weight = "900" if central else "700"
+        ly     = label_y - 5.0 if central else label_y
         parts.append(
-            f'<text x="{_p(x)}" y="{_p(label_y)}" '
-            f'transform="rotate(-60,{_p(x)},{_p(label_y)})" '
+            f'<text x="{_p(x)}" y="{_p(ly)}" '
+            f'transform="rotate(-60,{_p(x)},{_p(ly)})" '
             f'font-family="Arial Narrow,Arial,sans-serif" font-size="3.2" '
             f'font-weight="{weight}" text-transform="uppercase" fill="{l_color}">'
             f'{_esc(name)}</text>'
@@ -523,7 +525,7 @@ def build_export_svg(board: Board, with_frame: bool, db: Session) -> str:
     # Fixed terminus name-box width — sized for exactly 17 chars (matches stop label limit).
     # Clamped to half the available strip width so left/right boxes never overlap.
     _est_strip_w  = (max_led - 1) * LED_PITCH_MM
-    _half_avail   = max(10.0, (_est_strip_w - 2 * ROUTE_SZ) / 2)
+    _half_avail   = max(10.0, (_est_strip_w - 2 * (ROUTE_SZ + TB_GAP)) / 2)
     _name_w       = min(17 * _CHAR_W + _NAME_PAD, _half_avail)
 
     strips_by_slot: dict[int, LedStrip] = {}
