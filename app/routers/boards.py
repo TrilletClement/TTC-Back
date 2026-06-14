@@ -1,6 +1,7 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.user_access import require_user
@@ -9,6 +10,7 @@ from app.orm_models.db import get_db
 from app.repositories.board_repo import BoardRepository
 from app.schemas.board import BoardCreate
 from app.services.boardService import BoardService
+from app.services.board_svg_service import build_export_svg, load_board_for_export
 
 router = APIRouter(prefix="/api/boards", tags=["boards"])
 
@@ -54,3 +56,31 @@ def delete_board(
 @require_user
 def get_board_details(board_id: int, current_user: User, svc: BoardService = Depends(get_service)):
     return svc.get_board_details(board_id, current_user)
+
+
+@router.get("/{board_id}/export")
+@require_user
+def export_board_svg(
+    board_id: int,
+    current_user: User,
+    with_frame: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    board = load_board_for_export(board_id, db)
+    if not board:
+        raise HTTPException(status_code=404, detail="Board not found")
+
+    is_admin = any(r.name == "admin" for r in current_user.roles)
+    if not is_admin and board.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Board not found")
+
+    try:
+        svg = build_export_svg(board, with_frame=with_frame, db=db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Content-Disposition": f'attachment; filename="board-{board_id}.svg"'},
+    )
