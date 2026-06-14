@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Table, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.orm_models.db import Base
@@ -20,6 +20,18 @@ class BoardType(Base):
     name = Column(String(100), nullable=False, unique=True)
     max_led = Column(Integer, nullable=False)
     max_ledstrip = Column(Integer, nullable=False)
+
+    # Physical dimensions (mm) — used for SVG export and frame preview
+    max_width_mm       = Column(Float, nullable=True)
+    max_height_mm      = Column(Float, nullable=True)
+    delta_x_mm         = Column(Float, nullable=True)
+    delta_y_mm         = Column(Float, nullable=True)
+    frame_inner_x_mm   = Column(Float, nullable=True)
+    frame_inner_y_mm   = Column(Float, nullable=True)
+    frame_outer_x_mm   = Column(Float, nullable=True)
+    frame_outer_y_mm   = Column(Float, nullable=True)
+    frame_overlap_x_mm = Column(Float, nullable=True)
+    frame_overlap_y_mm = Column(Float, nullable=True)
 
 
 class Board(Base):
