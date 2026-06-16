@@ -47,6 +47,15 @@ class LedStripUpdate(LedStripCreate):
     pass
 
 
+class LedStripSettingsPatch(BaseModel):
+    integrated_terminus: bool
+
+
+class LedLabelPatch(BaseModel):
+    custom_name: Optional[str] = Field(default=None, max_length=19)
+    custom_subname: Optional[str] = Field(default=None, max_length=19)
+
+
 class ReorderPayload(BaseModel):
     ordered_ids: list[int]
 
@@ -145,5 +154,42 @@ def update_led_strip(
         pre_stop_left_minutes=payload.pre_stop_left_minutes,
         pre_stop_right_name=payload.pre_stop_right_name,
         pre_stop_right_minutes=payload.pre_stop_right_minutes,
+        db=db,
+    )
+
+
+@router.patch("/boards/{board_id}/led_strips/{strip_id}/settings")
+@require_user
+def patch_led_strip_settings(
+    board_id: int,
+    strip_id: int,
+    payload: LedStripSettingsPatch,
+    current_user: User,
+    db: Session = Depends(get_db),
+):
+    return LedStripService.patch_strip_settings(
+        board_id=board_id,
+        strip_id=strip_id,
+        integrated_terminus=payload.integrated_terminus,
+        db=db,
+    )
+
+
+@router.patch("/boards/{board_id}/led_strips/{strip_id}/leds/{led_id}/label")
+@require_user
+def patch_led_label(
+    board_id: int,
+    strip_id: int,
+    led_id: int,
+    payload: LedLabelPatch,
+    current_user: User,
+    db: Session = Depends(get_db),
+):
+    return LedStripService.patch_led_label(
+        board_id=board_id,
+        strip_id=strip_id,
+        led_id=led_id,
+        custom_name=payload.custom_name,
+        custom_subname=payload.custom_subname,
         db=db,
     )

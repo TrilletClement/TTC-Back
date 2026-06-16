@@ -63,6 +63,9 @@ class LedStripRepository:
         self.db.flush()
         return led
 
+    def get_led(self, led_id: int, ledstrip_id: int) -> Optional[Led]:
+        return self.db.query(Led).filter_by(id=led_id, ledstrip_id=ledstrip_id).first()
+
     # ── GTFS ─────────────────────────────────────────────────────────────────
 
     def get_line(self, line_id: int, agency_name: str) -> Optional[Line]:

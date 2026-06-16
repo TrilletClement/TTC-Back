@@ -90,7 +90,7 @@ class LedStripService:
             pre_stop_left_name, pre_stop_left_minutes,
             pre_stop_right_name, pre_stop_right_minutes,
         )
-        selected_stops = LedStripService._select_stops_around_central(
+        selected_stops, central_position = LedStripService._select_stops_around_central(
             trip_stops, central_indexes, pre_stop_overrides, max_led=max_led,
         )
 
@@ -99,6 +99,7 @@ class LedStripService:
             line_id=line_id,
             line_agency_name=agency_name,
             order_index=next_order,
+            integrated_terminus=True,
         ))
 
         LedStripService._create_leds(
@@ -106,6 +107,7 @@ class LedStripService:
             agency_name=agency_name,
             led_strip_id=strip.id,
             selected_stops=selected_stops,
+            central_position=central_position,
             led_color=led_color_hex,
             pre_stop_overrides=pre_stop_overrides,
             max_led=max_led,
@@ -141,6 +143,7 @@ class LedStripService:
                 "ledId":          led.id,
                 "ledstripIndex":  led.ledstrip_index,
                 "customName":     led.custom_name,
+                "customSubname":  led.custom_subname,
                 "type":           led.type,
                 "ledColor":       led.led_color,
                 "preStopMinutes": led.pre_travel_minutes,
@@ -207,7 +210,7 @@ class LedStripService:
             pre_stop_left_name, pre_stop_left_minutes,
             pre_stop_right_name, pre_stop_right_minutes,
         )
-        selected_stops = LedStripService._select_stops_around_central(
+        selected_stops, central_position = LedStripService._select_stops_around_central(
             trip_stops, central_indexes, pre_stop_overrides, max_led=max_led,
         )
 
@@ -224,6 +227,7 @@ class LedStripService:
             agency_name=agency_name,
             led_strip_id=strip.id,
             selected_stops=selected_stops,
+            central_position=central_position,
             led_color=led_color_hex,
             pre_stop_overrides=pre_stop_overrides,
             max_led=max_led,
@@ -265,6 +269,42 @@ class LedStripService:
         repo.delete_strip(strip)
         repo.commit()
         return {"message": "LED strip deleted successfully", "led_strip_id": strip_id}
+
+    @staticmethod
+    def patch_strip_settings(board_id: int, strip_id: int, integrated_terminus: bool, db: Session):
+        repo  = LedStripRepository(db)
+        strip = repo.get_strip(strip_id, board_id)
+        if not strip:
+            raise HTTPException(status_code=404, detail="LED strip not found")
+        strip.integrated_terminus = integrated_terminus
+        repo.commit()
+        return {"message": "OK", "led_strip_id": strip_id}
+
+    @staticmethod
+    def patch_led_label(
+        board_id: int,
+        strip_id: int,
+        led_id: int,
+        custom_name: str | None,
+        custom_subname: str | None,
+        db: Session,
+    ):
+        repo  = LedStripRepository(db)
+        strip = repo.get_strip(strip_id, board_id)
+        if not strip:
+            raise HTTPException(status_code=404, detail="LED strip not found")
+        led = repo.get_led(led_id, strip_id)
+        if not led:
+            raise HTTPException(status_code=404, detail="LED not found")
+        led.custom_name = custom_name
+        led.custom_subname = custom_subname
+        repo.commit()
+        return {
+            "message": "OK",
+            "led_id": led_id,
+            "customName": led.custom_name,
+            "customSubname": led.custom_subname,
+        }
 
     # ── Helpers privés ───────────────────────────────────────────────────────────
 
@@ -346,14 +386,28 @@ class LedStripService:
 
     @staticmethod
     def _select_stops_around_central(trip_stops, central_indexes, pre_stop_overrides=None, max_led: int = 12):
+        """Builds, for each active direction, the list of TripStop|None entries to
+        place on the strip (left to right), plus the index of the actual central
+        stop within that list.
+
+        Two-direction strips: each direction fills its own half exactly, with the
+        central stop adjacent to the middle of the strip and any history shortfall
+        padded as empty (None) LEDs at the outer edge of that half.
+
+        One-direction strips: the occupied block (history + central) is centered
+        on the strip, with one LED always left empty immediately after the central
+        stop (reserved for the direction/terminus rendering) and any remaining
+        shortfall split as evenly as possible between the two outer edges.
+        """
         selected_stops = {}
+        central_position = {}
         only_one_direction = (central_indexes[0] is None) != (central_indexes[1] is None)
         stops_per_side = max_led // 2
-        stops_to_take  = max_led if only_one_direction else stops_per_side
 
         for direction in [0, 1]:
             if central_indexes[direction] is None:
                 selected_stops[direction] = None
+                central_position[direction] = None
                 continue
 
             central_idx = central_indexes[direction]
@@ -366,25 +420,77 @@ class LedStripService:
                 if pre_ts:
                     pre_idx = next((i for i, ts in enumerate(all_stops) if ts.id == pre_ts.id), None)
 
-            if pre_idx is not None:
-                start    = max(0, pre_idx - (stops_to_take - 2))
-                selected = list(all_stops[start : pre_idx + 1])
-                while len(selected) < stops_to_take - 1:
-                    selected.insert(0, None)
-                selected.append(all_stops[central_idx])
+            if only_one_direction:
+                # 1 LED is always reserved as a buffer right after the central
+                # stop, so `capacity` is what's left for history + central.
+                capacity = max_led - 1
+                if pre_idx is not None:
+                    start  = max(0, pre_idx - (capacity - 2))
+                    window = list(all_stops[start : pre_idx + 1])
+                    while len(window) < capacity - 1:
+                        window.insert(0, None)
+                    window.append(all_stops[central_idx])
+                else:
+                    start  = max(0, central_idx - (capacity - 1))
+                    window = list(all_stops[start : central_idx + 1])
+                    while len(window) < capacity:
+                        window.insert(0, None)
+
+                deficiency   = sum(1 for ts in window if ts is None)
+                total_blanks = deficiency + 1  # +1 for the mandatory buffer
+                left_blanks  = total_blanks // 2
+                right_extra  = total_blanks - left_blanks - 1
+
+                trimmed = window[deficiency - left_blanks:]
+                final   = trimmed + [None] + [None] * right_extra
+                central_pos = len(trimmed) - 1
+
                 if direction == 1:
-                    selected = list(reversed(selected))
+                    final = list(reversed(final))
+                    central_pos = len(final) - 1 - central_pos
+
+                selected_stops[direction]   = final
+                central_position[direction] = central_pos
             else:
-                start    = max(0, central_idx - (stops_to_take - 1))
-                selected = list(all_stops[start : central_idx + 1])
-                while len(selected) < stops_to_take:
-                    selected.insert(0, None)
-                if direction == 1:
-                    selected = list(reversed(selected))
+                # Two-direction: collect history for each direction, then
+                # center the entire occupied block by splitting blanks equally
+                # between the outer-left and outer-right edges of the strip.
+                # (Processed after both directions are known — see post-loop block.)
+                pre_ts_d, _ = (pre_stop_overrides or {}).get(direction, (None, None))
+                pre_idx_d   = next(
+                    (i for i, ts in enumerate(all_stops) if ts.id == pre_ts_d.id), None
+                ) if pre_ts_d else None
 
-            selected_stops[direction] = selected[:stops_to_take]
+                if pre_idx_d is not None:
+                    start   = max(0, pre_idx_d - (stops_per_side - 2))
+                    history = list(all_stops[start : pre_idx_d + 1])
+                else:
+                    start   = max(0, central_idx - (stops_per_side - 1))
+                    history = list(all_stops[start : central_idx])
 
-        return selected_stops
+                selected_stops[direction]   = history          # temporary; finalised below
+                central_position[direction] = all_stops[central_idx]  # store the stop obj
+
+        # ── Finalise two-direction centering ──────────────────────────────────
+        if not only_one_direction and selected_stops[0] is not None and selected_stops[1] is not None:
+            h0           = selected_stops[0]           # history list for direction 0
+            h1           = selected_stops[1]           # history list for direction 1
+            central_0    = central_position[0]         # actual central TripStop obj
+            central_1    = central_position[1]
+            total_occ    = len(h0) + 1 + len(h1) + 1
+            total_blanks = max_led - total_occ
+            left_blanks  = total_blanks // 2
+            right_blanks = total_blanks - left_blanks
+
+            # Left half: [None]*left_blanks + history_0 + [central_0]
+            selected_stops[0]   = [None] * left_blanks + h0 + [central_0]
+            central_position[0] = left_blanks + len(h0)   # index of central_0
+
+            # Right half: [central_1] + history_1 + [None]*right_blanks
+            selected_stops[1]   = [central_1] + h1 + [None] * right_blanks
+            central_position[1] = 0                       # central_1 always first
+
+        return selected_stops, central_position
 
     @staticmethod
     def _create_leds(
@@ -392,13 +498,15 @@ class LedStripService:
         agency_name: str,
         led_strip_id: int,
         selected_stops,
+        central_position,
         led_color: str,
         pre_stop_overrides=None,
         max_led: int = 12,
     ):
-        half   = max_led // 2
         only0  = selected_stops[1] is None
         only1  = selected_stops[0] is None
+        # For two-direction strips the halves may be unequal after centering.
+        half   = len(selected_stops[0]) if (not only0 and not only1) else max_led // 2
 
         pre_minutes_by_ts_id: dict[int, int] = {}
         if pre_stop_overrides:
@@ -409,56 +517,36 @@ class LedStripService:
 
         for i in range(max_led):
             if not only0 and not only1:
-                if i < half:
-                    direction, stop_idx = 0, i
-                    is_c_left  = i == half - 1
-                    is_c_right = False
-                    is_left    = i < half - 1
-                    is_right   = False
-                else:
-                    direction, stop_idx = 1, i - half
-                    is_c_left  = False
-                    is_c_right = i == half
-                    is_left    = False
-                    is_right   = i > half
+                direction, stop_idx = (0, i) if i < half else (1, i - half)
             elif only0:
                 direction, stop_idx = 0, i
-                is_c_left  = i == max_led - 1
-                is_c_right = False
-                is_left    = i < max_led - 1
-                is_right   = False
             else:
                 direction, stop_idx = 1, i
-                is_c_left  = False
-                is_c_right = i == max_led - 1
-                is_left    = False
-                is_right   = i < max_led - 1
 
             ts = selected_stops[direction][stop_idx] if selected_stops[direction] else None
             pre_travel_minutes = pre_minutes_by_ts_id.get(ts.id) if ts else None
 
             custom_name = None
+            custom_subname = None
             if ts:
                 stop = repo.get_stop(ts.stop_stop_id, agency_name)
-                custom_name = (
-                    LedStripService._clean_stop_name(stop.name, agency_name)
-                    if stop and stop.name
-                    else ts.stop_stop_id
-                )
+                if stop and stop.name:
+                    custom_name = LedStripService._clean_stop_name(stop.name, agency_name)
+                    custom_subname = LedStripService._tec_subname(stop.name, agency_name)
+                else:
+                    custom_name = ts.stop_stop_id
 
-            if is_c_left:
-                led_type = "c_left"
-            elif is_c_right:
-                led_type = "c_right"
-            elif is_left:
-                led_type = "left"
+            is_central = stop_idx == central_position[direction]
+            if direction == 0:
+                led_type = "c_left" if is_central else "left"
             else:
-                led_type = "right"
+                led_type = "c_right" if is_central else "right"
 
             led = repo.add_led(Led(
                 ledstrip_id       = led_strip_id,
                 ledstrip_index    = i + 1,
                 custom_name       = custom_name,
+                custom_subname    = custom_subname,
                 type              = led_type,
                 led_color         = led_color,
                 pre_travel_minutes = pre_travel_minutes,
@@ -466,6 +554,18 @@ class LedStripService:
 
             if ts:
                 led.trip_stops.append(ts)
+
+    @staticmethod
+    def _tec_subname(name: str, agency_name: str) -> str | None:
+        """Return the leading ALL-CAPS city-name prefix that _clean_stop_name strips, or None."""
+        if agency_name != "TEC" or not name:
+            return None
+        name    = " ".join(name.split())
+        cleaned = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
+        if len(cleaned.split()) < 2:
+            return None
+        m = re.match(r'^([A-ZÀ-ÿ]+(?:[\s\-][A-ZÀ-ÿ]+)*)\s+', cleaned)
+        return m.group(1).strip() if m else None
 
     @staticmethod
     def _clean_stop_name(name: str, agency_name: str = "") -> str:

@@ -219,6 +219,7 @@ class BoardService:
                 "lineId": strip.line_id,
                 "lineAgencyName": strip.line_agency_name,
                 "orderIndex": getattr(strip, "order_index", None),
+                "integratedTerminus": bool(getattr(strip, "integrated_terminus", False)),
             }
 
             if line_obj:
@@ -302,6 +303,7 @@ class BoardService:
             "ledId":          led_obj.id,
             "ledstripIndex":  led_obj.ledstrip_index,
             "customName":     led_obj.custom_name,
+            "customSubname":  led_obj.custom_subname,
             "type":           led_obj.type,
             "ledColor":       led_obj.led_color,
             "preStopMinutes": led_obj.pre_travel_minutes,

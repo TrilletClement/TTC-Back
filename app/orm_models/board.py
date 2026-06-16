@@ -55,6 +55,7 @@ class LedStrip(Base):
     line_id = Column(Integer, ForeignKey("line.id"), nullable=False)
     line_agency_name = Column(String(100), nullable=False)
     order_index = Column(Integer, nullable=False, default=1)
+    integrated_terminus = Column(Boolean, default=False, nullable=False)
     line = relationship(
         "Line",
         backref="led_strips",
@@ -78,6 +79,7 @@ class Led(Base):
     ledstrip_id = Column(Integer, ForeignKey("led_strip.id"), nullable=False)
     ledstrip_index = Column(Integer, nullable=False, index=True)
     custom_name = Column(String(100))
+    custom_subname = Column(String(100))
     type = Column(String(10), nullable=False)  # left/right/central
     led_color = Column(String(50), nullable=False, default="#00FF00")
     pre_travel_minutes = Column(Integer, nullable=True) 

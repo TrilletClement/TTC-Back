@@ -89,6 +89,8 @@ def _tec_stop_name(raw: str) -> str:
     strip leading ALL-CAPS words; otherwise assume all-caps DB and strip only
     the first word.
     """
+    if ' - ' in raw:
+        raw = raw[:raw.index(' - ')]
     words = raw.split()
     if len(words) <= 1:
         return _smart_title(raw)
@@ -241,6 +243,11 @@ def _path_round_right(x: float, y: float, w: float, h: float, r: float) -> str:
     )
 
 
+def _shorten(text: str) -> str:
+    """Keep the first 17 chars + '...' if text is longer than 19 chars; else unchanged."""
+    return (text[:17] + "...") if len(text) > 19 else text
+
+
 def _est_name_w(text: str) -> float:
     """Estimate name-box width (mm) for a given terminus string."""
     return max(15.0, len(text) * _CHAR_W + _NAME_PAD)
@@ -290,7 +297,7 @@ def _terminus_box(
         parts.append(
             f'<text x="{_p(rx + ROUTE_SZ/2)}" y="{_p(mid_y)}" '
             f'text-anchor="middle" dominant-baseline="central" '
-            f'font-family="Inter,Arial,sans-serif" font-size="{_p(min(ROUTE_SZ*0.65, 6.5))}" '
+            f'font-family="Brusseline,Arial Narrow,Arial,sans-serif" font-size="{_p(min(ROUTE_SZ*0.65, 6.5))}" '
             f'font-weight="700" fill="{tc}">{_esc(route[:5])}</text>'
         )
     # Terminus name text — left-aligned inside name rect
@@ -322,7 +329,6 @@ def _build_strip(
     tc       = _c(line.text_color if line else None, "#ffffff")
     s_stroke = "#1f3c88"
     tb_fill  = "#1f3c88"
-    l_color  = "#1f3c88"
     lw       = str(RAIL_W)
 
     has_cl = any(l.type == "c_left"  for l in leds)
@@ -341,6 +347,8 @@ def _build_strip(
 
     # ── Rail segments: drawn first, circles cover the ends — no gap needed ────
     for i in range(len(leds) - 1):
+        if not leds[i].trip_stops or not leds[i + 1].trip_stops:
+            continue
         x1 = led_x(leds[i].ledstrip_index     or (i + 1))
         x2 = led_x(leds[i + 1].ledstrip_index or (i + 2))
 
@@ -357,17 +365,17 @@ def _build_strip(
             )
             if d == "right":
                 parts.append(
-                    f'<path d="M {_p(mid - HALF)} {_p(rail_y - AH)} '
-                    f'L {_p(mid + HALF)} {_p(rail_y)} '
-                    f'L {_p(mid - HALF)} {_p(rail_y + AH)}" '
+                    f'<path d="M {_p(mid - HALF - 0.5)} {_p(rail_y - AH)} '
+                    f'L {_p(mid + HALF - 0.5)} {_p(rail_y)} '
+                    f'L {_p(mid - HALF - 0.5)} {_p(rail_y + AH)}" '
                     f'fill="none" stroke="{lc}" stroke-width="1.2" '
                     f'stroke-linecap="round" stroke-linejoin="round"/>'
                 )
             else:
                 parts.append(
-                    f'<path d="M {_p(mid + HALF)} {_p(rail_y - AH)} '
-                    f'L {_p(mid - HALF)} {_p(rail_y)} '
-                    f'L {_p(mid + HALF)} {_p(rail_y + AH)}" '
+                    f'<path d="M {_p(mid + HALF + 0.5)} {_p(rail_y - AH)} '
+                    f'L {_p(mid - HALF + 0.5)} {_p(rail_y)} '
+                    f'L {_p(mid + HALF + 0.5)} {_p(rail_y + AH)}" '
                     f'fill="none" stroke="{lc}" stroke-width="1.2" '
                     f'stroke-linecap="round" stroke-linejoin="round"/>'
                 )
@@ -386,6 +394,8 @@ def _build_strip(
 
     # ── LED circles (drawn after rails so circles cover line ends) ────────────
     for led in leds:
+        if not led.trip_stops:
+            continue
         x       = led_x(led.ledstrip_index or 1)
         central = led.type in ("c_left", "c_right")
         if central:
@@ -398,28 +408,113 @@ def _build_strip(
             f'fill="white" stroke="{s_stroke}" stroke-width="{_p(R_SW)}"/>'
         )
 
+    # ── Terminus data (needed for both top boxes and integrated badges) ──────────
+    route_label = (line.short_name if line and line.short_name else "") or ""
+    if not route_label and strip.line_id is not None:
+        route_label = str(strip.line_id)
+
+    integrated = bool(getattr(strip, "integrated_terminus", False))
+
+    left_t  = _shorten(_strip_terminus(leds, line, "left"))
+    right_t = _shorten(_strip_terminus(leds, line, "right"))
+
+    # ── Leftmost / rightmost occupied LEDs (have at least one trip stop) ──────
+    # Badge anchor: normally the leftmost/rightmost occupied LED, except when
+    # that LED is the central stop itself — then the badge moves one slot
+    # further out, onto the deliberately-unoccupied LED reserved for it, so
+    # the central stop's own label is never overwritten.
+    occupied_idxs = [i for i, l in enumerate(leds) if l.trip_stops]
+    leftmost_idx  = occupied_idxs[0]  if occupied_idxs else -1
+    rightmost_idx = occupied_idxs[-1] if occupied_idxs else -1
+
+    def _is_central_idx(i: int) -> bool:
+        return i != -1 and leds[i].type in ("c_left", "c_right")
+
+    left_badge_idx = (
+        leftmost_idx - 1
+        if _is_central_idx(leftmost_idx) and leftmost_idx > 0
+        else leftmost_idx
+    )
+    right_badge_idx = (
+        rightmost_idx + 1
+        if _is_central_idx(rightmost_idx) and rightmost_idx < len(leds) - 1
+        else rightmost_idx
+    )
+
+    leftmost_occ  = leds[left_badge_idx]  if left_badge_idx  != -1 else None
+    rightmost_occ = leds[right_badge_idx] if right_badge_idx != -1 else None
+
     # ── Station labels (rotated -60° above each circle) ───────────────────────
     label_y = rail_y - (R + 1.5)
+    # Constants for inline integrated terminus badge (mm)
+    IB_H       = 6.0   # badge height
+    IB_ROUTE_W = 6.0   # route square width = height
+    IB_GAP     = 0.7   # gap between square and name rect
+    IB_RX      = 1.0   # corner radius
+    IB_FS      = IB_H * 0.52  # font size inside badge
+    IB_LIFT    = 1.5   # mm — lift badge above normal label_y to clear LED circle
+
     for led in leds:
         x       = led_x(led.ledstrip_index or 1)
         central = led.type in ("c_left", "c_right")
-        raw = ""
-        if led.trip_stops:
-            ts  = led.trip_stops[0]
-            raw = (ts.stop.name if ts.stop else None) or ""
-        if not raw:
+        ly      = label_y - 3.0 if central else label_y
+
+        is_left_end  = integrated and led is leftmost_occ
+        is_right_end = integrated and led is rightmost_occ
+
+        if is_left_end or is_right_end:
+            # Render inline terminus badge rotated like the stop label
+            term = left_t if is_left_end else right_t
+            ly   = label_y - IB_LIFT          # lift badge clear of LED circle
+            bx   = x                           # badge starts at label x anchor
+            by   = ly - IB_H / 2              # vertically centred on label y
+            # Name rect width fitted to text: ~1.6 mm/char + 2.5 mm padding
+            ib_name_w = max(10.0, len(term) * 1.6 + 2.5)
+            parts.append(
+                f'<g transform="rotate(-60,{_p(x)},{_p(ly)})">'
+                f'<rect x="{_p(bx)}" y="{_p(by)}" width="{_p(IB_ROUTE_W)}" height="{_p(IB_H)}" rx="{_p(IB_RX)}" fill="{lc}"/>'
+                f'<text x="{_p(bx + IB_ROUTE_W / 2)}" y="{_p(ly)}" '
+                f'text-anchor="middle" dominant-baseline="central" '
+                f'font-family="Brusseline,Arial Narrow,Arial,sans-serif" font-size="{_p(IB_FS)}" '
+                f'font-weight="900" fill="{tc}">{_esc(route_label[:5])}</text>'
+                f'<rect x="{_p(bx + IB_ROUTE_W + IB_GAP)}" y="{_p(by)}" width="{_p(ib_name_w)}" height="{_p(IB_H)}" rx="{_p(IB_RX)}" fill="{tb_fill}"/>'
+                f'<text x="{_p(bx + IB_ROUTE_W + IB_GAP + 1.0)}" y="{_p(ly)}" '
+                f'dominant-baseline="central" '
+                f'font-family="Brusseline,Arial Narrow,Arial,sans-serif" font-size="{_p(IB_FS)}" '
+                f'font-weight="700" fill="white">{_esc(term)}</text>'
+                f'</g>'
+            )
+        else:
             raw = led.custom_name or ""
-        cased  = _tec_stop_name(raw) if is_tec else _smart_title(raw)
-        name   = (cased[:17] + ".") if len(cased) > 17 else cased
-        weight = "900" if central else "700"
-        ly     = label_y - 5.0 if central else label_y
-        parts.append(
-            f'<text x="{_p(x)}" y="{_p(ly)}" '
-            f'transform="rotate(-60,{_p(x)},{_p(ly)})" '
-            f'font-family="Arial Narrow,Arial,sans-serif" font-size="3.2" '
-            f'font-weight="{weight}" text-transform="uppercase" fill="{l_color}">'
-            f'{_esc(name)}</text>'
-        )
+            if not raw and led.trip_stops:
+                ts  = led.trip_stops[0]
+                raw = (ts.stop.name if ts.stop else None) or ""
+            cased   = _tec_stop_name(raw) if is_tec else _smart_title(raw)
+            name    = _shorten(cased)
+            weight  = "900" if central else "700"
+            tx      = x + 1.0
+            subname = getattr(led, "custom_subname", None)
+            if subname:
+                parts.append(
+                    f'<g transform="rotate(-60,{_p(tx)},{_p(ly)})">'
+                    f'<text x="{_p(tx)}" y="{_p(ly)}" '
+                    f'font-family="Brusseline,Arial Narrow,Arial,sans-serif" font-size="4.0" '
+                    f'font-weight="{weight}" text-transform="uppercase" fill="{tb_fill}">'
+                    f'{_esc(name)}</text>'
+                    f'<text x="{_p(tx)}" y="{_p(ly + 3.2)}" '
+                    f'font-family="Brusseline,Arial Narrow,Arial,sans-serif" font-size="2.4" '
+                    f'font-weight="500" text-transform="uppercase" fill="{tb_fill}">'
+                    f'{_esc(" " + subname)}</text>'
+                    f'</g>'
+                )
+            else:
+                parts.append(
+                    f'<text x="{_p(tx)}" y="{_p(ly)}" '
+                    f'transform="rotate(-60,{_p(tx)},{_p(ly)})" '
+                    f'font-family="Brusseline,Arial Narrow,Arial,sans-serif" font-size="4.0" '
+                    f'font-weight="{weight}" text-transform="uppercase" fill="{tb_fill}">'
+                    f'{_esc(name)}</text>'
+                )
 
     # ── Pre-stop minute badges ─────────────────────────────────────────────────
     for led in leds:
@@ -435,23 +530,12 @@ def _build_strip(
                 f'</text>'
             )
 
-    # ── Terminus boxes at top of strip area ───────────────────────────────────
-    route_label = (line.short_name if line and line.short_name else "") or ""
-    if not route_label and strip.line_id is not None:
-        route_label = str(strip.line_id)
-
-    left_t  = _strip_terminus(leds, line, "left")
-    right_t = _strip_terminus(leds, line, "right")
-
-    left_x  = led_x(leds[0].ledstrip_index  or 1)
-    right_x = led_x(leds[-1].ledstrip_index or max_led)
-
-    # Truncate terminus names: same 17-char limit as stop labels, period suffix
-    left_t  = (left_t[:17]  + ".") if len(left_t)  > 17 else left_t
-    right_t = (right_t[:17] + ".") if len(right_t) > 17 else right_t
-
-    parts.append(_terminus_box(left_x, right_x, rail_y, left_t,  route_label, tb_fill, lc, tc, "left",  name_w))
-    parts.append(_terminus_box(left_x, right_x, rail_y, right_t, route_label, tb_fill, lc, tc, "right", name_w))
+    # ── Terminus boxes at top of strip area (skipped when integrated terminus) ─
+    if not integrated:
+        left_x  = led_x(leds[0].ledstrip_index  or 1)
+        right_x = led_x(leds[-1].ledstrip_index or max_led)
+        parts.append(_terminus_box(left_x, right_x, rail_y, left_t,  route_label, tb_fill, lc, tc, "left",  name_w))
+        parts.append(_terminus_box(left_x, right_x, rail_y, right_t, route_label, tb_fill, lc, tc, "right", name_w))
 
     return "\n".join(parts)
 
@@ -522,11 +606,12 @@ def build_export_svg(board: Board, with_frame: bool, db: Session) -> str:
             line._t0 = _process(_resolve_terminus(line.best_trip_b, db))
             line._t1 = _process(_resolve_terminus(line.best_trip_f, db))
 
-    # Fixed terminus name-box width — sized for exactly 17 chars (matches stop label limit).
+    # Fixed terminus name-box width — sized for the longest possible shortened
+    # label (17 chars + "..." = 20 chars, see _shorten).
     # Clamped to half the available strip width so left/right boxes never overlap.
     _est_strip_w  = (max_led - 1) * LED_PITCH_MM
     _half_avail   = max(10.0, (_est_strip_w - 2 * (ROUTE_SZ + TB_GAP)) / 2)
-    _name_w       = min(17 * _CHAR_W + _NAME_PAD, _half_avail)
+    _name_w       = min(20 * _CHAR_W + _NAME_PAD, _half_avail)
 
     strips_by_slot: dict[int, LedStrip] = {}
     for s in board.led_strips:
