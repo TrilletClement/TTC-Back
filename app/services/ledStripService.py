@@ -132,7 +132,7 @@ class LedStripService:
                     "stopStopId":    ts.stop_stop_id,
                     "stopAgencyName": ts.stop_agency_name,
                     "stopName": (
-                        LedStripService._clean_stop_name(ts.stop.name, ts.stop_agency_name)
+                        LedStripService.format_stop_label(ts.stop.name, ts.stop_agency_name)[0]
                         if ts.stop else None
                     ),
                     "vehicleIncoming": ts.vehicle_incoming,
@@ -531,8 +531,7 @@ class LedStripService:
             if ts:
                 stop = repo.get_stop(ts.stop_stop_id, agency_name)
                 if stop and stop.name:
-                    custom_name = LedStripService._clean_stop_name(stop.name, agency_name)
-                    custom_subname = LedStripService._tec_subname(stop.name, agency_name)
+                    custom_name, custom_subname = LedStripService.format_stop_label(stop.name, agency_name)
                 else:
                     custom_name = ts.stop_stop_id
 
@@ -556,27 +555,45 @@ class LedStripService:
                 led.trip_stops.append(ts)
 
     @staticmethod
-    def _tec_subname(name: str, agency_name: str) -> str | None:
-        """Return the leading ALL-CAPS city-name prefix that _clean_stop_name strips, or None."""
-        if agency_name != "TEC" or not name:
-            return None
-        name    = " ".join(name.split())
-        cleaned = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
-        if len(cleaned.split()) < 2:
-            return None
-        m = re.match(r'^([A-ZÀ-ÿ]+(?:[\s\-][A-ZÀ-ÿ]+)*)\s+', cleaned)
-        return m.group(1).strip() if m else None
+    def format_stop_label(name: str, agency_name: str) -> tuple[str | None, str | None]:
+        """Return (custom_name, custom_subname) for a stop, by agency.
 
-    @staticmethod
-    def _clean_stop_name(name: str, agency_name: str = "") -> str:
+        TEC     — subname: leading ALL-CAPS words; name: remainder minus " - …" suffix
+        STIB    — subname: None; name: stop name with normalised whitespace
+        DE_LIJN — subname: first word (uppercased); name: everything after
+        SNCB    — subname: None; name: stop name as-is
+        Other   — subname: None; name: stop name with trailing parenthetical stripped
+        """
         if not name:
-            return ""
-        name    = " ".join(name.split())
+            return None, None
+
+        name = " ".join(name.split())
+
+        if agency_name == "TEC":
+            cleaned = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
+            subname: str | None = None
+            if len(cleaned.split()) >= 2:
+                m = re.match(r'^([A-ZÀ-ÿ]+(?:[\s\-][A-ZÀ-ÿ]+)*)\s+', cleaned)
+                if m:
+                    subname = m.group(1).strip()
+                    cleaned = cleaned[m.end():]
+            dash = cleaned.find(' - ')
+            if dash != -1:
+                cleaned = cleaned[:dash]
+            return cleaned.strip() or None, subname
+
+        if agency_name == "STIB":
+            cleaned = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
+            return cleaned or None, None
+
+        if agency_name == "DE_LIJN":
+            parts = name.split(' ', 1)
+            if len(parts) == 1:
+                return parts[0] or None, None
+            return parts[1].strip() or None, parts[0].upper()
+
+        if agency_name == "SNCB":
+            return name or None, None
+
         cleaned = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
-        if agency_name == 'TEC' and len(cleaned.split()) >= 2:
-            cleaned = re.sub(
-                r'^(?:[A-ZÀ-ÿ]+(?:[\s\-][A-ZÀ-ÿ]+)*)\s+',
-                '',
-                cleaned,
-            )
-        return cleaned.strip()
+        return cleaned or None, None
