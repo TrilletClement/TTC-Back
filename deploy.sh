@@ -12,14 +12,17 @@ if [ "$1" == "--import" ] || [ "$1" == "-i" ]; then
     echo "⚠️ Option --import détectée : La DB sera vidée et les imports GTFS seront lancés."
 fi
 
-echo "0. Build des images Docker..."
-docker compose build
+echo "0. Pull des derniers commits..."
+git pull --rebase
 
-echo "1. Sauvegarde et compression des images Docker..."
+echo "1. Build des images Docker (sans cache pour garantir le code à jour)..."
+docker compose build --no-cache
+
+echo "2. Sauvegarde et compression des images Docker..."
 docker save $FRONT_IMAGE | gzip > front.tar.gz
 docker save $API_IMAGE   | gzip > api.tar.gz
 
-echo "2. Compression des fichiers de configuration CA..."
+echo "3. Compression des fichiers de configuration CA..."
 # Bundle CA config files (setup script + OpenSSL configs only — NOT the
 # generated keys, which live permanently on the server and are gitignored).
 tar czf ca-config.tar.gz \
@@ -27,14 +30,14 @@ tar czf ca-config.tar.gz \
     ca/openssl-root.cnf \
     ca/openssl-inter.cnf
 
-echo "3. Transfert vers le serveur Docker ($DOCKER_SERVER_IP)..."
+echo "4. Transfert vers le serveur Docker ($DOCKER_SERVER_IP)..."
 # .env is NOT transferred — the server keeps its own prod .env.
 scp front.tar.gz api.tar.gz docker-compose.yml \
     ca-config.tar.gz \
     scripts/db-backup.sh \
     $DOCKER_SERVER_USER@$DOCKER_SERVER_IP:/tmp/
 
-echo "4. Installation sur le serveur Docker..."
+echo "5. Installation sur le serveur Docker..."
 ssh -t $DOCKER_SERVER_USER@$DOCKER_SERVER_IP "su - root -c '
     mv /tmp/front.tar.gz /tmp/api.tar.gz /tmp/docker-compose.yml /root/
 
@@ -118,7 +121,7 @@ ssh -t $DOCKER_SERVER_USER@$DOCKER_SERVER_IP "su - root -c '
     echo \"Serveur Docker: deploiement termine !\"
 '"
 
-echo "5. Nettoyage local..."
+echo "6. Nettoyage local..."
 rm -f front.tar.gz api.tar.gz ca-config.tar.gz
 
 echo ""
