@@ -56,6 +56,8 @@ class LedStrip(Base):
     line_agency_name = Column(String(100), nullable=False)
     order_index = Column(Integer, nullable=False, default=1)
     integrated_terminus = Column(Boolean, default=False, nullable=False)
+    custom_terminus_left_name  = Column(String(50), nullable=True)
+    custom_terminus_right_name = Column(String(50), nullable=True)
     line = relationship(
         "Line",
         backref="led_strips",

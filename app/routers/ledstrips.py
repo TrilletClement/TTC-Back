@@ -56,6 +56,11 @@ class LedLabelPatch(BaseModel):
     custom_subname: Optional[str] = Field(default=None, max_length=19)
 
 
+class TerminusLabelPatch(BaseModel):
+    custom_terminus_left_name:  Optional[str] = Field(default=None, max_length=19)
+    custom_terminus_right_name: Optional[str] = Field(default=None, max_length=19)
+
+
 class ReorderPayload(BaseModel):
     ordered_ids: list[int]
 
@@ -171,6 +176,25 @@ def patch_led_strip_settings(
         board_id=board_id,
         strip_id=strip_id,
         integrated_terminus=payload.integrated_terminus,
+        db=db,
+    )
+
+
+@router.patch("/boards/{board_id}/led_strips/{strip_id}/terminus")
+@require_user
+def patch_terminus_labels(
+    board_id: int,
+    strip_id: int,
+    payload: TerminusLabelPatch,
+    current_user: User,
+    db: Session = Depends(get_db),
+):
+    return LedStripService.patch_terminus_labels(
+        board_id=board_id,
+        strip_id=strip_id,
+        fields_set=payload.model_fields_set,
+        custom_terminus_left_name=payload.custom_terminus_left_name,
+        custom_terminus_right_name=payload.custom_terminus_right_name,
         db=db,
     )
 

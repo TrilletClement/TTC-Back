@@ -94,12 +94,15 @@ class LedStripService:
             trip_stops, central_indexes, pre_stop_overrides, max_led=max_led,
         )
 
+        left_t, right_t = LedStripService._compute_terminus_names(trip_stops, agency_name)
         strip = repo.add_strip(LedStrip(
             board_id=board.id,
             line_id=line_id,
             line_agency_name=agency_name,
             order_index=next_order,
             integrated_terminus=True,
+            custom_terminus_left_name=left_t,
+            custom_terminus_right_name=right_t,
         ))
 
         LedStripService._create_leds(
@@ -131,10 +134,7 @@ class LedStripService:
                     "tripStopId":    ts.id,
                     "stopStopId":    ts.stop_stop_id,
                     "stopAgencyName": ts.stop_agency_name,
-                    "stopName": (
-                        LedStripService.format_stop_label(ts.stop.name, ts.stop_agency_name)[0]
-                        if ts.stop else None
-                    ),
+                    "stopName": ts.stop.name if ts.stop else None,
                     "vehicleIncoming": ts.vehicle_incoming,
                 }
                 for ts in led.trip_stops
@@ -160,6 +160,8 @@ class LedStripService:
             "agency_name":     strip.line_agency_name,
             "orderIndex":      strip.order_index,
             "order_index":     strip.order_index,
+            "customTerminusLeftName":  strip.custom_terminus_left_name,
+            "customTerminusRightName": strip.custom_terminus_right_name,
             "leds":            leds_payload,
         }
 
@@ -214,8 +216,11 @@ class LedStripService:
             trip_stops, central_indexes, pre_stop_overrides, max_led=max_led,
         )
 
+        left_t, right_t = LedStripService._compute_terminus_names(trip_stops, agency_name)
         strip.line_id = int(line_id)
         strip.line_agency_name = agency_name
+        strip.custom_terminus_left_name  = left_t
+        strip.custom_terminus_right_name = right_t
 
         for led in list(strip.leds):
             led.trip_stops.clear()
@@ -306,7 +311,54 @@ class LedStripService:
             "customSubname": led.custom_subname,
         }
 
+    @staticmethod
+    def patch_terminus_labels(
+        board_id: int,
+        strip_id: int,
+        fields_set: set[str],
+        custom_terminus_left_name: str | None,
+        custom_terminus_right_name: str | None,
+        db: Session,
+    ):
+        repo  = LedStripRepository(db)
+        strip = repo.get_strip(strip_id, board_id)
+        if not strip:
+            raise HTTPException(status_code=404, detail="LED strip not found")
+        t = LedStripService._truncate
+        if "custom_terminus_left_name" in fields_set:
+            strip.custom_terminus_left_name  = t(custom_terminus_left_name)
+        if "custom_terminus_right_name" in fields_set:
+            strip.custom_terminus_right_name = t(custom_terminus_right_name)
+        repo.commit()
+        return {
+            "message": "OK",
+            "led_strip_id": strip_id,
+            "customTerminusLeftName":  strip.custom_terminus_left_name,
+            "customTerminusRightName": strip.custom_terminus_right_name,
+        }
+
     # ── Helpers privés ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _compute_terminus_names(trip_stops: dict, agency_name: str) -> tuple[str | None, str | None]:
+        """Return (left_name, right_name) formatted from the last stop of each direction.
+
+        direction 1 → left terminus
+        direction 0 → right terminus
+        """
+        def _last_stop_name(stops) -> str | None:
+            if not stops:
+                return None
+            last_ts = stops[-1]
+            return last_ts.stop.name if last_ts and last_ts.stop else None
+
+        left_raw  = _last_stop_name(trip_stops.get(1))
+        right_raw = _last_stop_name(trip_stops.get(0))
+
+        left_name,  _ = LedStripService.format_stop_label(left_raw,  agency_name) if left_raw  else (None, None)
+        right_name, _ = LedStripService.format_stop_label(right_raw, agency_name) if right_raw else (None, None)
+
+        return left_name, right_name
 
     @staticmethod
     def _get_trips_by_direction(repo: LedStripRepository, agency_name, line_id):
@@ -554,9 +606,47 @@ class LedStripService:
             if ts:
                 led.trip_stops.append(ts)
 
+    _SMART_LOWER: frozenset[str] = frozenset({
+        'le','la','les','un','une','de','du','des','à','au','aux','en','par','pour',
+        'sur','sous','dans','avec','vers','entre','chez','et','ou','mais','ni','car',
+        'que','qui','dont','où','het','een','van','voor','op','in','aan','bij','met',
+        'te','naar','tot','over','onder','om','per','of','maar','den','der','ter',
+    })
+
+    @staticmethod
+    def _smart_title(s: str) -> str:
+        """Title-case a string with smart lower-case for common prepositions/articles."""
+        if not s:
+            return s
+        words = s.split(' ')
+        out = []
+        for i, word in enumerate(words):
+            if '-' in word:
+                out.append('-'.join(seg.lower().capitalize() for seg in word.split('-')))
+            elif "'" in word:
+                ap = word.index("'")
+                pre = word[:ap].lower()
+                suf = word[ap + 1:].lower().capitalize()
+                out.append((pre.capitalize() if i == 0 else pre) + "'" + suf)
+            else:
+                low = word.lower()
+                out.append(low if (i > 0 and low in LedStripService._SMART_LOWER) else low.capitalize())
+        return ' '.join(out)
+
+    @staticmethod
+    def _truncate(text: str | None, limit: int = 19) -> str | None:
+        """Truncate to at most `limit` characters, appending '...' when cut."""
+        if not text or len(text) <= limit:
+            return text
+        return text[:limit - 3] + '...'
+
     @staticmethod
     def format_stop_label(name: str, agency_name: str) -> tuple[str | None, str | None]:
         """Return (custom_name, custom_subname) for a stop, by agency.
+
+        Both values are truncated to 19 characters (with trailing '...') so the
+        result can be stored directly in the DB and displayed without further
+        formatting.
 
         TEC     — subname: leading ALL-CAPS words; name: remainder minus " - …" suffix
         STIB    — subname: None; name: stop name with normalised whitespace
@@ -567,6 +657,7 @@ class LedStripService:
         if not name:
             return None, None
 
+        t = LedStripService._truncate
         name = " ".join(name.split())
 
         if agency_name == "TEC":
@@ -580,20 +671,20 @@ class LedStripService:
             dash = cleaned.find(' - ')
             if dash != -1:
                 cleaned = cleaned[:dash]
-            return cleaned.strip() or None, subname
+            return t(cleaned.strip() or None), t(subname)
 
         if agency_name == "STIB":
             cleaned = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
-            return cleaned or None, None
+            return t(LedStripService._smart_title(cleaned) or None), None
 
         if agency_name == "DE_LIJN":
             parts = name.split(' ', 1)
             if len(parts) == 1:
-                return parts[0] or None, None
-            return parts[1].strip() or None, parts[0].upper()
+                return t(parts[0] or None), None
+            return t(parts[1].strip() or None), t(parts[0].upper())
 
         if agency_name == "SNCB":
-            return name or None, None
+            return t(name or None), None
 
         cleaned = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
-        return cleaned or None, None
+        return t(cleaned or None), None

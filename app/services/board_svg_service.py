@@ -18,7 +18,7 @@ except Exception:
     _BRUSSELINE_B64 = None
 
 from app.orm_models.board import Board, Led, LedStrip
-from app.orm_models.gtfs import Line, Stop, Trip, TripStop
+from app.orm_models.gtfs import Line, TripStop
 
 # ── Hardware / layout constants ───────────────────────────────────────────────
 LED_PITCH_MM = 1000.0 / 60.0   # ~16.667 mm — 60-LED/m strip pitch (hardware constant)
@@ -53,87 +53,6 @@ _DEFAULTS = dict(
 )
 
 
-# ── Smart title-case for ALL-CAPS DB stop / terminus names ───────────────────
-# Words that stay lowercase in the middle of a name (French + Dutch function words).
-_SMART_LOWER: frozenset[str] = frozenset({
-    # French articles
-    "le", "la", "les", "un", "une",
-    # French prepositions
-    "de", "du", "des", "à", "au", "aux", "en", "par", "pour",
-    "sur", "sous", "dans", "avec", "vers", "entre", "chez",
-    # French conjunctions / misc
-    "et", "ou", "mais", "ni", "car", "que", "qui", "dont", "où",
-    # Dutch articles
-    "het", "een",
-    # Dutch prepositions
-    "van", "voor", "op", "in", "aan", "bij", "met", "te", "naar",
-    "tot", "over", "onder", "om", "per",
-    # Dutch conjunctions
-    "of", "maar",
-    # Genitive / archaic forms
-    "den", "der", "ter",
-    # Shared FR/NL
-    "en",
-})
-
-
-def _tec_stop_name(raw: str) -> str:
-    """
-    Strip the city-name prefix from a TEC stop name, then apply smart title case.
-
-    TEC GTFS names have the municipality as a leading prefix, e.g.
-      • mixed-case DB: "NAMUR Place de l'Armée"   → "Place de l'Armée"
-      • all-caps DB:   "NAMUR PLACE DE L ARMEE"    → "Place de l Armee"
-
-    Detection: if the raw string has any lowercase letter (accented included),
-    strip leading ALL-CAPS words; otherwise assume all-caps DB and strip only
-    the first word.
-    """
-    if ' - ' in raw:
-        raw = raw[:raw.index(' - ')]
-    words = raw.split()
-    if len(words) <= 1:
-        return _smart_title(raw)
-
-    if raw != raw.upper():                    # mixed-case DB
-        i = 0
-        while i < len(words) - 1:
-            w = words[i].replace("-", "").replace("'", "")
-            if w and w == w.upper():
-                i += 1
-            else:
-                break
-        return _smart_title(" ".join(words[i:])) if i > 0 else _smart_title(raw)
-    else:                                     # all-caps DB — strip first word
-        return _smart_title(" ".join(words[1:]))
-
-
-def _smart_title(s: str) -> str:
-    """
-    Convert an ALL-CAPS DB stop/terminus name to smart title case.
-
-    - First word always capitalised.
-    - After a hyphen always capitalised (compound proper names).
-    - Apostrophe prefix (l', d') lowercased; suffix always capitalised.
-    - Known FR/NL articles/prepositions/conjunctions → lowercase in mid-name.
-    - Everything else → capitalised (assumed proper noun/place).
-    """
-    if not s:
-        return s
-    result: list[str] = []
-    for i, word in enumerate(s.split()):
-        if "-" in word:
-            result.append("-".join(seg.lower().capitalize() for seg in word.split("-")))
-        elif "'" in word:
-            idx    = word.index("'")
-            prefix = word[:idx].lower()
-            suffix = word[idx + 1:].lower().capitalize()
-            p      = prefix.capitalize() if i == 0 else prefix
-            result.append(p + "'" + suffix)
-        else:
-            low = word.lower()
-            result.append(low if (i > 0 and low in _SMART_LOWER) else low.capitalize())
-    return " ".join(result)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -157,14 +76,7 @@ def load_board_for_export(board_id: int, db: Session) -> Board | None:
         db.query(Board)
         .options(
             joinedload(Board.board_type),
-            joinedload(Board.led_strips)
-                .joinedload(LedStrip.line)
-                .joinedload(Line.best_trip_b)
-                .joinedload(Trip.terminus),
-            joinedload(Board.led_strips)
-                .joinedload(LedStrip.line)
-                .joinedload(Line.best_trip_f)
-                .joinedload(Trip.terminus),
+            joinedload(Board.led_strips).joinedload(LedStrip.line),
             joinedload(Board.led_strips)
                 .joinedload(LedStrip.leds)
                 .joinedload(Led.trip_stops)
@@ -173,35 +85,6 @@ def load_board_for_export(board_id: int, db: Session) -> Board | None:
         .filter_by(id=board_id)
         .first()
     )
-
-
-# ── Terminus name resolution ──────────────────────────────────────────────────
-def _resolve_terminus(trip, db: Session) -> str:
-    if not trip:
-        return ""
-    if trip.terminus and trip.terminus.name:
-        return trip.terminus.name
-    if trip.terminus_stop_id and trip.terminus_agency_name:
-        stop = db.query(Stop).filter_by(
-            stop_id=trip.terminus_stop_id,
-            agency_name=trip.terminus_agency_name,
-        ).first()
-        return stop.name if stop else ""
-    return ""
-
-
-def _strip_terminus(leds: list, line, side: str) -> str:
-    has_cl = any(l.type == "c_left"  for l in leds)
-    has_cr = any(l.type == "c_right" for l in leds)
-    if not line:
-        return ""
-    t0 = getattr(line, "_t0", "") or ""
-    t1 = getattr(line, "_t1", "") or ""
-    if has_cl and not has_cr:
-        return t1 if side == "left" else t0
-    if has_cr and not has_cl:
-        return t0 if side == "left" else t1
-    return t0 if side == "right" else t1
 
 
 # ── Arrow helpers (same position logic as the web visualisation) ──────────────
@@ -415,8 +298,8 @@ def _build_strip(
 
     integrated = bool(getattr(strip, "integrated_terminus", False))
 
-    left_t  = _shorten(_strip_terminus(leds, line, "left"))
-    right_t = _shorten(_strip_terminus(leds, line, "right"))
+    left_t  = _shorten(strip.custom_terminus_left_name  or "")
+    right_t = _shorten(strip.custom_terminus_right_name or "")
 
     # ── Leftmost / rightmost occupied LEDs (have at least one trip stop) ──────
     # Badge anchor: normally the leftmost/rightmost occupied LED, except when
@@ -485,12 +368,11 @@ def _build_strip(
                 f'</g>'
             )
         else:
-            raw = led.custom_name or ""
+            raw  = led.custom_name or ""
             if not raw and led.trip_stops:
                 ts  = led.trip_stops[0]
                 raw = (ts.stop.name if ts.stop else None) or ""
-            cased   = _tec_stop_name(raw) if is_tec else _smart_title(raw)
-            name    = _shorten(cased)
+            name = _shorten(raw)
             weight  = "900" if central else "700"
             tx      = x + 1.0
             subname = getattr(led, "custom_subname", None)
@@ -596,15 +478,6 @@ def build_export_svg(board: Board, with_frame: bool, db: Session) -> str:
     bgx = bgy = MARGIN_MM
 
     bottom_rail_y = bgy + dims["max_height_mm"] - dims["delta_y_mm"]
-
-    # Pre-resolve terminus names with TEC city-prefix stripping
-    for strip in board.led_strips:
-        line = strip.line
-        if line:
-            is_tec = (strip.line_agency_name or "").lower() == "tec"
-            _process = _tec_stop_name if is_tec else _smart_title
-            line._t0 = _process(_resolve_terminus(line.best_trip_b, db))
-            line._t1 = _process(_resolve_terminus(line.best_trip_f, db))
 
     # Fixed terminus name-box width — sized for the longest possible shortened
     # label (17 chars + "..." = 20 chars, see _shorten).

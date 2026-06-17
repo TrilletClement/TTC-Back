@@ -220,6 +220,8 @@ class BoardService:
                 "lineAgencyName": strip.line_agency_name,
                 "orderIndex": getattr(strip, "order_index", None),
                 "integratedTerminus": bool(getattr(strip, "integrated_terminus", False)),
+                "customTerminusLeftName":  getattr(strip, "custom_terminus_left_name",  None),
+                "customTerminusRightName": getattr(strip, "custom_terminus_right_name", None),
             }
 
             if line_obj:
