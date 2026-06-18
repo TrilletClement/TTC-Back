@@ -78,6 +78,31 @@ class BoardService:
         new_board = self.repo.add(new_board)
         return {"message": "Board added successfully!", "board_id": new_board.id}
 
+    def rename_board(self, board_id: int, new_name: str, current_user: User) -> dict:
+        new_name = (new_name or "").strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="Board name cannot be empty")
+        if len(new_name) > 100:
+            raise HTTPException(status_code=400, detail="Board name too long (max 100 characters)")
+
+        board = self.repo.get_board_by_id(board_id)
+        if not board or board.archived:
+            raise HTTPException(status_code=404, detail="Board not found")
+
+        is_admin = "admin" in [r.name for r in current_user.roles]
+        if not is_admin and board.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+        if board.name.lower() != new_name.lower() and self.repo.find_duplicate_name(board.owner_id, new_name):
+            raise HTTPException(
+                status_code=409,
+                detail="You already have a board with this name",
+            )
+
+        board.name = new_name
+        self.repo.db.commit()
+        return {"id": board_id, "name": new_name}
+
     def delete_board(self, board_id: int, current_user: User, force_unlink_devices: bool = False):
         from app.orm_models.device import ESP32Device
 

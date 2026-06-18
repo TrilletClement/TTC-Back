@@ -8,7 +8,7 @@ from app.core.user_access import require_user
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.repositories.board_repo import BoardRepository
-from app.schemas.board import BoardCreate
+from app.schemas.board import BoardCreate, BoardRename
 from app.services.boardService import BoardService
 from app.services.board_svg_service import build_export_svg, load_board_for_export
 
@@ -39,6 +39,12 @@ def get_boards(
 @require_user
 def create_board(payload: BoardCreate, current_user: User, svc: BoardService = Depends(get_service)):
     return svc.create_board(payload.name, current_user, board_type_id=payload.board_type_id)
+
+
+@router.patch("/{board_id}/name")
+@require_user
+def rename_board(board_id: int, payload: BoardRename, current_user: User, svc: BoardService = Depends(get_service)):
+    return svc.rename_board(board_id, payload.name, current_user)
 
 
 @router.delete("/{board_id}")
