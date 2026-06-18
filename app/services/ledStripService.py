@@ -1,10 +1,16 @@
 import re
+import threading
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.orm_models.board import Led, LedStrip
 from app.repositories.ledstrip_repo import LedStripRepository
+from app.routines.gtfs_import import refresh_active_intervals
+
+
+def _refresh_intervals_bg() -> None:
+    threading.Thread(target=refresh_active_intervals, daemon=True).start()
 
 
 class LedStripService:
@@ -117,6 +123,7 @@ class LedStripService:
         )
 
         repo.commit()
+        _refresh_intervals_bg()
         return {"message": "LED strip created successfully", "led_strip_id": strip.id}
 
     @staticmethod
@@ -239,6 +246,7 @@ class LedStripService:
         )
 
         repo.commit()
+        _refresh_intervals_bg()
         return {"message": "LED strip updated successfully", "led_strip_id": strip.id}
 
     @staticmethod

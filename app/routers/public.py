@@ -117,12 +117,13 @@ def _build_line_data(db: Session, cfg: dict) -> dict:
         active: dict[int, bool] = {}
         if all_ts_ids:
             rows = db.execute(sa.text("""
-                SELECT canonical_trip_stop_id, is_realtime
+                SELECT canonical_trip_stop_id
                 FROM active_incoming_intervals
                 WHERE canonical_trip_stop_id = ANY(:ids)
+                  AND is_realtime = true
                   AND EXTRACT(EPOCH FROM NOW())::bigint BETWEEN led_on_from AND led_on_until
             """), {"ids": all_ts_ids}).all()
-            active = {row.canonical_trip_stop_id: bool(row.is_realtime) for row in rows}
+            active = {row.canonical_trip_stop_id: True for row in rows}
 
         stations: list[dict] = []
         for direction in (0, 1):
@@ -133,11 +134,7 @@ def _build_line_data(db: Session, cfg: dict) -> dict:
                 name = LedStripService._clean_stop_name(
                     stop.name if stop else "", agency
                 )
-                state = (
-                    ("realtime" if active[ts.id] else "theoretical")
-                    if ts.id in active
-                    else "inactive"
-                )
+                state = "realtime" if ts.id in active else "inactive"
                 stations.append({
                     "name":     name,
                     "state":    state,

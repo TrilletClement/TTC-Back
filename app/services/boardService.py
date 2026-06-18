@@ -177,16 +177,7 @@ class BoardService:
                   AND EXTRACT(EPOCH FROM NOW())::bigint BETWEEN led_on_from AND led_on_until
             """), {"ts_ids": trip_stop_ids}).all()
 
-            active = {row.canonical_trip_stop_id: row.is_realtime for row in rows}
-            debug_rows = db.execute(sa.text("""
-                SELECT canonical_trip_stop_id, led_on_from, led_on_until
-                FROM active_incoming_intervals
-                WHERE canonical_trip_stop_id = ANY(:ts_ids)
-                LIMIT 20
-            """), {"ts_ids": trip_stop_ids}).all()
-            now = int(time.time())
-
-            return active
+            return {row.canonical_trip_stop_id: row.is_realtime for row in rows}
 
         except Exception as e:
             return {}

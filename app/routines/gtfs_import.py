@@ -69,7 +69,24 @@ def refresh_active_intervals() -> None:
         session.close()
 
 
-def _rebuild_trip_stop_led_links(session, agency_name: str) -> None:
+def _snapshot_led_stop_mapping(session) -> dict[int, tuple[str, str]]:
+    """Capture old_trip_stop_id → (stop_id, agency_name) for all stops linked to LEDs.
+
+    Must be called BEFORE raw_gtfs_stop_time is deleted during re-import, otherwise
+    the canonical_trip_stop_id values are gone and the rebuild cannot remap broken links.
+    """
+    rows = session.execute(sa.text("""
+        SELECT DISTINCT rst.canonical_trip_stop_id, rst.stop_id, rgt.agency_name
+        FROM raw_gtfs_stop_time rst
+        JOIN raw_gtfs_trip rgt ON rgt.id = rst.raw_trip_id
+        WHERE rst.canonical_trip_stop_id IN (
+            SELECT DISTINCT trip_stop_id FROM trip_stop_led_link
+        )
+    """)).all()
+    return {row.canonical_trip_stop_id: (row.stop_id, row.agency_name) for row in rows}
+
+
+def _rebuild_trip_stop_led_links(session, agency_name: str, snapshot: dict[int, tuple[str, str]] | None = None) -> None:
     """Répare les liens trip_stop_led_link qui pointent vers des trip_stop_id
     qui n'existent plus, en les remappant via stop_stop_id + stop_agency_name.
 
@@ -93,24 +110,24 @@ def _rebuild_trip_stop_led_links(session, agency_name: str) -> None:
 
     print(f"  trip_stop_led_link: {len(broken)} broken links found, rebuilding...")
 
-    # 2. Pour chaque lien cassé, retrouver le stop_stop_id via raw_gtfs_stop_time
-    #    ou via une table de mapping temporaire. On utilise une approche différente :
-    #    on cherche dans trip_stop le stop qui correspond à l'ancien lien via
-    #    la vue active_incoming_intervals (qui garde encore les anciens ids).
     broken_ts_ids = list({row.trip_stop_id for row in broken})
 
-    # Récupérer les stop_stop_id depuis la vue matérialisée (qui a les anciens ids)
-    # via raw_gtfs_stop_time qui a canonical_trip_stop_id = ancien id
+    # Use the pre-import snapshot when available (avoids querying already-replaced raw data).
+    # Fall back to querying raw_gtfs_stop_time for the case where this is called without a snapshot.
     old_to_stop: dict[int, tuple[str, str]] = {}  # old_id -> (stop_stop_id, agency_name)
-    rows = session.execute(sa.text("""
-        SELECT DISTINCT rst.canonical_trip_stop_id, rst.stop_id, rgt.agency_name
-        FROM raw_gtfs_stop_time rst
-        JOIN raw_gtfs_trip rgt ON rgt.id = rst.raw_trip_id
-        WHERE rst.canonical_trip_stop_id = ANY(:ids)
-    """), {"ids": broken_ts_ids}).all()
-
-    for row in rows:
-        old_to_stop[row.canonical_trip_stop_id] = (row.stop_id, row.agency_name)
+    if snapshot is not None:
+        for ts_id in broken_ts_ids:
+            if ts_id in snapshot:
+                old_to_stop[ts_id] = snapshot[ts_id]
+    else:
+        rows = session.execute(sa.text("""
+            SELECT DISTINCT rst.canonical_trip_stop_id, rst.stop_id, rgt.agency_name
+            FROM raw_gtfs_stop_time rst
+            JOIN raw_gtfs_trip rgt ON rgt.id = rst.raw_trip_id
+            WHERE rst.canonical_trip_stop_id = ANY(:ids)
+        """), {"ids": broken_ts_ids}).all()
+        for row in rows:
+            old_to_stop[row.canonical_trip_stop_id] = (row.stop_id, row.agency_name)
 
     if not old_to_stop:
         # Fallback: les anciens canonical_trip_stop_id ne sont plus dans raw_gtfs_stop_time
@@ -502,6 +519,9 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         else:
             print(f"  no orphan canonical trips to delete")
 
+        led_stop_snapshot = _snapshot_led_stop_mapping(session)
+        print(f"  led_stop_snapshot: {len(led_stop_snapshot)} entries captured")
+
         t0 = time.time()
         session.execute(sa.text("""DELETE FROM raw_gtfs_stop_time
             WHERE raw_trip_id IN (SELECT id FROM raw_gtfs_trip WHERE agency_name = :a)"""),
@@ -592,7 +612,7 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         print(f"{agency_name} Trips imported in {time.time()-tic:.2f}s")
 
         # ── Réparer les liens trip_stop_led_link cassés ───────────────────────
-        _rebuild_trip_stop_led_links(session, agency_name)
+        _rebuild_trip_stop_led_links(session, agency_name, snapshot=led_stop_snapshot)
         session.commit()
 
         refresh_active_intervals()
