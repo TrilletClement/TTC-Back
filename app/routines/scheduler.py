@@ -2,7 +2,6 @@ import logging
 import time
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 
 from app.routines.stib_import import _operator as stib_operator
 from app.routines.tec_import import _operator as tec_operator
@@ -21,6 +20,7 @@ def start():
     logger.info("Initializing scheduler...")
 
     # ===== STIB =====
+    # 3 calls/min × 60 × 24h = 4 320 calls/day — maintained 24h/24 for night network analysis (Noctis)
     scheduler.add_job(
         stib_operator.import_static,
         CronTrigger(hour=2, minute=0),
@@ -30,13 +30,14 @@ def start():
     )
     scheduler.add_job(
         stib_operator.update_realtime,
-        IntervalTrigger(seconds=15),
+        CronTrigger(second='0,20,40'),
         id='fetch_stib_trip_updates',
-        name='Fetch STIB TripUpdates (every 15s)',
+        name='Fetch STIB TripUpdates (every 20s, 24h/24)',
         replace_existing=True, max_instances=1, coalesce=True,
     )
 
     # ===== TEC =====
+    # 2 calls/min × 60 × 20h service = 2 400 calls/day — restricted to 05:00–01:00
     scheduler.add_job(
         tec_operator.import_static,
         CronTrigger(hour=2, minute=30),
@@ -46,13 +47,14 @@ def start():
     )
     scheduler.add_job(
         tec_operator.update_realtime,
-        IntervalTrigger(seconds=30),
+        CronTrigger(hour='0,5-23', second='0,30'),
         id='fetch_tec_trip_updates',
-        name='Fetch TEC TripUpdates (every 30s)',
+        name='Fetch TEC TripUpdates (every 30s, 05:00–01:00)',
         replace_existing=True, max_instances=1, coalesce=True,
     )
 
     # ===== DE LIJN =====
+    # 2 calls/min × 60 × 20h service = 2 400 calls/day — restricted to 05:00–01:00
     scheduler.add_job(
         delijn_operator.import_static,
         CronTrigger(hour=3, minute=0),
@@ -62,13 +64,14 @@ def start():
     )
     scheduler.add_job(
         delijn_operator.update_realtime,
-        IntervalTrigger(seconds=30),
+        CronTrigger(hour='0,5-23', second='0,30'),
         id='fetch_delijn_trip_updates',
-        name='Fetch De Lijn TripUpdates (every 30s)',
+        name='Fetch De Lijn TripUpdates (every 30s, 05:00–01:00)',
         replace_existing=True, max_instances=1, coalesce=True,
     )
 
     # ===== SNCB =====
+    # 2 calls/min × 60 × 20h service = 2 400 calls/day — restricted to 05:00–01:00
     scheduler.add_job(
         sncb_operator.import_static,
         CronTrigger(hour=3, minute=30),
@@ -78,9 +81,9 @@ def start():
     )
     scheduler.add_job(
         sncb_operator.update_realtime,
-        IntervalTrigger(seconds=30),
+        CronTrigger(hour='0,5-23', second='0,30'),
         id='fetch_sncb_trip_updates',
-        name='Fetch SNCB TripUpdates (every 30s)',
+        name='Fetch SNCB TripUpdates (every 30s, 05:00–01:00)',
         replace_existing=True, max_instances=1, coalesce=True,
     )
 

@@ -1,5 +1,10 @@
+import asyncio
+import traceback as _tb
+
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from app.core.config import settings
+
+ADMIN_ALERT_RECIPIENTS = ["admin@trillet.be"]
 
 mail_config = ConnectionConfig(
     MAIL_USERNAME=settings.MAIL_USERNAME,
@@ -77,3 +82,32 @@ transport.trillet.be — Belgique
         subtype="html",
     )
     await fast_mail.send_message(message)
+
+
+async def _send_import_failure_alert(agency_name: str, error: str, traceback_str: str) -> None:
+    body = f"""
+<h3>Import GTFS échoué — {agency_name}</h3>
+<p><strong>Erreur :</strong></p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;">{error}</pre>
+<p><strong>Traceback :</strong></p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:12px;">{traceback_str}</pre>
+<hr style="border:none;border-top:1px solid #eee;margin:24px 0;">
+<p style="font-size:12px;color:#999;">transport.trillet.be — alertes automatiques</p>
+"""
+    message = MessageSchema(
+        subject=f"[transport.trillet.be] Import GTFS échoué — {agency_name}",
+        recipients=ADMIN_ALERT_RECIPIENTS,
+        body=body,
+        subtype="html",
+    )
+    await fast_mail.send_message(message)
+
+
+def notify_import_failure(agency_name: str, error: Exception) -> None:
+    """Sync wrapper — safe to call from the blocking scheduler (no running event loop)."""
+    tb_str = _tb.format_exc()
+    try:
+        asyncio.run(_send_import_failure_alert(agency_name, str(error), tb_str))
+        print(f"  [ALERT] Notification envoyée à {ADMIN_ALERT_RECIPIENTS} pour {agency_name}")
+    except Exception as mail_err:
+        print(f"  [ALERT] Échec envoi mail d'alerte : {mail_err}")

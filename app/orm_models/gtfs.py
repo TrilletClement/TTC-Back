@@ -1,11 +1,14 @@
 from sqlalchemy import (
     Boolean,
     Column,
+    DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Integer,
     PrimaryKeyConstraint,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import backref, relationship
@@ -146,3 +149,14 @@ class TripStop(Base):
     )
 
 
+
+
+class GtfsImportLog(Base):
+    __tablename__ = "gtfs_import_log"
+
+    agency_name      = Column(String(50), primary_key=True)
+    status           = Column(String(10), nullable=False, default="never")
+    started_at       = Column(DateTime, nullable=True)
+    completed_at     = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    error_message    = Column(Text, nullable=True)

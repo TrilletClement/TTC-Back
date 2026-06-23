@@ -39,10 +39,30 @@ import sqlalchemy as sa
 from google.transit import gtfs_realtime_pb2
 
 from app.orm_models.db import get_db
-from app.orm_models.gtfs import Agency, Line, Stop, Trip, TripStop
+from app.orm_models.gtfs import Agency, GtfsImportLog, Line, Stop, Trip, TripStop
 from app.orm_models.raw_gtfs import RawGtfsServiceDate, RawGtfsStopTime, RawGtfsTrip
 
 BATCH_SIZE = 5000
+
+
+def _update_import_log(agency_name: str, status: str, started_at=None,
+                       completed_at=None, duration_seconds=None, error_message=None) -> None:
+    session = next(get_db())
+    try:
+        session.merge(GtfsImportLog(
+            agency_name=agency_name,
+            status=status,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_seconds=duration_seconds,
+            error_message=error_message,
+        ))
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print(f"  [LOG] Failed to update import log for {agency_name}: {e}")
+    finally:
+        session.close()
 
 
 def refresh_active_intervals() -> None:
@@ -263,8 +283,10 @@ def _import_lines(agency_name: str, routes_csv_text: str):
     session = next(get_db())
     try:
         _ensure_agency(session, agency_name)
-        existing    = {l.route_id: l for l in session.query(Line).filter_by(agency_name=agency_name)}
-        seen_combos = {(l.short_name, l.long_name) for l in existing.values()}
+        by_route_id = {l.route_id: l for l in session.query(Line).filter_by(agency_name=agency_name)}
+        # (short_name, long_name) is the canonical identity — route_ids change between releases.
+        by_combo    = {(l.short_name, l.long_name): l for l in by_route_id.values()}
+        seen_combos: set[tuple] = set(by_combo.keys())
         to_add, updated, skipped = [], 0, 0
 
         for row in reader:
@@ -291,14 +313,29 @@ def _import_lines(agency_name: str, routes_csv_text: str):
                 raw_tc = (row.get("route_text_color") or "FFFFFF").strip().lstrip("#")
                 data["text_color"] = "#" + raw_tc.zfill(6).upper()
 
-            if route_id and route_id in existing:
-                line = existing[route_id]
+            if combo in by_combo:
+                # Canonical match by (short_name, long_name) — keeps the same line_id
+                # even when the operator reshuffles route_ids between releases.
+                line = by_combo[combo]
                 for k, v in data.items():
                     setattr(line, k, v)
+                # Evict any other line that previously held this route_id from the
+                # in-memory dict only — no DB write, since route_id has no unique
+                # constraint; that other line's route_id will be updated when its own
+                # GTFS combo is processed, or left stale if its combo disappeared.
+                if route_id and route_id in by_route_id and by_route_id[route_id].id != line.id:
+                    by_route_id.pop(route_id)
+                by_route_id[route_id] = line
                 seen_combos.add(combo)
                 updated += 1
-            elif combo in seen_combos:
-                skipped += 1
+            elif route_id and route_id in by_route_id:
+                # route_id match, different combo → genuine rename of this line
+                line = by_route_id[route_id]
+                for k, v in data.items():
+                    setattr(line, k, v)
+                by_combo[combo] = line
+                seen_combos.add(combo)
+                updated += 1
             else:
                 to_add.append(Line(**data))
                 seen_combos.add(combo)
@@ -673,7 +710,24 @@ class GtfsOperator:
         return r.content
 
     def import_static(self) -> None:
-        import_gtfs_static(self.AGENCY_NAME, self._fetch_zip_bytes(), self.COUNTRY)
+        from datetime import datetime as _dt
+        started = _dt.utcnow()
+        _update_import_log(self.AGENCY_NAME, status="running", started_at=started)
+        try:
+            import_gtfs_static(self.AGENCY_NAME, self._fetch_zip_bytes(), self.COUNTRY)
+            duration = (_dt.utcnow() - started).total_seconds()
+            _update_import_log(self.AGENCY_NAME, status="ok", started_at=started,
+                               completed_at=_dt.utcnow(), duration_seconds=duration)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            duration = (_dt.utcnow() - started).total_seconds()
+            _update_import_log(self.AGENCY_NAME, status="error", started_at=started,
+                               completed_at=_dt.utcnow(), duration_seconds=duration,
+                               error_message=str(e))
+            from app.core.mail import notify_import_failure
+            notify_import_failure(self.AGENCY_NAME, e)
+            raise
 
     def _fetch_rt_raw(self) -> bytes:
         r = requests.get(self.GTFS_RT_URL, headers=self._headers, timeout=self.RT_TIMEOUT)
