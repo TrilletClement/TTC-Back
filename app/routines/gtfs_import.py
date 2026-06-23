@@ -501,6 +501,19 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
                     setattr(line, f"best_trip_{d}_id", best.id)
         print(f"  best trips updated in {time.time()-t0:.2f}s")
 
+        # Snapshot BEFORE any deletions — raw_gtfs_stop_time still has old canonical_trip_stop_ids
+        led_stop_snapshot = _snapshot_led_stop_mapping(session)
+        print(f"  led_stop_snapshot: {len(led_stop_snapshot)} entries captured")
+
+        # Delete raw rows BEFORE orphan trip_stops — raw_gtfs_stop_time has a FK on trip_stop
+        t0 = time.time()
+        session.execute(sa.text("""DELETE FROM raw_gtfs_stop_time
+            WHERE raw_trip_id IN (SELECT id FROM raw_gtfs_trip WHERE agency_name = :a)"""),
+            {"a": agency_name})
+        session.execute(sa.text("DELETE FROM raw_gtfs_trip WHERE agency_name = :a"), {"a": agency_name})
+        session.flush()
+        print(f"  old raw rows deleted in {time.time()-t0:.2f}s")
+
         t0 = time.time()
         active_sigs = set(sig_counts.keys())
         orphan_trips = session.query(Trip).filter(
@@ -509,6 +522,15 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
         ).all()
         if orphan_trips:
             orphan_ids = [t.id for t in orphan_trips]
+            # Nullify line.best_trip_*_id references before deleting trips
+            session.execute(sa.text("""
+                UPDATE line SET best_trip_0_id = NULL
+                WHERE best_trip_0_id = ANY(:ids) AND agency_name = :a
+            """), {"ids": orphan_ids, "a": agency_name})
+            session.execute(sa.text("""
+                UPDATE line SET best_trip_1_id = NULL
+                WHERE best_trip_1_id = ANY(:ids) AND agency_name = :a
+            """), {"ids": orphan_ids, "a": agency_name})
             session.query(TripStop).filter(
                 TripStop.trip_id.in_(orphan_ids)
             ).delete(synchronize_session=False)
@@ -518,17 +540,6 @@ def _import_trips(agency_name: str, trips_csv_text: str, zip_bytes: bytes):
             print(f"  {len(orphan_trips)} orphan canonical trips deleted in {time.time()-t0:.2f}s")
         else:
             print(f"  no orphan canonical trips to delete")
-
-        led_stop_snapshot = _snapshot_led_stop_mapping(session)
-        print(f"  led_stop_snapshot: {len(led_stop_snapshot)} entries captured")
-
-        t0 = time.time()
-        session.execute(sa.text("""DELETE FROM raw_gtfs_stop_time
-            WHERE raw_trip_id IN (SELECT id FROM raw_gtfs_trip WHERE agency_name = :a)"""),
-            {"a": agency_name})
-        session.execute(sa.text("DELETE FROM raw_gtfs_trip WHERE agency_name = :a"), {"a": agency_name})
-        session.flush()
-        print(f"  old raw rows deleted in {time.time()-t0:.2f}s")
 
         t0 = time.time()
         raw_trip_rows = []
@@ -760,6 +771,36 @@ class GtfsOperator:
             ), {"a": self.AGENCY_NAME, "today": today})
             session.commit()
             print(f"  [{self.AGENCY_NAME}] {len(rows)} overrides upsertés en {time.time()-tic:.2f}s")
+
+            # For agencies that send delay-based RT (no absolute timestamps),
+            # compute predicted_arrival/departure_ts from schedule + delay so the matview
+            # can use them for is_realtime detection and adjusted arrival times.
+            updated = session.execute(sa.text("""
+                UPDATE realtime_stop_time_override rto
+                SET
+                    predicted_arrival_ts = (
+                        EXTRACT(epoch FROM (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels')::date)::bigint
+                        + rst.arrival_seconds + rto.delay_seconds
+                    ),
+                    predicted_departure_ts = (
+                        EXTRACT(epoch FROM (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels')::date)::bigint
+                        + rst.departure_seconds + rto.delay_seconds
+                    )
+                FROM raw_gtfs_stop_time rst
+                JOIN raw_gtfs_trip rgt ON rgt.id = rst.raw_trip_id
+                WHERE rgt.gtfs_trip_id = rto.gtfs_trip_id
+                  AND rgt.agency_name   = rto.agency_name
+                  AND rst.stop_sequence = rto.stop_sequence
+                  AND rto.agency_name   = :agency
+                  AND rto.start_date    = :today
+                  AND NULLIF(rto.predicted_arrival_ts, 0) IS NULL
+                  AND rto.delay_seconds IS NOT NULL
+                  AND (rto.schedule_relationship IS NULL OR rto.schedule_relationship != 1)
+            """), {"agency": self.AGENCY_NAME, "today": today}).rowcount
+            if updated:
+                session.commit()
+                print(f"  [{self.AGENCY_NAME}] {updated} timestamps calculés depuis delay_seconds")
+
             refresh_active_intervals()
         except Exception as e:
             session.rollback()

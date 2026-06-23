@@ -4,7 +4,7 @@ import json
 from sqlalchemy.orm import Session, joinedload
 
 from app.orm_models.auth import User
-from app.orm_models.board import Board
+from app.orm_models.board import Board, BoardType, Led, LedStrip
 from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware
 from app.orm_models.order import Order, OrderItem
 
@@ -50,6 +50,23 @@ class DeviceRepository:
 
     def get_board_by_id(self, id: int) -> Board | None:
         return self.db.query(Board).filter(Board.id == id).first()
+
+    def get_board_by_id_only(self, board_id: int) -> Board | None:
+        from app.orm_models.gtfs import Line, Trip
+        return (
+            self.db.query(Board)
+            .options(
+                joinedload(Board.board_type),
+                joinedload(Board.led_strips).joinedload(LedStrip.line)
+                    .joinedload(Line.best_trip_b).joinedload(Trip.terminus),
+                joinedload(Board.led_strips).joinedload(LedStrip.line)
+                    .joinedload(Line.best_trip_f).joinedload(Trip.terminus),
+                joinedload(Board.led_strips).joinedload(LedStrip.leds)
+                    .joinedload(Led.trip_stops),
+            )
+            .filter(Board.id == board_id)
+            .first()
+        )
 
     def save(self, device: ESP32Device) -> ESP32Device:
         self.db.commit()

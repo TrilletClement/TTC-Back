@@ -301,7 +301,9 @@ class BoardService:
         for ts in led_obj.trip_stops:
             legacy_incoming = bool(ts.vehicle_incoming)
             interval_incoming = ts.id in _interval
-            is_realtime_flag = _interval[ts.id] if interval_incoming else True
+            # legacy_incoming means STIB confirmed vehicle position → always realtime
+            # for interval-only stops, use the matview's is_realtime flag (TEC/De Lijn = False, SNCB = depends)
+            is_realtime_flag = legacy_incoming or (interval_incoming and _interval[ts.id])
 
             trip_stops_data.append({
                 "tripStopId":      ts.id,
