@@ -1,6 +1,7 @@
 import threading
 from datetime import datetime
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -28,16 +29,33 @@ OPERATORS = {
 @require_admin
 def get_import_status(db: Session = Depends(get_db)):
     rows = {r.agency_name: r for r in db.query(GtfsImportLog).all()}
+
+    today = datetime.now().strftime("%Y%m%d")
+    rt_rows = db.execute(sa.text("""
+        SELECT agency_name,
+               COUNT(*)              AS override_count,
+               MAX(updated_at)       AS last_update,
+               MAX(feed_timestamp)   AS feed_timestamp
+        FROM realtime_stop_time_override
+        WHERE start_date = :today
+        GROUP BY agency_name
+    """), {"today": today}).fetchall()
+    rt = {r.agency_name: r for r in rt_rows}
+
     result = []
     for agency in KNOWN_AGENCIES:
-        r = rows.get(agency)
+        r  = rows.get(agency)
+        rt_r = rt.get(agency)
         result.append({
-            "agency_name":      agency,
-            "status":           r.status           if r else "never",
-            "started_at":       r.started_at       if r else None,
-            "completed_at":     r.completed_at     if r else None,
-            "duration_seconds": r.duration_seconds if r else None,
-            "error_message":    r.error_message    if r else None,
+            "agency_name":       agency,
+            "status":            r.status           if r else "never",
+            "started_at":        r.started_at       if r else None,
+            "completed_at":      r.completed_at     if r else None,
+            "duration_seconds":  r.duration_seconds if r else None,
+            "error_message":     r.error_message    if r else None,
+            "rt_override_count": int(rt_r.override_count) if rt_r else 0,
+            "rt_last_update":    rt_r.last_update   if rt_r else None,
+            "rt_feed_timestamp": int(rt_r.feed_timestamp) if rt_r else None,
         })
     return result
 

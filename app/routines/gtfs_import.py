@@ -833,11 +833,17 @@ class GtfsOperator:
                 UPDATE realtime_stop_time_override rto
                 SET
                     predicted_arrival_ts = (
-                        EXTRACT(epoch FROM (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels')::date)::bigint
+                        EXTRACT(EPOCH FROM
+                            date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels')
+                            AT TIME ZONE 'Europe/Brussels'
+                        )::bigint
                         + rst.arrival_seconds + rto.delay_seconds
                     ),
                     predicted_departure_ts = (
-                        EXTRACT(epoch FROM (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels')::date)::bigint
+                        EXTRACT(EPOCH FROM
+                            date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels')
+                            AT TIME ZONE 'Europe/Brussels'
+                        )::bigint
                         + rst.departure_seconds + rto.delay_seconds
                     )
                 FROM raw_gtfs_stop_time rst
