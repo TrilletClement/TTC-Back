@@ -160,3 +160,5 @@ class GtfsImportLog(Base):
     completed_at     = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, nullable=True)
     error_message    = Column(Text, nullable=True)
+    rt_error_message = Column(Text, nullable=True)
+    rt_error_at      = Column(DateTime, nullable=True)

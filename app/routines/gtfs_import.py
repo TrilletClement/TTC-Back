@@ -49,18 +49,37 @@ def _update_import_log(agency_name: str, status: str, started_at=None,
                        completed_at=None, duration_seconds=None, error_message=None) -> None:
     session = next(get_db())
     try:
-        session.merge(GtfsImportLog(
-            agency_name=agency_name,
-            status=status,
-            started_at=started_at,
-            completed_at=completed_at,
-            duration_seconds=duration_seconds,
-            error_message=error_message,
-        ))
+        row = session.query(GtfsImportLog).filter_by(agency_name=agency_name).first()
+        if row is None:
+            row = GtfsImportLog(agency_name=agency_name)
+            session.add(row)
+        row.status           = status
+        row.started_at       = started_at
+        row.completed_at     = completed_at
+        row.duration_seconds = duration_seconds
+        row.error_message    = error_message
+        # rt_error_* columns are intentionally not touched here
         session.commit()
     except Exception as e:
         session.rollback()
         print(f"  [LOG] Failed to update import log for {agency_name}: {e}")
+    finally:
+        session.close()
+
+
+def _update_rt_log(agency_name: str, error: str | None) -> None:
+    from datetime import datetime as _dt
+    session = next(get_db())
+    try:
+        row = session.query(GtfsImportLog).filter_by(agency_name=agency_name).first()
+        if row is None:
+            return
+        row.rt_error_message = error
+        row.rt_error_at      = _dt.utcnow() if error else None
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print(f"  [LOG] Failed to update RT log for {agency_name}: {e}")
     finally:
         session.close()
 
@@ -747,6 +766,7 @@ class GtfsOperator:
         try:
             raw = self._fetch_rt_raw()
         except Exception as e:
+            _update_rt_log(self.AGENCY_NAME, error=str(e))
             print(f"  [{self.AGENCY_NAME}] ERREUR fetch RT: {e}")
             return
 
@@ -755,6 +775,7 @@ class GtfsOperator:
         entities = [e for e in feed.entity if e.HasField("trip_update")]
         print(f"  [{self.AGENCY_NAME}] {len(entities)} TripUpdates reçus")
         if not entities:
+            _update_rt_log(self.AGENCY_NAME, error=None)
             return
 
         feed_ts = feed.header.timestamp or int(time.time())
@@ -862,8 +883,10 @@ class GtfsOperator:
                 print(f"  [{self.AGENCY_NAME}] {updated} timestamps calculés depuis delay_seconds")
 
             refresh_active_intervals()
+            _update_rt_log(self.AGENCY_NAME, error=None)
         except Exception as e:
             session.rollback()
+            _update_rt_log(self.AGENCY_NAME, error=str(e))
             print(f"  [{self.AGENCY_NAME}] ERREUR upsert RT: {e}")
             import traceback
             traceback.print_exc()

@@ -63,8 +63,10 @@ def get_import_status(db: Session = Depends(get_db)):
             "error_message":     r.error_message    if r else None,
             "is_stuck":          is_stuck,
             "rt_override_count": int(rt_r.override_count) if rt_r else 0,
-            "rt_last_update":    rt_r.last_update   if rt_r else None,
+            "rt_last_update":    rt_r.last_update      if rt_r else None,
             "rt_feed_timestamp": int(rt_r.feed_timestamp) if rt_r else None,
+            "rt_error_message":  r.rt_error_message    if r else None,
+            "rt_error_at":       r.rt_error_at         if r else None,
         })
     return result
 
