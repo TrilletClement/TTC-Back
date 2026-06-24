@@ -1,5 +1,5 @@
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +16,7 @@ from app.routines.delijn_import import _operator as delijn_operator
 router = APIRouter(prefix="/api/admin/gtfs", tags=["admin-gtfs"])
 
 KNOWN_AGENCIES = ["STIB", "SNCB", "TEC", "DE_LIJN"]
+STUCK_THRESHOLD = timedelta(minutes=15)
 
 OPERATORS = {
     "STIB":    stib_operator,
@@ -42,10 +43,17 @@ def get_import_status(db: Session = Depends(get_db)):
     """), {"today": today}).fetchall()
     rt = {r.agency_name: r for r in rt_rows}
 
+    now = datetime.utcnow()
     result = []
     for agency in KNOWN_AGENCIES:
-        r  = rows.get(agency)
+        r    = rows.get(agency)
         rt_r = rt.get(agency)
+        is_stuck = (
+            r is not None
+            and r.status == "running"
+            and r.started_at is not None
+            and (now - r.started_at) > STUCK_THRESHOLD
+        )
         result.append({
             "agency_name":       agency,
             "status":            r.status           if r else "never",
@@ -53,6 +61,7 @@ def get_import_status(db: Session = Depends(get_db)):
             "completed_at":      r.completed_at     if r else None,
             "duration_seconds":  r.duration_seconds if r else None,
             "error_message":     r.error_message    if r else None,
+            "is_stuck":          is_stuck,
             "rt_override_count": int(rt_r.override_count) if rt_r else 0,
             "rt_last_update":    rt_r.last_update   if rt_r else None,
             "rt_feed_timestamp": int(rt_r.feed_timestamp) if rt_r else None,
@@ -68,7 +77,17 @@ def trigger_import(agency: str, db: Session = Depends(get_db)):
 
     row = db.query(GtfsImportLog).filter_by(agency_name=agency).first()
     if row and row.status == "running":
-        raise HTTPException(status_code=409, detail=f"Import already running for {agency}")
+        stuck = (
+            row.started_at is not None
+            and (datetime.utcnow() - row.started_at) > STUCK_THRESHOLD
+        )
+        if not stuck:
+            raise HTTPException(status_code=409, detail=f"Import already running for {agency}")
+        # Stuck import: reset to error so the new thread can take over
+        row.status = "error"
+        row.error_message = "Annulé automatiquement (bloqué > 15 min)"
+        row.completed_at = datetime.utcnow()
+        db.commit()
 
     thread = threading.Thread(target=OPERATORS[agency].import_static, daemon=True)
     thread.start()
