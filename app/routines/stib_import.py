@@ -6,8 +6,9 @@ StibOperator subclasses GtfsOperator.  The static import path is identical to
 any standard operator (delegated to import_gtfs_static).  The realtime path is
 entirely custom: STIB exposes a JSON vehicle-positions endpoint (not GTFS-RT
 protobuf), keyed by lineid + vehiclepositions, with stops identified by 4-digit
-numeric IDs and direction by a terminus stop ID.  parse_rt_feed() is overridden
-entirely; _match_rt_to_tripstops is never meaningful in the base class.
+numeric IDs and direction by a terminus stop ID.  update_realtime() is overridden
+entirely: it sets trip_stop.vehicle_incoming flags instead of upserting
+realtime_stop_time_override rows.
 
 scheduler.py uses: from app.routines.stib_import import _operator as stib_operator
 """
@@ -30,7 +31,7 @@ import sqlalchemy as sa
 
 from app.orm_models.db import get_db
 from app.orm_models.gtfs import Line, Stop, Trip
-from app.routines.gtfs_import import GtfsOperator, _chunked, BATCH_SIZE
+from app.routines.gtfs_import import GtfsOperator, _chunked, _update_rt_log, BATCH_SIZE
 
 # --- CONFIGURATION API SECURISEE (HTTPS + NOUVELLES ROUTES) ---
 STIB_API_BASE = "https://api-management-opendata-production.azure-api.net"
@@ -64,6 +65,12 @@ class StibOperator(GtfsOperator):
     def _headers(self) -> dict:
         # Aligné sur le security scheme 'bmc-partner-key' de l'OpenAPI
         return {"bmc-partner-key": STIB_API_KEY} if STIB_API_KEY else {}
+
+    def import_static(self) -> None:
+        super().import_static()
+        # The static import recreates trip_stop rows with new ids — force the
+        # RT matching cache to rebuild instead of serving stale ids for 10 min.
+        self._stib_cache["loaded_at"] = 0.0
 
     # ── STIB-specific helpers ─────────────────────────────────────────────────
 
@@ -195,10 +202,12 @@ class StibOperator(GtfsOperator):
                 data = res_json if isinstance(res_json, list) else []
                 
         except Exception as e:
+            _update_rt_log(self.AGENCY_NAME, error=str(e))
             print(f"  [STIB] ERREUR fetch RT: {e}")
             return
 
         if not data:
+            _update_rt_log(self.AGENCY_NAME, error="Réponse RT vide (aucune position véhicule)")
             print("  [STIB] Aucune donnée RT reçue ou tableau 'results' vide.")
             return
 
@@ -226,10 +235,12 @@ class StibOperator(GtfsOperator):
                         {"ids": batch},
                     )
             session.commit()
+            _update_rt_log(self.AGENCY_NAME, error=None)
             print(f"  [STIB] {len(incoming)} TripStops 'incoming' ({matched} positions) "
                   f"en {time.time()-tic:.2f}s")
         except Exception as e:
             session.rollback()
+            _update_rt_log(self.AGENCY_NAME, error=str(e))
             print(f"  [STIB] ERREUR CRITIQUE RT: {e}")
             import traceback
             traceback.print_exc()

@@ -48,7 +48,8 @@ class LedStripUpdate(LedStripCreate):
 
 
 class LedStripSettingsPatch(BaseModel):
-    integrated_terminus: bool
+    integrated_terminus: Optional[bool] = None
+    rt_only: Optional[bool] = None
 
 
 class LedLabelPatch(BaseModel):
@@ -176,6 +177,7 @@ def patch_led_strip_settings(
         board_id=board_id,
         strip_id=strip_id,
         integrated_terminus=payload.integrated_terminus,
+        rt_only=payload.rt_only,
         db=db,
     )
 

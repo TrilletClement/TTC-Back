@@ -284,12 +284,21 @@ class LedStripService:
         return {"message": "LED strip deleted successfully", "led_strip_id": strip_id}
 
     @staticmethod
-    def patch_strip_settings(board_id: int, strip_id: int, integrated_terminus: bool, db: Session):
+    def patch_strip_settings(
+        board_id: int,
+        strip_id: int,
+        db: Session,
+        integrated_terminus: bool | None = None,
+        rt_only: bool | None = None,
+    ):
         repo  = LedStripRepository(db)
         strip = repo.get_strip(strip_id, board_id)
         if not strip:
             raise HTTPException(status_code=404, detail="LED strip not found")
-        strip.integrated_terminus = integrated_terminus
+        if integrated_terminus is not None:
+            strip.integrated_terminus = integrated_terminus
+        if rt_only is not None:
+            strip.rt_only = rt_only
         repo.commit()
         return {"message": "OK", "led_strip_id": strip_id}
 
@@ -546,8 +555,11 @@ class LedStripService:
             selected_stops[0]   = [None] * left_blanks + h0 + [central_0]
             central_position[0] = left_blanks + len(h0)   # index of central_0
 
-            # Right half: [central_1] + history_1 + [None]*right_blanks
-            selected_stops[1]   = [central_1] + h1 + [None] * right_blanks
+            # Right half: [central_1] + reversed(history_1) + [None]*right_blanks.
+            # h1 is in direction-1 travel order (approaching the central), so the
+            # stop nearest the central must sit right next to it on the strip —
+            # without the reversal the right half reads mirror-ordered.
+            selected_stops[1]   = [central_1] + list(reversed(h1)) + [None] * right_blanks
             central_position[1] = 0                       # central_1 always first
 
         return selected_stops, central_position

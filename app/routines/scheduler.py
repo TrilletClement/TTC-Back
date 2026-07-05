@@ -3,6 +3,7 @@ import time
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from app.routines.gtfs_import import refresh_active_intervals
 from app.routines.stib_import import _operator as stib_operator
 from app.routines.tec_import import _operator as tec_operator
 from app.routines.delijn_import import _operator as delijn_operator
@@ -84,6 +85,18 @@ def start():
         CronTrigger(hour='0,5-23', second='0,30'),
         id='fetch_sncb_trip_updates',
         name='Fetch SNCB TripUpdates (every 30s, 05:00–01:00)',
+        replace_existing=True, max_instances=1, coalesce=True,
+    )
+
+    # ===== MATVIEW REFRESH =====
+    # Single dedicated refresh instead of one per agency per cycle: 3× less DB
+    # load, and the view stays fresh even if an operator API is down.
+    # Offset +5 s so it runs just after the :00/:30 upserts land.
+    scheduler.add_job(
+        refresh_active_intervals,
+        CronTrigger(second='5,25,45'),
+        id='refresh_active_intervals',
+        name='Refresh active_incoming_intervals (every 20s, 24h/24)',
         replace_existing=True, max_instances=1, coalesce=True,
     )
 

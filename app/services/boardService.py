@@ -1,5 +1,4 @@
 import logging
-import time
 
 import sqlalchemy as sa
 from fastapi import HTTPException
@@ -12,7 +11,7 @@ from app.orm_models.gtfs import Line, Stop, Trip
 from app.orm_models.price import BoardTypePrice, PriceVersion
 from app.repositories.board_repo import BoardRepository
 
-# logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 class BoardService:
     BOARD_LIMIT = 10
@@ -195,27 +194,29 @@ class BoardService:
             return {}
 
         try:
+            # bool_or: when several vehicles are inbound to the same stop at once
+            # (tracked + untracked), one realtime interval is enough — without the
+            # aggregate, the flag depended on arbitrary row order and flickered.
             rows = db.execute(sa.text("""
-                SELECT canonical_trip_stop_id, is_realtime, led_on_from, led_on_until
+                SELECT canonical_trip_stop_id, bool_or(is_realtime) AS is_realtime
                 FROM active_incoming_intervals
                 WHERE canonical_trip_stop_id = ANY(:ts_ids)
                   AND EXTRACT(EPOCH FROM NOW())::bigint BETWEEN led_on_from AND led_on_until
+                GROUP BY canonical_trip_stop_id
             """), {"ts_ids": trip_stop_ids}).all()
 
             return {row.canonical_trip_stop_id: row.is_realtime for row in rows}
 
-        except Exception as e:
+        except Exception:
+            logger.exception("active_incoming_intervals query failed — all LEDs fall back to off/theoretical")
             return {}
 
     # ── LED strip / LED builders ──────────────────────────────────────────────
 
     @staticmethod
     def _build_led_strips_data(board, db: Session):
-        t0 = time.perf_counter()
         trip_stop_ids = BoardService._collect_trip_stop_ids(board)
-        t1 = time.perf_counter()
         interval_active_ids = BoardService._get_interval_active_trip_stop_ids(db, trip_stop_ids)
-        t2 = time.perf_counter()
 
         led_strips_data = []
         for strip in board.led_strips:
@@ -236,6 +237,7 @@ class BoardService:
                 "lineAgencyName": strip.line_agency_name,
                 "orderIndex": getattr(strip, "order_index", None),
                 "integratedTerminus": bool(getattr(strip, "integrated_terminus", False)),
+                "rtOnly": bool(getattr(strip, "rt_only", False)),
                 "customTerminusLeftName":  getattr(strip, "custom_terminus_left_name",  None),
                 "customTerminusRightName": getattr(strip, "custom_terminus_right_name", None),
             }
@@ -261,21 +263,20 @@ class BoardService:
                 strip_data["color"] = line_obj.color
                 strip_data["textColor"] = line_obj.text_color
 
+            rt_only = bool(getattr(strip, "rt_only", False))
             leds_sorted = sorted(strip.leds, key=lambda led: (led.ledstrip_index or 0, led.id or 0))
             strip_data["leds"] = [
-                BoardService._build_led_data(led_obj, interval_active_ids)
+                BoardService._build_led_data(led_obj, interval_active_ids, rt_only)
                 for led_obj in leds_sorted
             ]
 
             for led_obj in leds_sorted:
                 if led_obj.ledstrip_index and led_obj.ledstrip_index > 0:
                     strip_data[f"led{led_obj.ledstrip_index}"] = BoardService._build_led_data(
-                        led_obj, interval_active_ids
+                        led_obj, interval_active_ids, rt_only
                     )
 
             led_strips_data.append(strip_data)
-
-        t3 = time.perf_counter()
 
         return led_strips_data
 
@@ -294,7 +295,8 @@ class BoardService:
         return None
 
     @staticmethod
-    def _build_led_data(led_obj: Led, interval_active_ids: dict[int, bool] | None = None):
+    def _build_led_data(led_obj: Led, interval_active_ids: dict[int, bool] | None = None,
+                        rt_only: bool = False):
         _interval = interval_active_ids or {}
 
         trip_stops_data = []
@@ -304,13 +306,15 @@ class BoardService:
             # legacy_incoming means STIB confirmed vehicle position → always realtime
             # for interval-only stops, use the matview's is_realtime flag (TEC/De Lijn = False, SNCB = depends)
             is_realtime_flag = legacy_incoming or (interval_incoming and _interval[ts.id])
+            # rt_only strips ignore pure-schedule intervals: LED lights only on confirmed RT
+            is_on = is_realtime_flag if rt_only else (legacy_incoming or interval_incoming)
 
             trip_stops_data.append({
                 "tripStopId":      ts.id,
                 "ledId":           led_obj.id,
                 "vehicleIncoming": legacy_incoming,
                 "intervalActive":  interval_incoming,
-                "isOn":            legacy_incoming or interval_incoming,
+                "isOn":            is_on,
                 "isRealtime":      is_realtime_flag,
                 "stopStopId":      ts.stop_stop_id,
                 "stopAgencyName":  ts.stop_agency_name,

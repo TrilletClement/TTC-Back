@@ -205,6 +205,36 @@ One cart session = one `Order` + one or more `OrderItem`s.
 - `canShip` requires `status === 'processing'` AND no existing `sendcloud_parcel_id`
 - `status → 'processing'` when the first item gets a device linked
 
+## LED realtime semantics
+
+- A LED lights when `vehicle_incoming` (STIB JSON positions, poll 20 s) OR an active
+  interval exists in the `active_incoming_intervals` matview (window = prev-stop
+  departure → this-stop arrival, RT-corrected when the trip is in the GTFS-RT feed).
+- The matview is **service-day aware**: it covers today AND yesterday's cross-midnight
+  trips (GTFS times > 24:00), each with its own midnight epoch; RT overrides join on
+  the trip's own `start_date`. All GTFS dates use Europe/Brussels, never the server
+  clock. RT override rows are kept for today + yesterday.
+- The matview is refreshed by a **dedicated scheduler job every 20 s** (not by the
+  per-agency RT cycles). Steady-state refresh ≈ 1 s; if you change the view, keep the
+  `MATERIALIZED` CTEs and the `led_trips` pre-filter or refresh time explodes 10×.
+- `is_realtime` is per **trip**: true if the trip has a valid RT prediction AND is
+  still present in its agency's most recent feed (within 120 s of the agency's max
+  `feed_timestamp` — relative, so a polling gap on our side doesn't flip everything).
+  STIB never writes to `realtime_stop_time_override`, so STIB interval rows are
+  always `is_realtime=false` — STIB shows green only via `vehicle_incoming`.
+- `led_strip.rt_only` (opt-in, per strip, Board → ⚙ → "Temps réel uniquement"):
+  LED lights **only** on confirmed realtime; theoretical schedule intervals stay dark.
+  Applied in `BoardService._build_led_data`, so the ESP32 strip follows automatically.
+- RT feed coverage is a data reality, not a bug: TEC covers ~90 % of running trips
+  globally but far less on some lines; the Liège tram T1 has **no** RT at all.
+  De Lijn RT only matches if its static import is fresh (trip_ids rotate).
+- Delay-based feeds (TEC): timestamps are computed from schedule + delay after upsert;
+  delays < −300 s are treated as bad data (fall back to static window).
+- **Delay propagation** (GTFS-RT rule): TEC only predicts a horizon around the vehicle
+  and marks later stops NO_DATA. For stops without their own prediction, the matview
+  shifts the static window by the last specified delay (`eff` LATERAL) — otherwise a
+  late bus traverses downstream stops with windows already in the past (LED dark).
+
 ## What NOT to do
 
 - Do not add `SENDCLOUD_SANDBOX` or `SENDCLOUD_SHIPPING_OPTION_CODE` env vars — removed intentionally.

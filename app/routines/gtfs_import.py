@@ -21,8 +21,10 @@ Subclass GtfsOperator to add a new operator:
         def _headers(self):
             return {"Authorization": f"Bearer {API_KEY}"}
 
-The default parse_rt_feed() handles standard GTFS-RT VehiclePositions (protobuf).
-Override it entirely in subclasses that use a non-standard feed (see StibOperator).
+The default update_realtime() handles standard GTFS-RT TripUpdates (protobuf) and
+upserts them into realtime_stop_time_override.  Override it entirely in subclasses
+that use a non-standard feed (see StibOperator).  The active_incoming_intervals
+matview is refreshed by a dedicated scheduler job, not by the RT cycles.
 """
 
 import csv
@@ -33,6 +35,7 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta
 from io import BytesIO, StringIO
+from zoneinfo import ZoneInfo
 
 import requests
 import sqlalchemy as sa
@@ -43,6 +46,10 @@ from app.orm_models.gtfs import Agency, GtfsImportLog, Line, Stop, Trip, TripSto
 from app.orm_models.raw_gtfs import RawGtfsServiceDate, RawGtfsStopTime, RawGtfsTrip
 
 BATCH_SIZE = 5000
+
+# GTFS service days follow the operator's timezone, never the server clock
+# (a UTC server would shift the day around midnight).
+_BRUSSELS_TZ = ZoneInfo("Europe/Brussels")
 
 
 def _update_import_log(agency_name: str, status: str, started_at=None,
@@ -770,8 +777,14 @@ class GtfsOperator:
             print(f"  [{self.AGENCY_NAME}] ERREUR fetch RT: {e}")
             return
 
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(raw)
+        try:
+            feed = gtfs_realtime_pb2.FeedMessage()
+            feed.ParseFromString(raw)
+        except Exception as e:
+            _update_rt_log(self.AGENCY_NAME, error=f"RT protobuf parse error: {e}")
+            print(f"  [{self.AGENCY_NAME}] ERREUR parse RT: {e}")
+            return
+
         entities = [e for e in feed.entity if e.HasField("trip_update")]
         print(f"  [{self.AGENCY_NAME}] {len(entities)} TripUpdates reçus")
         if not entities:
@@ -779,8 +792,41 @@ class GtfsOperator:
             return
 
         feed_ts = feed.header.timestamp or int(time.time())
-        today   = _dt.now().strftime("%Y%m%d")
+        now_brussels = _dt.now(_BRUSSELS_TZ)
+        today     = now_brussels.strftime("%Y%m%d")
+        yesterday = (now_brussels - timedelta(days=1)).strftime("%Y%m%d")
         now_dt  = _dt.utcnow()
+
+        # Fallback service day for entities where the feed omits start_date:
+        # usually today, but after midnight a cross-midnight trip belongs to
+        # yesterday's service day — resolve against the static calendar.
+        missing_sd = list({
+            e.trip_update.trip.trip_id
+            for e in entities
+            if e.trip_update.trip.trip_id and not e.trip_update.trip.start_date
+        })
+        fallback_date: dict[str, str] = {}
+        if missing_sd:
+            session = next(get_db())
+            try:
+                svc_rows = session.execute(sa.text("""
+                    SELECT rgt.gtfs_trip_id, svc.date
+                    FROM raw_gtfs_trip rgt
+                    JOIN raw_gtfs_service_date svc
+                      ON svc.service_id  = rgt.service_id
+                     AND svc.agency_name = rgt.agency_name
+                    WHERE rgt.agency_name = :a
+                      AND svc.date IN (:today, :yesterday)
+                      AND rgt.gtfs_trip_id = ANY(:ids)
+                """), {"a": self.AGENCY_NAME, "today": today,
+                       "yesterday": yesterday, "ids": missing_sd}).all()
+            finally:
+                session.close()
+            dates_by_trip: dict[str, set] = defaultdict(set)
+            for r in svc_rows:
+                dates_by_trip[r.gtfs_trip_id].add(r.date)
+            for tid, dates in dates_by_trip.items():
+                fallback_date[tid] = today if today in dates else yesterday
 
         rows = []
         skipped = 0
@@ -790,7 +836,7 @@ class GtfsOperator:
             if not gtfs_trip_id:
                 skipped += 1
                 continue
-            start_date = tu.trip.start_date or today
+            start_date = tu.trip.start_date or fallback_date.get(gtfs_trip_id, today)
             for stu in tu.stop_time_update:
                 arr_ts    = stu.arrival.time    if stu.HasField("arrival")   else None
                 dep_ts    = stu.departure.time  if stu.HasField("departure") else None
@@ -840,30 +886,34 @@ class GtfsOperator:
         try:
             for batch in _chunked(rows, BATCH_SIZE):
                 session.execute(upsert_sql, batch)
+            # Keep yesterday's rows: cross-midnight trips (times > 24:00) still
+            # run on yesterday's service day until end of night service.
             session.execute(sa.text(
                 "DELETE FROM realtime_stop_time_override "
-                "WHERE agency_name = :a AND start_date < :today"
-            ), {"a": self.AGENCY_NAME, "today": today})
+                "WHERE agency_name = :a AND start_date < :yesterday"
+            ), {"a": self.AGENCY_NAME, "yesterday": yesterday})
             session.commit()
             print(f"  [{self.AGENCY_NAME}] {len(rows)} overrides upsertés en {time.time()-tic:.2f}s")
 
             # For agencies that send delay-based RT (no absolute timestamps),
             # compute predicted_arrival/departure_ts from schedule + delay so the matview
             # can use them for is_realtime detection and adjusted arrival times.
+            # Midnight is derived from each row's own start_date so that
+            # cross-midnight trips (yesterday's service day) get correct times.
             updated = session.execute(sa.text("""
                 UPDATE realtime_stop_time_override rto
                 SET
                     predicted_arrival_ts = (
                         EXTRACT(EPOCH FROM
-                            date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels')
-                            AT TIME ZONE 'Europe/Brussels'
+                            (TO_DATE(rto.start_date, 'YYYYMMDD')::timestamp
+                             AT TIME ZONE 'Europe/Brussels')
                         )::bigint
                         + rst.arrival_seconds + rto.delay_seconds
                     ),
                     predicted_departure_ts = (
                         EXTRACT(EPOCH FROM
-                            date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Brussels')
-                            AT TIME ZONE 'Europe/Brussels'
+                            (TO_DATE(rto.start_date, 'YYYYMMDD')::timestamp
+                             AT TIME ZONE 'Europe/Brussels')
                         )::bigint
                         + rst.departure_seconds + rto.delay_seconds
                     )
@@ -873,16 +923,21 @@ class GtfsOperator:
                   AND rgt.agency_name   = rto.agency_name
                   AND rst.stop_sequence = rto.stop_sequence
                   AND rto.agency_name   = :agency
-                  AND rto.start_date    = :today
+                  AND rto.start_date    IN (:today, :yesterday)
                   AND NULLIF(rto.predicted_arrival_ts, 0) IS NULL
                   AND rto.delay_seconds IS NOT NULL
+                  -- feeds occasionally send absurd early delays (e.g. -720 s), which
+                  -- would place the LED window in the past; > 5 min early = bad data,
+                  -- leave the timestamps NULL so the static schedule window applies
+                  AND rto.delay_seconds >= -300
                   AND (rto.schedule_relationship IS NULL OR rto.schedule_relationship != 1)
-            """), {"agency": self.AGENCY_NAME, "today": today}).rowcount
+            """), {"agency": self.AGENCY_NAME, "today": today, "yesterday": yesterday}).rowcount
             if updated:
                 session.commit()
                 print(f"  [{self.AGENCY_NAME}] {updated} timestamps calculés depuis delay_seconds")
 
-            refresh_active_intervals()
+            # matview refresh is handled by the dedicated 20 s scheduler job
+            # (decoupled from the per-agency RT cycles)
             _update_rt_log(self.AGENCY_NAME, error=None)
         except Exception as e:
             session.rollback()
