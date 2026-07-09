@@ -31,7 +31,7 @@ class DeviceService:
         return {"esp_devices": esp}
 
     def rename_device(self, esp_id: int, name: str | None, current_user: User):
-        device = self.repo.get_device_by_id(esp_id, current_user.id)
+        device = self.repo.get_device_by_id_and_owner(esp_id, current_user.id)
         if not device:
             raise HTTPException(status_code=404, detail="Device not found.")
         device.name = name.strip() if name else None
@@ -41,8 +41,8 @@ class DeviceService:
     def link_device_to_board(self, esp_id: int, board_id: int, current_user: User):
         if not esp_id or not board_id:
             raise HTTPException(status_code=400, detail="Both ESP ID and board ID are required.")
-        esp = self.repo.get_device_by_id(esp_id, current_user.id)
-        board = self.repo.get_board_by_id(board_id, current_user.id)
+        esp = self.repo.get_device_by_id_and_owner(esp_id, current_user.id)
+        board = self.repo.get_board_by_id_and_owner(board_id, current_user.id)
         if not esp or not board:
             raise HTTPException(status_code=404, detail="Invalid ESP32 device or board.")
         esp.board_id = board.id
@@ -52,7 +52,7 @@ class DeviceService:
     def unlink_device_from_board(self, esp_id: int, current_user: User):
         if not esp_id:
             raise HTTPException(status_code=400, detail="ESP ID is required.")
-        esp = self.repo.get_device_by_id(esp_id, current_user.id)
+        esp = self.repo.get_device_by_id_and_owner(esp_id, current_user.id)
         if not esp:
             raise HTTPException(status_code=404, detail="Invalid ESP32 device.")
         esp.board_id = None
@@ -60,7 +60,7 @@ class DeviceService:
         return {"message": "ESP32 device unlinked from board successfully."}
 
     def get_luminosity(self, esp_id: int, current_user: User):
-        device = self.repo.get_device_by_id(esp_id, current_user.id)
+        device = self.repo.get_device_by_id_and_owner(esp_id, current_user.id)
         if not device:
             raise HTTPException(status_code=404, detail="Device not found.")
         from app.services.adminSettingsService import adminSettingsService
@@ -68,7 +68,7 @@ class DeviceService:
         return {"light_intensity_percent": effective.get("light_intensity_percent", 100.0)}
 
     def patch_luminosity(self, esp_id: int, value: float, current_user: User):
-        device = self.repo.get_device_by_id(esp_id, current_user.id)
+        device = self.repo.get_device_by_id_and_owner(esp_id, current_user.id)
         if not device:
             raise HTTPException(status_code=404, detail="Device not found.")
         result = self.repo.update_luminosity(device, value)
