@@ -38,18 +38,21 @@ class adminSettingsService:
     def __init__(self, repo: SettingsRepository):
         self.repo = repo
 
-    def get_hardware_schema(self, hardware: Hardware) -> dict:
+    @staticmethod
+    def get_hardware_schema(hardware: Hardware) -> dict:
         data = _parse_json(hardware.json_settings if hardware else None)
         return data if "sections" in data else {"sections": []}
 
-    def get_device_overrides(self, device: ESP32Device) -> dict[str, Any]:
+    @staticmethod
+    def get_device_overrides(device: ESP32Device) -> dict[str, Any]:
         return _parse_json(device.json_settings_override)
 
-    def get_effective_settings(self, device: ESP32Device) -> dict[str, Any]:
-        schema    = self.get_hardware_schema(device.hardware) if device.hardware else {"sections": []}
-        defaults  = _extract_defaults(schema)
+    @staticmethod
+    def get_effective_settings(device: ESP32Device) -> dict[str, Any]:
+        schema     = adminSettingsService.get_hardware_schema(device.hardware) if device.hardware else {"sections": []}
+        defaults   = _extract_defaults(schema)
         valid_keys = _extract_keys(schema)
-        overrides = self.get_device_overrides(device)
+        overrides  = adminSettingsService.get_device_overrides(device)
         return {**defaults, **{k: v for k, v in overrides.items() if k in valid_keys}}
 
     def get_hardware_settings(self, hardware_id: int) -> dict:
