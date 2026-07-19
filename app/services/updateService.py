@@ -11,7 +11,7 @@ from app.repositories.update_repo import UpdateRepository
 
 
 class UpdateService:
-    PACKAGE_BASE_URL = os.environ.get("OTA_PACKAGE_BASE_URL", "https://transport.trillet.be")
+    PACKAGE_BASE_URL = os.environ.get("OTA_PACKAGE_BASE_URL", "https://esp.trillet.be")
 
     @staticmethod
     def normalize_mac(mac: str) -> str:

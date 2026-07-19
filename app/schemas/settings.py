@@ -1,8 +1,8 @@
 from typing import Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class SchemaPayload(BaseModel):
-    json_schema: dict
+    json_schema: dict = Field(alias="schema")
 
 class OverridesPayload(BaseModel):
     overrides: dict[str, Any]
