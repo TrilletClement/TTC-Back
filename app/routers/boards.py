@@ -64,6 +64,18 @@ def get_board_details(board_id: int, current_user: User, svc: BoardService = Dep
     return svc.get_board_details(board_id, current_user)
 
 
+@router.get("/{board_id}/status")
+@require_user
+def get_board_status(board_id: int, current_user: User, svc: BoardService = Depends(get_service)):
+    """Lightweight realtime poll — only the fields that change (LED on/off, trip-stop flags).
+
+    Static data (pricing, geometry, line metadata, custom names) is fetched once via
+    GET /{board_id} and merged client-side; polling this endpoint every few seconds
+    avoids re-sending the whole board on each tick.
+    """
+    return svc.get_board_status(board_id, current_user)
+
+
 @router.get("/{board_id}/export")
 @require_user
 def export_board_svg(

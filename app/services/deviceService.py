@@ -1,9 +1,37 @@
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 
 from app.orm_models.auth import User
 from app.repositories.device_repo import DeviceRepository
+
+BRUSSELS_TZ = ZoneInfo("Europe/Brussels")
+
+
+def is_within_quiet_hours(effective_settings: dict, now: datetime | None = None) -> bool:
+    """True if `now` (Europe/Brussels) falls inside the device's configured quiet-hours window.
+
+    Handles windows that cross midnight (e.g. 22:30 -> 06:00).
+    """
+    if not effective_settings.get("quiet_hours_enabled"):
+        return False
+    start = effective_settings.get("quiet_hours_start")
+    end = effective_settings.get("quiet_hours_end")
+    if not start or not end:
+        return False
+
+    now = (now or datetime.now(BRUSSELS_TZ)).astimezone(BRUSSELS_TZ)
+    current = now.hour * 60 + now.minute
+    start_min = int(start[:2]) * 60 + int(start[3:5])
+    end_min = int(end[:2]) * 60 + int(end[3:5])
+
+    if start_min == end_min:
+        return False
+    if start_min < end_min:
+        return start_min <= current < end_min
+    return current >= start_min or current < end_min
 
 
 class DeviceService:
@@ -74,6 +102,29 @@ class DeviceService:
         result = self.repo.update_luminosity(device, value)
         return {"light_intensity_percent": result}
 
+    def get_quiet_hours(self, esp_id: int, current_user: User):
+        device = self.repo.get_device_by_id_and_owner(esp_id, current_user.id)
+        if not device:
+            raise HTTPException(status_code=404, detail="Device not found.")
+        from app.services.adminSettingsService import adminSettingsService
+        effective = adminSettingsService.get_effective_settings(device)
+        return {
+            "enabled": bool(effective.get("quiet_hours_enabled", False)),
+            "start": effective.get("quiet_hours_start", "22:30"),
+            "end": effective.get("quiet_hours_end", "06:00"),
+        }
+
+    def patch_quiet_hours(self, esp_id: int, enabled: bool, start: str, end: str, current_user: User):
+        device = self.repo.get_device_by_id_and_owner(esp_id, current_user.id)
+        if not device:
+            raise HTTPException(status_code=404, detail="Device not found.")
+        result = self.repo.update_quiet_hours(device, enabled, start, end)
+        return {
+            "enabled": result["quiet_hours_enabled"],
+            "start": result["quiet_hours_start"],
+            "end": result["quiet_hours_end"],
+        }
+
     def record_connection(self, device) -> None:
         self.repo.touch_last_connected(device)
 
@@ -105,6 +156,17 @@ class DeviceService:
         bt = board.board_type
         max_strips = bt.max_ledstrip
         max_leds = bt.max_led
+
+        from app.services.adminSettingsService import adminSettingsService
+        if is_within_quiet_hours(adminSettingsService.get_effective_settings(esp)):
+            empty_strip = [[0, 0, 0]] * max_leds
+            return {
+                "strips": [
+                    {"id": h, "h": h, "v": list(empty_strip)}
+                    for h in range(1, max_strips + 1)
+                ],
+                "settings_updated_at": settings_ts,
+            }
 
         strips_data = BoardService._build_led_strips_data(board, self.repo.db)
 

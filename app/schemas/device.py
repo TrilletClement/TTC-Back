@@ -72,6 +72,12 @@ class DeviceLuminosity(BaseModel):
     light_intensity_percent: float
 
 
+class DeviceQuietHours(BaseModel):
+    enabled: bool
+    start: str = Field(..., pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    end: str = Field(..., pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
 class LedStripStatusRow(BaseModel):
     id: int
     h: int = Field(..., description="Row index/order")

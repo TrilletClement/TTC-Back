@@ -7,7 +7,7 @@ from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.orm_models.device import ESP32Device
 from app.repositories.device_repo import DeviceRepository
-from app.schemas.device import DeviceLink, DeviceRename, DeviceLuminosity, LedStripStatusResponse
+from app.schemas.device import DeviceLink, DeviceRename, DeviceLuminosity, DeviceQuietHours, LedStripStatusResponse
 from app.services.deviceService import DeviceService
 
 
@@ -53,6 +53,18 @@ def get_device_luminosity(esp_id: int, current_user: User, svc: DeviceService = 
 @require_user
 def patch_device_luminosity(esp_id: int, body: DeviceLuminosity, current_user: User, svc: DeviceService = Depends(get_service)):
     return svc.patch_luminosity(esp_id, body.light_intensity_percent, current_user)
+
+
+@router.get("/esp-devices/{esp_id}/quiet-hours")
+@require_user
+def get_device_quiet_hours(esp_id: int, current_user: User, svc: DeviceService = Depends(get_service)):
+    return svc.get_quiet_hours(esp_id, current_user)
+
+
+@router.patch("/esp-devices/{esp_id}/quiet-hours")
+@require_user
+def patch_device_quiet_hours(esp_id: int, body: DeviceQuietHours, current_user: User, svc: DeviceService = Depends(get_service)):
+    return svc.patch_quiet_hours(esp_id, body.enabled, body.start, body.end, current_user)
 
 
 @router.get("/esp/ledstrips", response_model=LedStripStatusResponse)

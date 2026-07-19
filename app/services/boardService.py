@@ -177,6 +177,17 @@ class BoardService:
             "ledStrips": led_strips_data,
         }
 
+    def get_board_status(self, board_id: int, current_user: User):
+        is_admin = "admin" in [role.name for role in current_user.roles]
+        board = self.repo.get_board_details_full(board_id)
+
+        if not board:
+            raise HTTPException(status_code=404, detail="Board not found")
+        if not is_admin and board.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Board not found")
+
+        return {"ledStrips": self._build_led_strips_status(board, self.repo.db)}
+
     # ── interval-based realtime helpers ──────────────────────────────────────
 
     @staticmethod
@@ -247,15 +258,9 @@ class BoardService:
                 term1_name = BoardService._resolve_terminus_name(line_obj.best_trip_f, db)
                 strip_data["line"] = {
                     "id": line_obj.id,
-                    "routeId": line_obj.route_id,
                     "shortName": line_obj.short_name,
-                    "name": line_obj.short_name,
-                    "longName": line_obj.long_name,
-                    "routeType": line_obj.route_type,
                     "color": line_obj.color,
                     "textColor": line_obj.text_color,
-                    "bestTrip0Id": line_obj.best_trip_0_id,
-                    "bestTrip1Id": line_obj.best_trip_1_id,
                     "agencyName": line_obj.agency_name,
                     "terminus0Name": term0_name,
                     "terminus1Name": term1_name,
@@ -270,15 +275,55 @@ class BoardService:
                 for led_obj in leds_sorted
             ]
 
-            for led_obj in leds_sorted:
-                if led_obj.ledstrip_index and led_obj.ledstrip_index > 0:
-                    strip_data[f"led{led_obj.ledstrip_index}"] = BoardService._build_led_data(
-                        led_obj, interval_active_ids, rt_only
-                    )
-
             led_strips_data.append(strip_data)
 
         return led_strips_data
+
+    @staticmethod
+    def _build_led_strips_status(board, db: Session):
+        """Dynamic-only counterpart to `_build_led_strips_data` — no line/pricing/geometry."""
+        trip_stop_ids = BoardService._collect_trip_stop_ids(board)
+        interval_active_ids = BoardService._get_interval_active_trip_stop_ids(db, trip_stop_ids)
+
+        led_strips_status = []
+        for strip in board.led_strips:
+            rt_only = bool(getattr(strip, "rt_only", False))
+            leds_sorted = sorted(strip.leds, key=lambda led: (led.ledstrip_index or 0, led.id or 0))
+            led_strips_status.append({
+                "id": strip.id,
+                "leds": [
+                    BoardService._build_led_status(led_obj, interval_active_ids, rt_only)
+                    for led_obj in leds_sorted
+                ],
+            })
+
+        return led_strips_status
+
+    @staticmethod
+    def _build_led_status(led_obj: Led, interval_active_ids: dict[int, bool] | None = None,
+                           rt_only: bool = False):
+        _interval = interval_active_ids or {}
+
+        trip_stops_status = []
+        for ts in led_obj.trip_stops:
+            legacy_incoming = bool(ts.vehicle_incoming)
+            interval_incoming = ts.id in _interval
+            is_realtime_flag = legacy_incoming or (interval_incoming and _interval[ts.id])
+            is_on = is_realtime_flag if rt_only else (legacy_incoming or interval_incoming)
+
+            trip_stops_status.append({
+                "tripStopId":      ts.id,
+                "vehicleIncoming": legacy_incoming,
+                "intervalActive":  interval_incoming,
+                "isOn":            is_on,
+                "isRealtime":      is_realtime_flag,
+            })
+
+        return {
+            "ledId": led_obj.id,
+            "isOn":  any(ts["isOn"] for ts in trip_stops_status),
+            "tripStops": trip_stops_status,
+        }
 
     @staticmethod
     def _resolve_terminus_name(trip: Trip | None, db: Session):

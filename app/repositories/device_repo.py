@@ -95,6 +95,20 @@ class DeviceRepository:
         self.db.commit()
         return overrides["light_intensity_percent"]
 
+    def update_quiet_hours(self, device: ESP32Device, enabled: bool, start: str, end: str) -> dict:
+        overrides = json.loads(device.json_settings_override or "{}")
+        overrides["quiet_hours_enabled"] = enabled
+        overrides["quiet_hours_start"] = start
+        overrides["quiet_hours_end"] = end
+        device.json_settings_override = json.dumps(overrides)
+        device.last_settings_updated_at = datetime.datetime.utcnow()
+        self.db.commit()
+        return {
+            "quiet_hours_enabled": overrides["quiet_hours_enabled"],
+            "quiet_hours_start": overrides["quiet_hours_start"],
+            "quiet_hours_end": overrides["quiet_hours_end"],
+        }
+
     def touch_last_connected(self, device: ESP32Device) -> None:
         device.last_connected = datetime.datetime.utcnow()
         self.db.commit()
