@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.user_access import require_user
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
+from app.schemas.order import GiftUpdate
 from app.services.orderService import OrderService
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
@@ -42,3 +43,9 @@ def list_orders(current_user: User, db: Session = Depends(get_db)):
 @require_user
 def get_order_svg(order_id: int, current_user: User, db: Session = Depends(get_db)):
     return OrderService.get_order_svg(order_id, current_user.id, db)
+
+
+@router.patch("/{order_id}/gift")
+@require_user
+async def update_gift(order_id: int, payload: GiftUpdate, current_user: User, db: Session = Depends(get_db)):
+    return await OrderService.update_gift(order_id, payload, current_user.id, db)

@@ -1,7 +1,8 @@
 import logging
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.core.config import settings
+from app.core.mail import send_gift_email
 
 log = logging.getLogger(__name__)
 
@@ -10,7 +11,7 @@ from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.orm_models.auth import User
-from app.orm_models.order import Order, OrderDetails, OrderItem
+from app.orm_models.order import Order, OrderDetails, OrderGift, OrderItem
 from app.repositories.order_repo import OrderRepository
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -84,6 +85,8 @@ class PaymentService:
             raise HTTPException(status_code=400, detail="Cart is empty")
         if not payload.shipping_country:
             raise HTTPException(status_code=400, detail="Shipping country is required")
+        if payload.is_gift and not (payload.gift_recipient_name.strip() and payload.gift_recipient_email.strip()):
+            raise HTTPException(status_code=400, detail="Recipient name and email are required for a gift")
 
         repo = OrderRepository(db)
         current_version = repo.get_current_price_version()
@@ -170,6 +173,31 @@ class PaymentService:
                     amount_cents = unit_amount,
                 ))
 
+            if payload.is_gift:
+                repo.create_order_gift(OrderGift(
+                    order_id        = order.id,
+                    recipient_name  = payload.gift_recipient_name.strip(),
+                    recipient_email = payload.gift_recipient_email.strip(),
+                    message         = payload.gift_message.strip() or None,
+                ))
+
+                if (
+                    payload.gift_ship_address_line1.strip()
+                    and payload.gift_ship_city.strip()
+                    and payload.gift_ship_postal_code.strip()
+                ):
+                    known_address = repo.create_order_details(OrderDetails(
+                        user_id       = current_user.id,
+                        first_name    = payload.gift_ship_first_name.strip() or payload.gift_recipient_name.strip(),
+                        last_name     = payload.gift_ship_last_name.strip(),
+                        phone         = payload.gift_ship_phone.strip() or None,
+                        address_line1 = payload.gift_ship_address_line1.strip(),
+                        city          = payload.gift_ship_city.strip(),
+                        postal_code   = payload.gift_ship_postal_code.strip(),
+                        country       = payload.shipping_country.strip(),
+                    ))
+                    order.shipping_details_id = known_address.id
+
             db.commit()
             return {"url": session.url}
 
@@ -209,7 +237,7 @@ class PaymentService:
             raise HTTPException(status_code=400, detail="Invalid signature")
 
         if event["type"] == "checkout.session.completed":
-            PaymentService._confirm_order(event["data"]["object"], db)
+            await PaymentService._confirm_order(event["data"]["object"], db)
         elif event["type"] in ("checkout.session.expired", "payment_intent.payment_failed"):
             PaymentService._cancel_pending_orders(event["data"]["object"], db)
         elif event["type"] == "charge.refunded":
@@ -218,7 +246,7 @@ class PaymentService:
         return {"status": "ok"}
 
     @staticmethod
-    def _confirm_order(session_event, db: Session):
+    async def _confirm_order(session_event, db: Session):
         session_id = session_event["id"]
         try:
             session = stripe.checkout.Session.retrieve(session_id)
@@ -276,10 +304,31 @@ class PaymentService:
                 order.payment_intent_id   = payment_intent_id
                 order.shipping_cost_cents = shipping_cost_cents
                 if shipping_details_id:
-                    order.shipping_details_id = shipping_details_id
-                    order.billing_details_id  = shipping_details_id
+                    # A known gift shipping address (set at checkout) takes priority —
+                    # whatever Stripe collected then becomes the billing address instead.
+                    if not order.shipping_details_id:
+                        order.shipping_details_id = shipping_details_id
+                    if not order.billing_details_id:
+                        order.billing_details_id = shipping_details_id
+
+        gifts_to_email = []
+        for order in orders:
+            if order.gift and not order.gift.claim_token:
+                order.gift.claim_token        = secrets.token_urlsafe(32)
+                order.gift.claim_token_expiry = datetime.utcnow() + timedelta(days=30)
+                gifts_to_email.append((order, order.gift))
 
         db.commit()
+
+        for order, gift in gifts_to_email:
+            claim_url = f"{_base}/gift/claim?token={gift.claim_token}"
+            try:
+                await send_gift_email(
+                    gift.recipient_email, gift.recipient_name,
+                    order.user.email if order.user else "", gift.message, claim_url,
+                )
+            except Exception:
+                log.exception("Failed to send gift email for order %s", order.id)
 
     @staticmethod
     def cancel_session(session_id: str, current_user: User, db: Session):

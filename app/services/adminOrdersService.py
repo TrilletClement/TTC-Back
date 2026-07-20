@@ -4,7 +4,9 @@ from app.core.config import settings
 from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
 from app.orm_models.order import Order, OrderItem
 from app.repositories.order_repo import OrderRepository
-from app.schemas.order import OrderOut, OrderItemOut, AddressOut, OrderPatch, AssociateDevicePayload
+from app.schemas.order import OrderOut, OrderItemOut, AddressOut, GiftOut, GiftUpdate, OrderPatch, AssociateDevicePayload
+from app.services.giftService import GiftService
+from app.services.naming import unique_name
 
 ORDER_STATUSES = {"pending", "paid", "processing", "shipped", "delivered", "cancelled", "refunded"}
 
@@ -45,6 +47,18 @@ def _item_out(item: OrderItem, include_svg: bool = False) -> OrderItemOut:
     )
 
 
+def _gift_out(g) -> Optional[GiftOut]:
+    if not g:
+        return None
+    return GiftOut(
+        recipient_name=g.recipient_name,
+        recipient_email=g.recipient_email,
+        message=g.message,
+        claimed=g.claimed_at is not None,
+        claimed_at=g.claimed_at,
+    )
+
+
 def _build_order_out(o: Order, include_svg: bool = False) -> OrderOut:
     sd = o.shipping_details
     bd = o.billing_details
@@ -69,17 +83,9 @@ def _build_order_out(o: Order, include_svg: bool = False) -> OrderOut:
         shipping_details=_addr_dict(sd),
         billing_details=None if same_address else _addr_dict(bd),
         same_address=same_address,
+        gift=_gift_out(o.gift),
         items=[_item_out(i, include_svg) for i in o.items],
     )
-
-
-def _unique_device_name(base_name: str, existing_names: set[str]) -> str:
-    candidate = base_name
-    n = 2
-    while candidate in existing_names:
-        candidate = f"{base_name} {n}"
-        n += 1
-    return candidate
 
 
 class AdminOrdersService:
@@ -98,6 +104,8 @@ class AdminOrdersService:
                 or any(i.board and s in (i.board.name or "").lower() for i in o.items)
                 or s in str(o.id)
                 or s in (o.cart_ref or "").lower()
+                or (o.gift and s in o.gift.recipient_name.lower())
+                or (o.gift and s in o.gift.recipient_email.lower())
             ]
 
         reverse = sort in ("date_desc", "amount_desc")
@@ -151,6 +159,14 @@ class AdminOrdersService:
         self.repo.save(o)
         return _build_order_out(o)
 
+    async def update_gift(self, order_id: int, payload: GiftUpdate) -> OrderOut:
+        o = self.repo.get_by_id(order_id)
+        if not o:
+            raise NotFoundError("Order", order_id)
+
+        await GiftService(self.repo).update_gift_fields(o, payload)
+        return _build_order_out(o, include_svg=True)
+
     def associate_device(self, item_id: int, payload: AssociateDevicePayload) -> OrderOut:
         item = self.repo.get_item_by_id(item_id)
         if not item:
@@ -165,12 +181,14 @@ class AdminOrdersService:
         if device.owner_id is not None:
             raise BusinessError("Device already has an owner.")
 
-        device.owner_id = o.user_id
+        owner_id = o.gift.claimed_by_user_id if (o.gift and o.gift.claimed_by_user_id) else o.user_id
+
+        device.owner_id = owner_id
         device.board_id = item.board_id
 
         base_name = f"{item.board.name if item.board else 'Display'} Display"
-        existing  = self.repo.get_device_names_for_owner(o.user_id, device.id)
-        device.name = _unique_device_name(base_name, existing)
+        existing  = self.repo.get_device_names_for_owner(owner_id, device.id)
+        device.name = unique_name(base_name, existing)
 
         item.esp_device_id = device.id
         o.status = "processing"

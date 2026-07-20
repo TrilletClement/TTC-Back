@@ -14,6 +14,14 @@ class AddressOut(BaseModel):
     country:      Optional[str]
 
 
+class GiftOut(BaseModel):
+    recipient_name:  str
+    recipient_email: str
+    message:         Optional[str] = None
+    claimed:         bool
+    claimed_at:      Optional[datetime] = None
+
+
 class OrderItemOut(BaseModel):
     id:              int
     board_id:        Optional[int]
@@ -45,6 +53,7 @@ class OrderOut(BaseModel):
     shipping_details:    Optional[AddressOut]
     billing_details:     Optional[AddressOut]
     same_address:        Optional[bool]
+    gift:                Optional[GiftOut] = None
     items:               list[OrderItemOut] = []
 
 
@@ -66,3 +75,9 @@ class OrderPatch(BaseModel):
 
 class AssociateDevicePayload(BaseModel):
     device_id: int
+
+
+class GiftUpdate(BaseModel):
+    recipient_name:  Optional[str] = None
+    recipient_email: Optional[str] = None
+    message:         Optional[str] = None

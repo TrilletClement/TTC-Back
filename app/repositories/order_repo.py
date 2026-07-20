@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.orm_models.board import Board
 from app.orm_models.device import ESP32Device
-from app.orm_models.order import Order, OrderDetails, OrderItem
+from app.orm_models.order import Order, OrderDetails, OrderGift, OrderItem
 from app.orm_models.price import BoardTypePrice, PriceVersion
 
 
@@ -31,12 +31,27 @@ class OrderRepository:
     def get_board_by_id(self, board_id: int) -> Board | None:
         return self.db.query(Board).filter_by(id=board_id).first()
 
+    def get_board_names_for_owner(self, owner_id: int, exclude_board_id: int) -> set[str]:
+        return {
+            b.name for b in self.db.query(Board).filter(
+                Board.owner_id == owner_id,
+                Board.archived.is_(False),
+                Board.id != exclude_board_id,
+            ).all()
+            if b.name
+        }
+
     # ── Order writes ──────────────────────────────────────────────────────────
 
     def create_order_details(self, details: OrderDetails) -> OrderDetails:
         self.db.add(details)
         self.db.flush()
         return details
+
+    def create_order_gift(self, gift: OrderGift) -> OrderGift:
+        self.db.add(gift)
+        self.db.flush()
+        return gift
 
     def create_order(self, order: Order) -> Order:
         self.db.add(order)
@@ -71,6 +86,7 @@ class OrderRepository:
             self.db.query(Order)
             .options(
                 joinedload(Order.shipping_details),
+                joinedload(Order.gift),
                 joinedload(Order.items).joinedload(OrderItem.board),
                 joinedload(Order.items).joinedload(OrderItem.esp_device),
             )
@@ -82,7 +98,7 @@ class OrderRepository:
     def get_for_user_with_items(self, order_id: int, user_id: int) -> Order | None:
         return (
             self.db.query(Order)
-            .options(joinedload(Order.items))
+            .options(joinedload(Order.items), joinedload(Order.gift))
             .filter(Order.id == order_id, Order.user_id == user_id)
             .first()
         )
@@ -93,6 +109,7 @@ class OrderRepository:
             .options(
                 joinedload(Order.shipping_details),
                 joinedload(Order.billing_details),
+                joinedload(Order.gift),
                 joinedload(Order.user),
                 joinedload(Order.items).joinedload(OrderItem.board),
                 joinedload(Order.items).joinedload(OrderItem.esp_device),
@@ -117,10 +134,23 @@ class OrderRepository:
                 joinedload(OrderItem.order).joinedload(Order.user),
                 joinedload(OrderItem.order).joinedload(Order.shipping_details),
                 joinedload(OrderItem.order).joinedload(Order.billing_details),
+                joinedload(OrderItem.order).joinedload(Order.gift),
                 joinedload(OrderItem.order).joinedload(Order.items).joinedload(OrderItem.board),
                 joinedload(OrderItem.order).joinedload(Order.items).joinedload(OrderItem.esp_device),
             )
             .filter(OrderItem.id == item_id)
+            .first()
+        )
+
+    def get_gift_by_token(self, token: str) -> OrderGift | None:
+        return (
+            self.db.query(OrderGift)
+            .options(
+                joinedload(OrderGift.order).joinedload(Order.user),
+                joinedload(OrderGift.order).joinedload(Order.items).joinedload(OrderItem.board),
+                joinedload(OrderGift.order).joinedload(Order.items).joinedload(OrderItem.esp_device),
+            )
+            .filter(OrderGift.claim_token == token)
             .first()
         )
 

@@ -22,6 +22,16 @@ class CartPayload(BaseModel):
     shipping_country:     str = ""
     shipping_postal_code: str = ""
     shipping_option_code: str = ""
+    is_gift:              bool = False
+    gift_recipient_name:  str = ""
+    gift_recipient_email: str = ""
+    gift_message:         str = ""
+    gift_ship_first_name:    str = ""
+    gift_ship_last_name:     str = ""
+    gift_ship_phone:         str = ""
+    gift_ship_address_line1: str = ""
+    gift_ship_city:          str = ""
+    gift_ship_postal_code:   str = ""
 
 
 @router.post("/create-session")

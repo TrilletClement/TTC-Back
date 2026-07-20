@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 from app.orm_models.db import Base
 
 
@@ -71,6 +71,27 @@ class Order(Base):
     paid_at             = Column(DateTime, nullable=True)
 
     items               = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+
+
+class OrderGift(Base):
+    __tablename__ = "order_gift"
+
+    id                 = Column(Integer, primary_key=True)
+
+    order_id           = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, unique=True)
+    order              = relationship("Order", backref=backref("gift", uselist=False))
+
+    recipient_name     = Column(String(200), nullable=False)
+    recipient_email    = Column(String(255), nullable=False)
+    message            = Column(Text, nullable=True)
+
+    claim_token        = Column(String(64), unique=True, nullable=True)
+    claim_token_expiry = Column(DateTime, nullable=True)
+    claimed_at         = Column(DateTime, nullable=True)
+    claimed_by_user_id = Column(Integer, ForeignKey("user.id"), nullable=True)
+    claimed_by         = relationship("User", foreign_keys=[claimed_by_user_id])
+
+    created_at         = Column(DateTime, default=datetime.utcnow)
 
 
 class OrderItem(Base):

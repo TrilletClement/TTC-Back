@@ -12,7 +12,7 @@ from app.orm_models.db import get_db
 from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
 from app.repositories.order_repo import OrderRepository
 from app.services.adminOrdersService import AdminOrdersService
-from app.schemas.order import OrderOut, OrderPatch, AssociateDevicePayload
+from app.schemas.order import OrderOut, OrderPatch, AssociateDevicePayload, GiftUpdate
 
 router = APIRouter(prefix="/api/admin/orders", tags=["admin-orders"])
 
@@ -67,6 +67,15 @@ def get_order(order_id: int, current_user: User, svc: AdminOrdersService = Depen
 def patch_order(order_id: int, payload: OrderPatch, current_user: User, svc: AdminOrdersService = Depends(get_service)):
     try:
         return svc.patch_order(order_id, payload)
+    except (NotFoundError, BusinessError, ValidationError) as e:
+        raise _handle(e)
+
+
+@router.patch("/{order_id}/gift")
+@require_admin
+async def update_gift(order_id: int, payload: GiftUpdate, current_user: User, svc: AdminOrdersService = Depends(get_service)):
+    try:
+        return await svc.update_gift(order_id, payload)
     except (NotFoundError, BusinessError, ValidationError) as e:
         raise _handle(e)
 

@@ -4,8 +4,10 @@ from fastapi import HTTPException
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
+from app.domain.exceptions import BusinessError, ValidationError
 from app.orm_models.order import Order, OrderDetails, OrderItem
 from app.repositories.order_repo import OrderRepository
+from app.services.giftService import GiftService
 
 
 class OrderService:
@@ -69,6 +71,18 @@ class OrderService:
         return {"message": "Order created", "order_id": order.id}
 
     @staticmethod
+    async def update_gift(order_id: int, payload, user_id: int, db: Session):
+        repo = OrderRepository(db)
+        order = repo.get_for_user_with_items(order_id, user_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        try:
+            return await GiftService(repo).update_gift_fields(order, payload)
+        except (BusinessError, ValidationError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @staticmethod
     def get_order_svg(order_id: int, user_id: int, db: Session):
         repo = OrderRepository(db)
         order = repo.get_for_user_with_items(order_id, user_id)
@@ -105,6 +119,13 @@ class OrderService:
                     "postalCode":   o.shipping_details.postal_code,
                     "country":      o.shipping_details.country,
                 } if o.shipping_details else None,
+                "gift": {
+                    "recipient_name":  o.gift.recipient_name,
+                    "recipient_email": o.gift.recipient_email,
+                    "message":         o.gift.message,
+                    "claimed":         o.gift.claimed_at is not None,
+                    "claimed_at":      o.gift.claimed_at.isoformat() if o.gift.claimed_at else None,
+                } if o.gift else None,
                 "items": [
                     {
                         "id":            i.id,
