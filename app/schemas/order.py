@@ -50,6 +50,7 @@ class OrderOut(BaseModel):
     label_url:            Optional[str] = None
     tracking_url:         Optional[str] = None
     shipping_option_code: Optional[str] = None
+    return_requested_at:  Optional[datetime] = None
     shipping_details:    Optional[AddressOut]
     billing_details:     Optional[AddressOut]
     same_address:        Optional[bool]

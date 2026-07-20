@@ -62,10 +62,13 @@ class Order(Base):
     currency            = Column(String(10), default="eur")
     shipping_cost_cents = Column(Integer, nullable=True)
 
-    sendcloud_parcel_id  = Column(String(50),  nullable=True)
-    label_url            = Column(String(500), nullable=True)
-    tracking_url         = Column(String(500), nullable=True)
-    shipping_option_code = Column(String(100), nullable=True)
+    sendcloud_parcel_id   = Column(String(50),  nullable=True)
+    sendcloud_shipment_id = Column(String(50),  nullable=True)
+    label_url             = Column(String(500), nullable=True)
+    tracking_url          = Column(String(500), nullable=True)
+    shipping_option_code  = Column(String(100), nullable=True)
+
+    return_requested_at = Column(DateTime, nullable=True)
 
     created_at          = Column(DateTime, default=datetime.utcnow)
     paid_at             = Column(DateTime, nullable=True)

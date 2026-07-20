@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
@@ -76,6 +77,29 @@ async def sendcloud_webhook(
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     action = data.get("action")
+    logger.info("SendCloud webhook received: action=%s", action)
+
+    repo = ShippingRepository(db)
+
+    # Exact action name isn't confirmed from SendCloud's docs excerpt — match loosely
+    # (return_created / return-created) and adjust once a real test webhook is logged.
+    if action and action.lower().replace("-", "_") == "return_created":
+        parcel_obj = data.get("parcel") or data
+        parcel_id  = str(parcel_obj.get("id", "") or "")
+        if not parcel_id:
+            return {"accepted": True}
+
+        order = repo.get_order_by_parcel_id(parcel_id)
+        if not order:
+            logger.warning("SendCloud webhook: return_created for unknown parcel_id %s", parcel_id)
+            return {"accepted": True}
+
+        if not order.return_requested_at:
+            order.return_requested_at = datetime.utcnow()
+            repo.commit()
+        logger.info("SendCloud webhook: return requested for order #%s (parcel %s)", order.id, parcel_id)
+        return {"accepted": True}
+
     if action != "parcel_status_changed":
         return {"accepted": True, "action": action}
 
@@ -99,7 +123,6 @@ async def sendcloud_webhook(
     if not parcel_id or status_id is None:
         return {"accepted": True}
 
-    repo = ShippingRepository(db)
     order = repo.get_order_by_parcel_id(parcel_id)
     if not order:
         logger.warning("SendCloud webhook: unknown parcel_id %s", parcel_id)

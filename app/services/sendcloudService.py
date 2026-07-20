@@ -115,6 +115,7 @@ class ParcelResult:
     tracking_number: Optional[str]
     label_url:       Optional[str]
     tracking_url:    Optional[str] = None
+    shipment_id:     Optional[str] = None
 
 
 def create_parcel(
@@ -205,7 +206,31 @@ def create_parcel(
         tracking_number=tracking_number or None,
         label_url=label_url,
         tracking_url=tracking_url,
+        shipment_id=str(shipment_id) if shipment_id is not None else None,
     )
+
+
+def get_return_portal_url(shipment_id: str) -> Optional[str]:
+    """
+    Return the hosted SendCloud return-portal URL for a shipment, or None if
+    no return portal is configured for it (e.g. return window expired, or
+    returns not enabled in the SendCloud panel) — this is an expected outcome,
+    not an error.
+    """
+    if not _enabled() or not shipment_id:
+        return None
+
+    try:
+        resp = requests.get(
+            f"{_BASE}/shipments/{shipment_id}/return-portal-url",
+            auth=_auth(),
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("data", {}).get("url")
+    except Exception:
+        return None
 
 
 def _poll_shipment(

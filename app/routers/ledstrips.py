@@ -94,6 +94,29 @@ def add_led_strip(
     )
 
 
+@router.post("/boards/{board_id}/led_strips/preview")
+@require_user
+def preview_led_strip(
+    board_id: int,
+    payload: LedStripCreate,
+    current_user: User,
+    db: Session = Depends(get_db),
+):
+    return LedStripService.preview_led_strip(
+        board_id=board_id,
+        agency_name=payload.agency_name,
+        line_id=payload.line_id,
+        central_stop_left_name=payload.central_stop_left_name,
+        central_stop_right_name=payload.central_stop_right_name,
+        led_color=payload.led_color,
+        pre_stop_left_name=payload.pre_stop_left_name,
+        pre_stop_left_minutes=payload.pre_stop_left_minutes,
+        pre_stop_right_name=payload.pre_stop_right_name,
+        pre_stop_right_minutes=payload.pre_stop_right_minutes,
+        db=db,
+    )
+
+
 @router.patch("/boards/{board_id}/led_strips/reorder")
 @require_user
 def reorder_led_strips(

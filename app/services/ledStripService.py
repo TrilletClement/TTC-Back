@@ -127,6 +127,68 @@ class LedStripService:
         return {"message": "LED strip created successfully", "led_strip_id": strip.id}
 
     @staticmethod
+    def preview_led_strip(
+        board_id: int,
+        agency_name: str,
+        line_id: int,
+        central_stop_left_name: str,
+        central_stop_right_name: str,
+        led_color: str = None,
+        pre_stop_left_name: str | None = None,
+        pre_stop_left_minutes: int | None = None,
+        pre_stop_right_name: str | None = None,
+        pre_stop_right_minutes: int | None = None,
+        db: Session = None,
+    ):
+        """Read-only dry run of create_led_strip: computes the exact LED layout
+        (same stop-selection window, same padding around the central stop) a
+        real save would produce, without writing anything to the database.
+        """
+        if not all([agency_name, line_id]) or (not central_stop_left_name and not central_stop_right_name):
+            raise HTTPException(
+                status_code=400,
+                detail="agency_name, line_id, and (central_stop_left_name or central_stop_right_name) are required",
+            )
+
+        repo = LedStripRepository(db)
+        led_color_hex = LedStripService._normalize_hex_color(led_color)
+
+        board = repo.get_board(board_id)
+        if not board:
+            raise HTTPException(status_code=404, detail="Board not found")
+
+        max_led = LedStripService._get_max_led(board)
+
+        trips = LedStripService._get_trips_by_direction(repo, agency_name, line_id)
+        if not trips[0] and not trips[1]:
+            raise HTTPException(status_code=404, detail="Could not find any trips for this line")
+
+        trip_stops = LedStripService._get_trip_stops_by_direction(repo, trips)
+        central_indexes = LedStripService._find_central_indexes(
+            repo, trip_stops, central_stop_left_name, central_stop_right_name,
+        )
+        pre_stop_overrides = LedStripService._resolve_pre_stop_overrides(
+            repo, trip_stops,
+            pre_stop_left_name, pre_stop_left_minutes,
+            pre_stop_right_name, pre_stop_right_minutes,
+        )
+        selected_stops, central_position = LedStripService._select_stops_around_central(
+            trip_stops, central_indexes, pre_stop_overrides, max_led=max_led,
+        )
+
+        left_t, right_t = LedStripService._compute_terminus_names(trip_stops, agency_name)
+
+        descriptors = LedStripService._build_led_descriptors(
+            repo, agency_name, selected_stops, central_position, led_color_hex, pre_stop_overrides, max_led,
+        )
+
+        return {
+            "customTerminusLeftName":  left_t,
+            "customTerminusRightName": right_t,
+            "leds":                    LedStripService._descriptors_to_preview_payload(descriptors),
+        }
+
+    @staticmethod
     def get_led_strip_by_id(board_id: int, strip_id: int, db: Session):
         repo  = LedStripRepository(db)
         strip = repo.get_strip(strip_id, board_id)
@@ -565,16 +627,19 @@ class LedStripService:
         return selected_stops, central_position
 
     @staticmethod
-    def _create_leds(
+    def _build_led_descriptors(
         repo: LedStripRepository,
         agency_name: str,
-        led_strip_id: int,
         selected_stops,
         central_position,
         led_color: str,
         pre_stop_overrides=None,
         max_led: int = 12,
-    ):
+    ) -> list[dict]:
+        """Compute, for each of the `max_led` slots, the (type, label, trip_stop)
+        that slot would get. Pure/read-only — used both to persist real LEDs and
+        to build a dry-run preview of what a strip would look like.
+        """
         only0  = selected_stops[1] is None
         only1  = selected_stops[0] is None
         # For two-direction strips the halves may be unequal after centering.
@@ -587,6 +652,7 @@ class LedStripService:
                 if override_ts and override_minutes is not None:
                     pre_minutes_by_ts_id[override_ts.id] = override_minutes
 
+        descriptors: list[dict] = []
         for i in range(max_led):
             if not only0 and not only1:
                 direction, stop_idx = (0, i) if i < half else (1, i - half)
@@ -613,18 +679,72 @@ class LedStripService:
             else:
                 led_type = "c_right" if is_central else "right"
 
+            descriptors.append({
+                "ledstrip_index":     i + 1,
+                "type":               led_type,
+                "led_color":          led_color,
+                "pre_travel_minutes": pre_travel_minutes,
+                "custom_name":        custom_name,
+                "custom_subname":     custom_subname,
+                "trip_stop":          ts,
+            })
+
+        return descriptors
+
+    @staticmethod
+    def _descriptors_to_preview_payload(descriptors: list[dict]) -> list[dict]:
+        payload = []
+        for d in descriptors:
+            ts = d["trip_stop"]
+            trip_stops_payload = []
+            if ts:
+                trip_stops_payload = [{
+                    "tripStopId":     ts.id,
+                    "stopStopId":     ts.stop_stop_id,
+                    "stopAgencyName": ts.stop_agency_name,
+                    "stopName":       ts.stop.name if ts.stop else None,
+                    "vehicleIncoming": False,
+                }]
+            payload.append({
+                "ledId":          None,
+                "ledstripIndex":  d["ledstrip_index"],
+                "customName":     d["custom_name"],
+                "customSubname":  d["custom_subname"],
+                "type":           d["type"],
+                "ledColor":       d["led_color"],
+                "preStopMinutes": d["pre_travel_minutes"],
+                "tripStops":      trip_stops_payload,
+            })
+        return payload
+
+    @staticmethod
+    def _create_leds(
+        repo: LedStripRepository,
+        agency_name: str,
+        led_strip_id: int,
+        selected_stops,
+        central_position,
+        led_color: str,
+        pre_stop_overrides=None,
+        max_led: int = 12,
+    ):
+        descriptors = LedStripService._build_led_descriptors(
+            repo, agency_name, selected_stops, central_position, led_color, pre_stop_overrides, max_led,
+        )
+
+        for d in descriptors:
             led = repo.add_led(Led(
                 ledstrip_id       = led_strip_id,
-                ledstrip_index    = i + 1,
-                custom_name       = custom_name,
-                custom_subname    = custom_subname,
-                type              = led_type,
-                led_color         = led_color,
-                pre_travel_minutes = pre_travel_minutes,
+                ledstrip_index    = d["ledstrip_index"],
+                custom_name       = d["custom_name"],
+                custom_subname    = d["custom_subname"],
+                type              = d["type"],
+                led_color         = d["led_color"],
+                pre_travel_minutes = d["pre_travel_minutes"],
             ))
 
-            if ts:
-                led.trip_stops.append(ts)
+            if d["trip_stop"]:
+                led.trip_stops.append(d["trip_stop"])
 
     _SMART_LOWER: frozenset[str] = frozenset({
         'le','la','les','un','une','de','du','des','à','au','aux','en','par','pour',

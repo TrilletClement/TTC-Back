@@ -80,6 +80,7 @@ def _build_order_out(o: Order, include_svg: bool = False) -> OrderOut:
         label_url=o.label_url,
         tracking_url=o.tracking_url,
         shipping_option_code=o.shipping_option_code,
+        return_requested_at=o.return_requested_at,
         shipping_details=_addr_dict(sd),
         billing_details=None if same_address else _addr_dict(bd),
         same_address=same_address,
@@ -234,9 +235,10 @@ class AdminOrdersService:
         except RuntimeError as exc:
             raise BusinessError(str(exc))
 
-        o.sendcloud_parcel_id = result.parcel_id
-        o.label_url           = result.label_url
-        o.tracking_url        = result.tracking_url
+        o.sendcloud_parcel_id   = result.parcel_id
+        o.sendcloud_shipment_id = result.shipment_id
+        o.label_url             = result.label_url
+        o.tracking_url          = result.tracking_url
         if result.tracking_number:
             o.tracking_number = result.tracking_number
         o.status = "shipped"

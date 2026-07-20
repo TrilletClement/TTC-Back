@@ -83,6 +83,28 @@ class OrderService:
             raise HTTPException(status_code=400, detail=str(e))
 
     @staticmethod
+    def get_return_portal_url(order_id: int, user_id: int, db: Session):
+        from app.services import sendcloudService
+
+        repo = OrderRepository(db)
+        order = repo.get_for_user_with_items(order_id, user_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        if order.status not in ("shipped", "delivered"):
+            raise HTTPException(status_code=400, detail="This order hasn't shipped yet.")
+        if not order.sendcloud_shipment_id:
+            raise HTTPException(status_code=400, detail="No shipment on file for this order.")
+
+        url = sendcloudService.get_return_portal_url(order.sendcloud_shipment_id)
+        if not url:
+            raise HTTPException(
+                status_code=400,
+                detail="Returns aren't available for this order (window may have expired). "
+                       "Contact support and we'll help you out.",
+            )
+        return {"url": url}
+
+    @staticmethod
     def get_order_svg(order_id: int, user_id: int, db: Session):
         repo = OrderRepository(db)
         order = repo.get_for_user_with_items(order_id, user_id)
@@ -110,6 +132,7 @@ class OrderService:
                 "created_at":          o.created_at.isoformat() if o.created_at else None,
                 "tracking_number":     o.tracking_number,
                 "tracking_url":        o.tracking_url,
+                "return_requested_at": o.return_requested_at.isoformat() if o.return_requested_at else None,
                 "shipping_details": {
                     "firstName":    o.shipping_details.first_name,
                     "lastName":     o.shipping_details.last_name,

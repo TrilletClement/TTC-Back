@@ -49,3 +49,9 @@ def get_order_svg(order_id: int, current_user: User, db: Session = Depends(get_d
 @require_user
 async def update_gift(order_id: int, payload: GiftUpdate, current_user: User, db: Session = Depends(get_db)):
     return await OrderService.update_gift(order_id, payload, current_user.id, db)
+
+
+@router.get("/{order_id}/return-portal-url")
+@require_user
+def get_return_portal_url(order_id: int, current_user: User, db: Session = Depends(get_db)):
+    return OrderService.get_return_portal_url(order_id, current_user.id, db)
