@@ -61,14 +61,27 @@ class adminSettingsService:
             raise NotFoundError("Hardware", hardware_id)
         return {"hardware_id": hardware_id, "schema": self.get_hardware_schema(hw)}
 
-    def update_hardware_schema(self, hardware_id: int, schema: dict) -> dict:
+    def update_hardware_schema(self, hardware_id: int, schema: dict,
+                                ble_prov_prefix: str | None = None,
+                                ble_prov_pop_salt: str | None = None) -> dict:
         hw = self.repo.get_hardware_by_id(hardware_id)
         if not hw:
             raise NotFoundError("Hardware", hardware_id)
 
         old_keys     = _extract_keys(self.get_hardware_schema(hw))
         removed_keys = old_keys - _extract_keys(schema)
-        hw.json_settings = json.dumps(schema)
+
+        # Merge into the existing blob rather than overwriting it wholesale —
+        # json_settings also carries keys unrelated to the settings schema
+        # (ble_prov_prefix/ble_prov_pop_salt, see device_label_service.py)
+        # that a plain overwrite here would otherwise silently discard.
+        existing = _parse_json(hw.json_settings)
+        existing["sections"] = schema.get("sections", [])
+        if ble_prov_prefix is not None:
+            existing["ble_prov_prefix"] = ble_prov_prefix
+        if ble_prov_pop_salt is not None:
+            existing["ble_prov_pop_salt"] = ble_prov_pop_salt
+        hw.json_settings = json.dumps(existing)
 
         if removed_keys:
             for device in self.repo.get_devices_by_hardware(hardware_id):

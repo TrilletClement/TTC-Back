@@ -28,7 +28,8 @@ def get_hardware_settings(hardware_id: int, svc: adminSettingsService = Depends(
 @require_admin
 def update_hardware_settings(hardware_id: int, payload: SchemaPayload, svc: adminSettingsService = Depends(get_service)):
     try:
-        return svc.update_hardware_schema(hardware_id, payload.json_schema)
+        return svc.update_hardware_schema(hardware_id, payload.json_schema,
+                                           payload.ble_prov_prefix, payload.ble_prov_pop_salt)
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

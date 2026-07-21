@@ -37,6 +37,9 @@ class DevicePatch(BaseModel):
     clear_target_firmware: bool = False
     hardware_id: Optional[int] = None
 
+class DeviceLabelsRequest(BaseModel):
+    device_ids: list[int]
+
 class DeviceAdminOut(BaseModel):
     id: int
     mac_address: str
