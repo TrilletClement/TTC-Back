@@ -511,7 +511,10 @@ def build_export_svg(board: Board, with_frame: bool, db: Session) -> str:
     ]
 
     for slot in range(1, max_strips + 1):
-        rail_y = bottom_rail_y - (max_strips - slot) * STRIP_H_MM
+        # order_index=1 is the bottom-most physical strip (matches the ESP32's
+        # own hardware numbering), ascending upward — see the 20260722_01
+        # migration for the historical-data half of this fix.
+        rail_y = bottom_rail_y - (slot - 1) * STRIP_H_MM
         strip  = strips_by_slot.get(slot)
         if strip and strip.leds:
             out.append(_build_strip(strip, rail_y, bgx, dims, max_led, db, _name_w))
