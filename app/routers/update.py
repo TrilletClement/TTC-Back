@@ -44,7 +44,9 @@ async def get_update_versions(
     )
 
     if not version_info:
-        raise HTTPException(status_code=404, detail="No update info found")
+        # Genuinely nothing assigned (no device override, no hardware default) —
+        # distinct from "already up to date", which now returns 200 below.
+        raise HTTPException(status_code=404, detail="No firmware configured for this hardware")
 
     return {
         "app_version": version_info.get("app_version"),

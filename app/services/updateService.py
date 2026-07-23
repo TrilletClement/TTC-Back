@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -13,6 +14,13 @@ from app.repositories.update_repo import UpdateRepository
 class UpdateService:
     PACKAGE_BASE_URL = os.environ.get("OTA_PACKAGE_BASE_URL", "https://esp.trillet.be")
 
+    # Packages are named "<firmware_name>-v<version>.bin" (see build_target.sh on the
+    # device side). Devices report their running version as the bare semver (e.g.
+    # "1.0.8"), so app_version must be extracted, not left as the full filename —
+    # otherwise it can never string-equal current_version and the device treats
+    # every check as a newer version, including immediately after updating.
+    _VERSION_RE = re.compile(r"-v([^-]+)\.bin$")
+
     @staticmethod
     def normalize_mac(mac: str) -> str:
         value = (mac or "").strip().lower().replace("-", ":")
@@ -26,9 +34,11 @@ class UpdateService:
 
     @staticmethod
     def _serialize(pkg) -> dict:
+        match = UpdateService._VERSION_RE.search(pkg.filename)
+        version = match.group(1) if match else pkg.filename
         return {
             "package_id":    pkg.id,
-            "app_version":   pkg.filename,
+            "app_version":   version,
             "app_url":       UpdateService._pkg_url(pkg.filename),
             "package_file":  pkg.filename,
             "firmware_name": pkg.filename,
@@ -83,9 +93,9 @@ class UpdateService:
         if not pkg and hw and hw.firmware_package_id:
             pkg = repo.get_active_firmware_by_id(hw.firmware_package_id)
 
+        # No firmware assigned anywhere (device override or hardware default) —
+        # a real "nothing to report" case, kept distinct from "up to date" below.
         if not pkg:
-            return None
-        if device and device.current_firmware_id == pkg.id:
             return None
 
         result = UpdateService._serialize(pkg)
