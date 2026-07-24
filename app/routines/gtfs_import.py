@@ -375,6 +375,16 @@ def _import_lines(agency_name: str, routes_csv_text: str):
         session.close()
 
 
+def _parse_coord(value: str | None) -> float | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 def _import_stops(agency_name: str, stops_csv_text: str):
     tic     = time.time()
     reader  = csv.DictReader(StringIO(stops_csv_text))
@@ -386,14 +396,23 @@ def _import_stops(agency_name: str, stops_csv_text: str):
         for row in reader:
             stop_id   = (row.get("stop_id")  or "").strip()
             stop_name = (row.get("stop_name") or "").strip()
+            lat = _parse_coord(row.get("stop_lat"))
+            lon = _parse_coord(row.get("stop_lon"))
             if not stop_id:
                 continue
             if stop_id in existing:
-                if existing[stop_id].name != stop_name:
-                    existing[stop_id].name = stop_name
+                s = existing[stop_id]
+                changed = False
+                if s.name != stop_name:
+                    s.name = stop_name
+                    changed = True
+                if s.lat != lat or s.lon != lon:
+                    s.lat, s.lon = lat, lon
+                    changed = True
+                if changed:
                     updated += 1
             else:
-                to_add.append(Stop(stop_id=stop_id, name=stop_name, agency_name=agency_name))
+                to_add.append(Stop(stop_id=stop_id, name=stop_name, agency_name=agency_name, lat=lat, lon=lon))
         if to_add:
             session.bulk_save_objects(to_add)
         session.commit()

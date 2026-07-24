@@ -31,6 +31,12 @@ def get_stops(db: Session = Depends(get_db)):
     return LineService.get_stops(db)
 
 
+@router.get("/nearest-stop")
+@require_user
+def get_nearest_stop(lat: float, lon: float, db: Session = Depends(get_db)):
+    return LineService.find_nearest_stop_with_lines(lat, lon, db)
+
+
 @router.get("/{line_id}/stops")
 @require_user
 def get_line_stops(line_id: str, db: Session = Depends(get_db)):

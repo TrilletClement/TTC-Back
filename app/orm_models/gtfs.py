@@ -31,6 +31,8 @@ class Stop(Base):
     stop_id = Column(String(100), nullable=False)
     name = Column(String(100), nullable=False)
     agency_name = Column(String(100), ForeignKey("agency.name"), nullable=False)
+    lat = Column(Float, nullable=True)
+    lon = Column(Float, nullable=True)
     agency = relationship("Agency", backref="stops")
 
     __table_args__ = (

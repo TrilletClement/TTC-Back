@@ -79,6 +79,66 @@ class LineService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    # Stops within this radius of the user's position are all considered —
+    # multimodal hubs (e.g. a tram platform and a bus platform a few tens of
+    # meters apart) genuinely serve different lines, so picking only the
+    # single closest stop_id would silently guess wrong.
+    NEARBY_RADIUS_METERS = 200
+
+    @staticmethod
+    def find_nearest_stop_with_lines(lat: float, lon: float, db: Session):
+        repo = LineRepository(db)
+
+        nearby = repo.get_nearby_stops(lat, lon, LineService.NEARBY_RADIUS_METERS)
+        if not nearby:
+            # Sparse area: no stop within radius — fall back to whichever
+            # stop is closest regardless of distance, same as before.
+            nearest = repo.get_nearest_stop(lat, lon)
+            if not nearest:
+                raise HTTPException(status_code=404, detail="No stop with known coordinates found")
+            nearby = [nearest]
+
+        candidates = []
+        seen_line_ids: set[int] = set()
+        for stop, distance_m in nearby:
+            for line, direction in repo.get_lines_serving_stop(stop.stop_id, stop.agency_name):
+                if line.id in seen_line_ids:
+                    continue
+                seen_line_ids.add(line.id)
+
+                trips = [
+                    t for t in [
+                        repo.get_trip_by_id(line.best_trip_0_id),
+                        repo.get_trip_by_id(line.best_trip_1_id),
+                    ] if t
+                ]
+                stops_by_direction = LineService._build_stops_by_direction(repo, trips)
+
+                candidates.append({
+                    "agency_name": stop.agency_name,
+                    "line_id": line.id,
+                    "direction": str(direction),
+                    "stop_id": f"{stop.stop_id}_{stop.agency_name}",
+                    "stop_name": stop.name,
+                    "distance_meters": round(distance_m, 1),
+                    "line": {
+                        "id": line.id,
+                        "route_id": line.route_id,
+                        "agency_name": line.agency_name,
+                        "short_name": line.short_name,
+                        "long_name": line.long_name,
+                        "color": line.color,
+                        "text_color": line.text_color,
+                        "textColor": line.text_color,
+                    },
+                    "stops_by_direction": stops_by_direction,
+                })
+
+        if not candidates:
+            raise HTTPException(status_code=404, detail="No line serves any nearby stop")
+
+        return {"candidates": candidates}
+
     @staticmethod
     def _build_stops_by_direction(repo: LineRepository, trips):
         stops_by_direction = {}
