@@ -1,4 +1,5 @@
 import re
+from math import asin, cos, radians, sin, sqrt
 from typing import Optional
 
 from fastapi import HTTPException
@@ -58,7 +59,7 @@ class LineService:
             if not trips:
                 raise HTTPException(status_code=404, detail="No trips found")
 
-            stops_by_direction = LineService._build_stops_by_direction(repo, trips)
+            stops_by_direction, _ = LineService._build_stops_by_direction(repo, trips)
 
             return {
                 "line": {
@@ -112,7 +113,9 @@ class LineService:
                         repo.get_trip_by_id(line.best_trip_1_id),
                     ] if t
                 ]
-                stops_by_direction = LineService._build_stops_by_direction(repo, trips)
+                stops_by_direction, nearest_stop_by_direction = LineService._build_stops_by_direction(
+                    repo, trips, lat, lon
+                )
 
                 candidates.append({
                     "agency_name": stop.agency_name,
@@ -132,6 +135,10 @@ class LineService:
                         "textColor": line.text_color,
                     },
                     "stops_by_direction": stops_by_direction,
+                    # Nearest stop to the user's position within each
+                    # direction's own stop list — lets the wizard pre-fill
+                    # both directions instead of just the one that matched.
+                    "nearest_stop_by_direction": nearest_stop_by_direction,
                 })
 
         if not candidates:
@@ -140,24 +147,53 @@ class LineService:
         return {"candidates": candidates}
 
     @staticmethod
-    def _build_stops_by_direction(repo: LineRepository, trips):
-        stops_by_direction = {}
+    def _build_stops_by_direction(
+        repo: LineRepository, trips, lat: Optional[float] = None, lon: Optional[float] = None
+    ):
+        """Returns (stops_by_direction, nearest_stop_by_direction).
+
+        stops_by_direction: per direction, the stop list of that direction's
+        longest known trip (the canonical pattern).
+        nearest_stop_by_direction: per direction, the id of the stop in that
+        same list closest to (lat, lon), or omitted when lat/lon aren't given
+        or the direction has no located stops.
+        """
+        stops_by_direction: dict = {}
+        trip_stops_by_direction: dict = {}
         for trip in trips:
             direction = trip.direction
-            stops_by_direction.setdefault(direction, [])
-            trip_stop_list = [
-                {
-                    "id": f"{stop.stop_id}_{stop.agency_name}",
-                    "stop_id": stop.stop_id,
-                    "name": stop.name,
-                    "agency_name": stop.agency_name,
-                    "sequence": sequence,
-                }
-                for stop, sequence in repo.get_trip_stops_with_stops(trip.id)
-            ]
-            if len(trip_stop_list) > len(stops_by_direction[direction]):
-                stops_by_direction[direction] = trip_stop_list
-        return stops_by_direction
+            trip_stops = repo.get_trip_stops_with_stops(trip.id)
+            if len(trip_stops) > len(trip_stops_by_direction.get(direction, [])):
+                trip_stops_by_direction[direction] = trip_stops
+                stops_by_direction[direction] = [
+                    {
+                        "id": f"{stop.stop_id}_{stop.agency_name}",
+                        "stop_id": stop.stop_id,
+                        "name": stop.name,
+                        "agency_name": stop.agency_name,
+                        "sequence": sequence,
+                    }
+                    for stop, sequence in trip_stops
+                ]
+
+        nearest_stop_by_direction: dict = {}
+        if lat is not None and lon is not None:
+            for direction, trip_stops in trip_stops_by_direction.items():
+                located = [s for s, _ in trip_stops if s.lat is not None and s.lon is not None]
+                if not located:
+                    continue
+                nearest = min(located, key=lambda s: LineService._haversine_m(lat, lon, s.lat, s.lon))
+                nearest_stop_by_direction[direction] = f"{nearest.stop_id}_{nearest.agency_name}"
+
+        return stops_by_direction, nearest_stop_by_direction
+
+    @staticmethod
+    def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        p1, p2 = radians(lat1), radians(lat2)
+        dphi = radians(lat2 - lat1)
+        dlambda = radians(lon2 - lon1)
+        a = sin(dphi / 2) ** 2 + cos(p1) * cos(p2) * sin(dlambda / 2) ** 2
+        return 2 * 6371000 * asin(sqrt(a))
 
     @staticmethod
     def _line_sort_key(line):
