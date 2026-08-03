@@ -35,6 +35,9 @@ class TecOperator(GtfsOperator):
     # URL Temps Réel calquée sur le serveur de ta doc OpenAPI
     GTFS_RT_URL     = f"{BMC_API_BASE}/api/gtfs/feed/tec/rt/trip-update?format=protobuf"
 
+    # Flux d'alertes (perturbations), pollé toutes les 15 min par scheduler.py
+    GTFS_ALERT_URL  = f"{BMC_API_BASE}/api/gtfs/feed/tec/rt/alert?format=protobuf"
+
     @property
     def _headers(self) -> dict:
         # Confirmé par le Swagger : le paramètre est bien 'bmc-partner-key'
@@ -50,6 +53,8 @@ if __name__ == "__main__":
         _operator.import_static()
     elif "--rt" in sys.argv:
         _operator.update_realtime()
+    elif "--alerts" in sys.argv:
+        _operator.update_alerts()
     else:
         _operator.import_static()
         _operator.update_realtime()

@@ -66,16 +66,22 @@ class AuthService:
 
     def get_current_user_info(self, user: User) -> dict:
         return {
-            "id":              user.id,
-            "email":           user.email,
-            "active":          user.active,
-            "roleId":          [role.id   for role in user.roles],
-            "roleName":        [role.name for role in user.roles],
-            "preferredAgency": user.preferred_agency,
+            "id":                user.id,
+            "email":             user.email,
+            "active":            user.active,
+            "roleId":            [role.id   for role in user.roles],
+            "roleName":          [role.name for role in user.roles],
+            "preferredAgency":   user.preferred_agency,
+            "alertDisplayPref":  user.alert_display_pref,
         }
 
-    def update_preferences(self, user: User, preferred_agency: Optional[str]) -> dict:
+    def update_preferences(self, user: User, preferred_agency: Optional[str],
+                            alert_display_pref: Optional[str] = None) -> dict:
         user.preferred_agency = preferred_agency
+        if alert_display_pref is not None:
+            if alert_display_pref not in {"off", "icon", "banner"}:
+                raise ValidationError(f"Invalid alert_display_pref '{alert_display_pref}'")
+            user.alert_display_pref = alert_display_pref
         self.repo.commit()
         return {"message": "Préférences mises à jour"}
 

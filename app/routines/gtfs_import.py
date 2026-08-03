@@ -41,6 +41,7 @@ import requests
 import sqlalchemy as sa
 from google.transit import gtfs_realtime_pb2
 
+from app.orm_models.alert import LineAlert, line_alert_line
 from app.orm_models.db import get_db
 from app.orm_models.gtfs import Agency, GtfsImportLog, Line, Stop, Trip, TripStop
 from app.orm_models.raw_gtfs import RawGtfsServiceDate, RawGtfsStopTime, RawGtfsTrip
@@ -268,6 +269,18 @@ def _parse_seconds(time_str: str):
 def _build_signature(line_id: int, direction: int, stop_ids: list) -> str:
     payload = f"{line_id}:{direction}|" + "|".join(stop_ids)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _pick_translation(translated_string, preferred=("fr", "nl", "en")) -> str:
+    """Pick one language out of a GTFS-RT TranslatedString (fr first — the
+    frontend's default language)."""
+    if not translated_string.translation:
+        return ""
+    by_lang = {t.language.lower(): t.text for t in translated_string.translation if t.language}
+    for lang in preferred:
+        if lang in by_lang:
+            return by_lang[lang]
+    return translated_string.translation[0].text
 
 
 def _open_stop_times(zip_bytes: bytes):
@@ -736,6 +749,7 @@ class GtfsOperator:
     COUNTRY:         str = "Belgium"
     GTFS_STATIC_URL: str = ""
     GTFS_RT_URL:     str = ""
+    GTFS_ALERT_URL:  str = ""
     STATIC_TIMEOUT:  int = 120
     RT_TIMEOUT:      int = 10
 
@@ -962,6 +976,106 @@ class GtfsOperator:
             session.rollback()
             _update_rt_log(self.AGENCY_NAME, error=str(e))
             print(f"  [{self.AGENCY_NAME}] ERREUR upsert RT: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            session.close()
+
+    def _fetch_alert_raw(self) -> bytes:
+        r = requests.get(self.GTFS_ALERT_URL, headers=self._headers, timeout=self.RT_TIMEOUT)
+        if r.status_code != 200:
+            raise RuntimeError(f"[{self.AGENCY_NAME}] Alert HTTP {r.status_code}: {r.text[:200]}")
+        return r.content
+
+    def update_alerts(self) -> None:
+        """Fetch the GTFS-RT Alert feed and store the current disruption state
+        per line. No history is kept — each poll replaces the previous state
+        for this agency (delete-then-reinsert, cascades to line_alert_line)."""
+        if not self.GTFS_ALERT_URL:
+            return
+
+        from datetime import datetime as _dt
+
+        tic = time.time()
+        print(f"[{time.strftime('%H:%M:%S')}] [{self.AGENCY_NAME}] Mise à jour Alertes…")
+
+        try:
+            raw = self._fetch_alert_raw()
+        except Exception as e:
+            print(f"  [{self.AGENCY_NAME}] ERREUR fetch Alert: {e}")
+            return
+
+        try:
+            feed = gtfs_realtime_pb2.FeedMessage()
+            feed.ParseFromString(raw)
+        except Exception as e:
+            print(f"  [{self.AGENCY_NAME}] ERREUR parse Alert: {e}")
+            return
+
+        entities = [e for e in feed.entity if e.HasField("alert")]
+        print(f"  [{self.AGENCY_NAME}] {len(entities)} Alerts reçues")
+
+        parsed = []
+        all_route_ids: set[str] = set()
+        for entity in entities:
+            alert = entity.alert
+            route_ids = {ie.route_id for ie in alert.informed_entity if ie.route_id}
+            if not route_ids:
+                continue  # network-wide / stop-only alerts are out of scope for v1
+            all_route_ids |= route_ids
+            parsed.append({
+                "gtfs_alert_id":     entity.id,
+                "route_ids":         route_ids,
+                "effect":            gtfs_realtime_pb2.Alert.Effect.Name(alert.effect) if alert.effect is not None else None,
+                "header_text":       _pick_translation(alert.header_text),
+                "description_text":  _pick_translation(alert.description_text) or None,
+                "url":               _pick_translation(alert.url) or None,
+            })
+
+        session = next(get_db())
+        try:
+            route_to_line = {}
+            if all_route_ids:
+                route_to_line = {
+                    l.route_id: l.id
+                    for l in session.query(Line).filter(
+                        Line.agency_name == self.AGENCY_NAME,
+                        Line.route_id.in_(all_route_ids),
+                    )
+                }
+
+            # Delete-then-reinsert: current state only, no history kept.
+            session.query(LineAlert).filter_by(agency_name=self.AGENCY_NAME).delete(synchronize_session=False)
+            session.flush()
+
+            now_dt = _dt.utcnow()
+            inserted = 0
+            for item in parsed:
+                line_ids = [route_to_line[r] for r in item["route_ids"] if r in route_to_line]
+                if not line_ids:
+                    continue
+                alert_row = LineAlert(
+                    agency_name=self.AGENCY_NAME,
+                    gtfs_alert_id=item["gtfs_alert_id"],
+                    effect=item["effect"],
+                    header_text=item["header_text"] or "Perturbation",
+                    description_text=item["description_text"],
+                    url=item["url"],
+                    fetched_at=now_dt,
+                )
+                session.add(alert_row)
+                session.flush()
+                session.execute(
+                    line_alert_line.insert(),
+                    [{"line_id": lid, "alert_id": alert_row.id} for lid in line_ids],
+                )
+                inserted += 1
+
+            session.commit()
+            print(f"  [{self.AGENCY_NAME}] {inserted} alertes upsertées en {time.time()-tic:.2f}s")
+        except Exception as e:
+            session.rollback()
+            print(f"  [{self.AGENCY_NAME}] ERREUR upsert Alert: {e}")
             import traceback
             traceback.print_exc()
         finally:

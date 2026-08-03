@@ -26,6 +26,7 @@ class User(Base, UserMixin):
     confirmation_token_expiry = Column(DateTime, nullable=True)
     preferred_agency = Column(String(50), nullable=True)
     google_id = Column(String, nullable=True, unique=True, index=True)
+    alert_display_pref = Column(String(10), nullable=False, default="banner")
 
 
 class UserRoles(Base):

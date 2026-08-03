@@ -53,6 +53,13 @@ def start():
         name='Fetch TEC TripUpdates (every 30s, 05:00–01:00)',
         replace_existing=True, max_instances=1, coalesce=True,
     )
+    scheduler.add_job(
+        tec_operator.update_alerts,
+        CronTrigger(minute='*/15'),
+        id='fetch_tec_alerts',
+        name='Fetch TEC service alerts (every 15 min)',
+        replace_existing=True, max_instances=1, coalesce=True,
+    )
 
     # ===== DE LIJN =====
     # 2 calls/min × 60 × 20h service = 2 400 calls/day — restricted to 05:00–01:00
@@ -70,6 +77,13 @@ def start():
         name='Fetch De Lijn TripUpdates (every 30s, 05:00–01:00)',
         replace_existing=True, max_instances=1, coalesce=True,
     )
+    scheduler.add_job(
+        delijn_operator.update_alerts,
+        CronTrigger(minute='*/15'),
+        id='fetch_delijn_alerts',
+        name='Fetch De Lijn service alerts (every 15 min)',
+        replace_existing=True, max_instances=1, coalesce=True,
+    )
 
     # ===== SNCB =====
     # 2 calls/min × 60 × 20h service = 2 400 calls/day — restricted to 05:00–01:00
@@ -85,6 +99,13 @@ def start():
         CronTrigger(hour='0,5-23', second='0,30'),
         id='fetch_sncb_trip_updates',
         name='Fetch SNCB TripUpdates (every 30s, 05:00–01:00)',
+        replace_existing=True, max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        sncb_operator.update_alerts,
+        CronTrigger(minute='*/15'),
+        id='fetch_sncb_alerts',
+        name='Fetch SNCB service alerts (every 15 min)',
         replace_existing=True, max_instances=1, coalesce=True,
     )
 

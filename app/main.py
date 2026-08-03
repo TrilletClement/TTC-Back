@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routines import scheduler
-from app.routers import payments, auth, boards, devices, ledstrips, orders, line, blog, update, adminOta, adminUsers, adminDevices, adminPrices, adminOrders, shipping, provisioning, adminSettings, adminShipping, adminGtfs, public, gifts, support, adminSupport
+from app.routers import payments, auth, boards, devices, ledstrips, orders, line, blog, update, adminOta, adminUsers, adminDevices, adminPrices, adminOrders, shipping, provisioning, adminSettings, adminShipping, adminGtfs, public, gifts, support, adminSupport, alerts
 from app.core.config import settings
 from app.core.security.jwt import get_current_user
 from app.orm_models.auth import User
@@ -60,6 +60,7 @@ app.include_router(adminPrices.router)
 app.include_router(adminOrders.router)
 app.include_router(payments.router)
 app.include_router(shipping.router)
+app.include_router(alerts.router)
 app.include_router(provisioning.router)
 app.include_router(adminSettings.router)
 app.include_router(adminShipping.router)

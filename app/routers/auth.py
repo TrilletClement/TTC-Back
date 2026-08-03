@@ -93,7 +93,10 @@ def update_preferences(
     current_user: User = Depends(get_current_user),
     svc: AuthService = Depends(get_service),
 ):
-    return svc.update_preferences(current_user, payload.preferred_agency)
+    try:
+        return svc.update_preferences(current_user, payload.preferred_agency, payload.alert_display_pref)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/forgot-password")

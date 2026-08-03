@@ -66,9 +66,19 @@ def _c(s: str | None, fallback: str = "#000000") -> str:
     return s if s.startswith("#") else f"#{s}"
 
 
+def _relative_luminance(r: int, g: int, b: int) -> float:
+    def _linear(c: float) -> float:
+        cs = c / 255
+        return cs / 12.92 if cs <= 0.03928 else ((cs + 0.055) / 1.055) ** 2.4
+    return 0.2126 * _linear(r) + 0.7152 * _linear(g) + 0.0722 * _linear(b)
+
+
 def _is_light_color(hex_color: str) -> bool:
-    """True for white/near-white line colors — the route square would
-    otherwise be invisible against the board's own white background."""
+    """True only for a genuinely white/near-white line color (e.g. De Lijn
+    425 is literally #ffffff in GTFS) — deliberately tight so a merely vivid
+    color like TEC's #ffcd00 (contrast-with-white ~= 1.52, well outside this
+    cutoff) never gets the black-outline/dark-text treatment meant for
+    colors that actually vanish against the board's white background."""
     h = hex_color.lstrip("#")
     if len(h) == 3:
         h = "".join(c * 2 for c in h)
@@ -78,8 +88,9 @@ def _is_light_color(hex_color: str) -> bool:
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     except ValueError:
         return False
-    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-    return luminance > 0.92
+    luminance = _relative_luminance(r, g, b)
+    contrast_with_white = 1.05 / (luminance + 0.05)
+    return contrast_with_white < 1.2
 
 
 def _dims(bt) -> dict:
@@ -183,18 +194,19 @@ def _terminus_box(
 
     parts: list[str] = []
 
-    # Grey backing plate for a white/near-white line color — the square
-    # itself would otherwise vanish against the board's white background.
-    if _is_light_color(lc):
-        pad = 0.8
-        parts.append(
-            f'<rect x="{_p(rx - pad)}" y="{_p(box_top - pad)}" '
-            f'width="{_p(ROUTE_SZ + 2 * pad)}" height="{_p(TB_H + 2 * pad)}" '
-            f'rx="{_p(TB_RX + 0.5)}" fill="#dde1ec"/>'
-        )
+    # A white/near-white line color makes the square vanish against the
+    # board's own white background, and a light default text color would
+    # then also be invisible on it — outline the square in black and force
+    # dark text instead of relying on a grey backing plate (too little
+    # contrast against both the board and light line colors).
+    is_light  = _is_light_color(lc)
+    route_stroke = ' stroke="#000000" stroke-width="0.5"' if is_light else ""
+    route_tc  = "#1a1a1a" if is_light else tc
+
     # Route square — all corners rounded (standalone element with gap)
     parts.append(
-        f'<rect x="{_p(rx)}" y="{_p(box_top)}" width="{_p(ROUTE_SZ)}" height="{_p(TB_H)}" rx="{_p(TB_RX)}" fill="{lc}"/>'
+        f'<rect x="{_p(rx)}" y="{_p(box_top)}" width="{_p(ROUTE_SZ)}" height="{_p(TB_H)}" '
+        f'rx="{_p(TB_RX)}" fill="{lc}"{route_stroke}/>'
     )
     # Name rect — all corners rounded (standalone element with gap)
     parts.append(
@@ -206,7 +218,7 @@ def _terminus_box(
             f'<text x="{_p(rx + ROUTE_SZ/2)}" y="{_p(mid_y)}" '
             f'text-anchor="middle" dominant-baseline="central" '
             f'font-family="Brusseline,Arial Narrow,Arial,sans-serif" font-size="{_p(min(ROUTE_SZ*0.65, 6.5))}" '
-            f'font-weight="700" fill="{tc}">{_esc(route[:5])}</text>'
+            f'font-weight="700" fill="{route_tc}">{_esc(route[:5])}</text>'
         )
     # Terminus name text — left-aligned inside name rect
     if terminus:
@@ -253,6 +265,30 @@ def _build_strip(
 
     parts: list[str] = []
 
+    # A light line color makes the rail itself vanish against the board's own
+    # white background — not just the route-number square. Back every
+    # rail/arrow stroke with a wider black copy first (drawn behind, same
+    # shape) instead of a filter, since this SVG is consumed by physical
+    # fabrication tooling that may not render SVG filters at all. Uses the
+    # same threshold as the badge text (_is_light_color) — a thin line has
+    # even less visual weight than bold digits, so it needs contrast help at
+    # least as readily, not less.
+    rail_light = _is_light_color(lc)
+
+    def _railed(svg_fragment: str, width_str: str) -> str:
+        """Prepend a wider black copy of `svg_fragment` behind it — `width_str`
+        must match the literal `stroke-width="..."` value already baked into
+        the fragment, so it can be swapped for a thicker one."""
+        if not rail_light:
+            return svg_fragment
+        w = float(width_str) + 1.0
+        backing = (
+            svg_fragment
+            .replace(f'stroke="{lc}"', 'stroke="#000000"')
+            .replace(f'stroke-width="{width_str}"', f'stroke-width="{_p(w)}"')
+        )
+        return backing + "\n" + svg_fragment
+
     # ── Rail segments: drawn first, circles cover the ends — no gap needed ────
     for i in range(len(leds) - 1):
         if not leds[i].trip_stops or not leds[i + 1].trip_stops:
@@ -266,39 +302,44 @@ def _build_strip(
             # Centre the chevron at mid: tip at mid±HALF, tail at mid∓HALF.
             seg  = HALF + 1.5   # clear space from mid to where rail resumes
 
-            parts.append(
+            parts.append(_railed(
                 f'<line x1="{_p(x1 - 0.5)}" y1="{_p(rail_y)}" '
                 f'x2="{_p(mid - seg)}" y2="{_p(rail_y)}" '
-                f'stroke="{lc}" stroke-width="{lw}" stroke-linecap="round"/>'
-            )
+                f'stroke="{lc}" stroke-width="{lw}" stroke-linecap="round"/>',
+                lw,
+            ))
             if d == "right":
-                parts.append(
+                parts.append(_railed(
                     f'<path d="M {_p(mid - HALF - 0.5)} {_p(rail_y - AH)} '
                     f'L {_p(mid + HALF - 0.5)} {_p(rail_y)} '
                     f'L {_p(mid - HALF - 0.5)} {_p(rail_y + AH)}" '
                     f'fill="none" stroke="{lc}" stroke-width="1.2" '
-                    f'stroke-linecap="round" stroke-linejoin="round"/>'
-                )
+                    f'stroke-linecap="round" stroke-linejoin="round"/>',
+                    "1.2",
+                ))
             else:
-                parts.append(
+                parts.append(_railed(
                     f'<path d="M {_p(mid + HALF + 0.5)} {_p(rail_y - AH)} '
                     f'L {_p(mid - HALF + 0.5)} {_p(rail_y)} '
                     f'L {_p(mid + HALF + 0.5)} {_p(rail_y + AH)}" '
                     f'fill="none" stroke="{lc}" stroke-width="1.2" '
-                    f'stroke-linecap="round" stroke-linejoin="round"/>'
-                )
-            parts.append(
+                    f'stroke-linecap="round" stroke-linejoin="round"/>',
+                    "1.2",
+                ))
+            parts.append(_railed(
                 f'<line x1="{_p(mid + seg)}" y1="{_p(rail_y)}" '
                 f'x2="{_p(x2 + 0.5)}" y2="{_p(rail_y)}" '
-                f'stroke="{lc}" stroke-width="{lw}" stroke-linecap="round"/>'
-            )
+                f'stroke="{lc}" stroke-width="{lw}" stroke-linecap="round"/>',
+                lw,
+            ))
         else:
             # Extend 0.5 mm beyond each circle centre so the cap is hidden under it.
-            parts.append(
+            parts.append(_railed(
                 f'<line x1="{_p(x1 - 0.5)}" y1="{_p(rail_y)}" '
                 f'x2="{_p(x2 + 0.5)}" y2="{_p(rail_y)}" '
-                f'stroke="{lc}" stroke-width="{lw}" stroke-linecap="round"/>'
-            )
+                f'stroke="{lc}" stroke-width="{lw}" stroke-linecap="round"/>',
+                lw,
+            ))
 
     # ── LED circles (drawn after rails so circles cover line ends) ────────────
     for led in leds:
@@ -378,24 +419,21 @@ def _build_strip(
             by   = ly - IB_H / 2              # vertically centred on label y
             # Name rect width fitted to text: ~1.6 mm/char + 2.5 mm padding
             ib_name_w = max(10.0, len(term) * 1.6 + 2.5)
-            # Grey backing plate behind a white/near-white route square only —
-            # it would otherwise be invisible against the board's white background.
-            ib_backdrop = ""
-            if _is_light_color(lc):
-                ib_pad = 0.6
-                ib_backdrop = (
-                    f'<rect x="{_p(bx - ib_pad)}" y="{_p(by - ib_pad)}" '
-                    f'width="{_p(IB_ROUTE_W + 2 * ib_pad)}" height="{_p(IB_H + 2 * ib_pad)}" '
-                    f'rx="{_p(IB_RX + 0.4)}" fill="#dde1ec"/>'
-                )
+            # A white/near-white route square vanishes against the board's
+            # white background, and the default text color would then also
+            # be invisible on it — outline the square in black and force
+            # dark text instead of a grey backing plate (too little contrast).
+            ib_light   = _is_light_color(lc)
+            ib_stroke  = ' stroke="#000000" stroke-width="0.4"' if ib_light else ""
+            ib_tc      = "#1a1a1a" if ib_light else tc
             parts.append(
                 f'<g transform="rotate(-60,{_p(x)},{_p(ly)})">'
-                f'{ib_backdrop}'
-                f'<rect x="{_p(bx)}" y="{_p(by)}" width="{_p(IB_ROUTE_W)}" height="{_p(IB_H)}" rx="{_p(IB_RX)}" fill="{lc}"/>'
+                f'<rect x="{_p(bx)}" y="{_p(by)}" width="{_p(IB_ROUTE_W)}" height="{_p(IB_H)}" '
+                f'rx="{_p(IB_RX)}" fill="{lc}"{ib_stroke}/>'
                 f'<text x="{_p(bx + IB_ROUTE_W / 2)}" y="{_p(ly)}" '
                 f'text-anchor="middle" dominant-baseline="central" '
                 f'font-family="Brusseline,Arial Narrow,Arial,sans-serif" font-size="{_p(IB_FS)}" '
-                f'font-weight="900" fill="{tc}">{_esc(route_label[:5])}</text>'
+                f'font-weight="900" fill="{ib_tc}">{_esc(route_label[:5])}</text>'
                 f'<rect x="{_p(bx + IB_ROUTE_W + IB_GAP)}" y="{_p(by)}" width="{_p(ib_name_w)}" height="{_p(IB_H)}" rx="{_p(IB_RX)}" fill="{tb_fill}"/>'
                 f'<text x="{_p(bx + IB_ROUTE_W + IB_GAP + 1.0)}" y="{_p(ly)}" '
                 f'dominant-baseline="central" '

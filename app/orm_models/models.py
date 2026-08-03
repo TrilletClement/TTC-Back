@@ -1,3 +1,4 @@
+from app.orm_models.alert import LineAlert, line_alert_line
 from app.orm_models.auth import Role, User, UserRoles
 from app.orm_models.board import Board, BoardType, Led, LedStrip, trip_stop_led_link
 from app.orm_models.device import ESP32Device, FirmwarePackage, Hardware
@@ -13,6 +14,8 @@ from app.orm_models.raw_gtfs import (
 )
 
 __all__ = [
+    "LineAlert",
+    "line_alert_line",
     "Role",
     "User",
     "UserRoles",

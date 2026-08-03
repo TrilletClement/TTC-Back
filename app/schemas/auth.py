@@ -28,3 +28,4 @@ class ResendConfirmRequest(BaseModel):
 
 class PreferencesUpdate(BaseModel):
     preferred_agency: str | None = None
+    alert_display_pref: str | None = None

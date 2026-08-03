@@ -29,6 +29,7 @@ class DeLijnOperator(GtfsOperator):
     AGENCY_NAME     = "DE_LIJN"
     GTFS_STATIC_URL = f"{BMC_API_BASE}/api/gtfs/feed/delijn/static/"
     GTFS_RT_URL     = f"{BMC_API_BASE}/api/gtfs/feed/delijn/rt/trip-update?format=protobuf"
+    GTFS_ALERT_URL  = f"{BMC_API_BASE}/api/gtfs/feed/delijn/rt/alert?format=protobuf"
 
     @property
     def _headers(self) -> dict:
@@ -43,6 +44,8 @@ if __name__ == "__main__":
         _operator.import_static()
     elif "--rt" in sys.argv:
         _operator.update_realtime()
+    elif "--alerts" in sys.argv:
+        _operator.update_alerts()
     else:
         _operator.import_static()
         _operator.update_realtime()
