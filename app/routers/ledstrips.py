@@ -58,8 +58,12 @@ class LedLabelPatch(BaseModel):
 
 
 class TerminusLabelPatch(BaseModel):
-    custom_terminus_left_name:  Optional[str] = Field(default=None, max_length=19)
-    custom_terminus_right_name: Optional[str] = Field(default=None, max_length=19)
+    # Matches led_strip.custom_terminus_left/right_name (String(50)) — unlike
+    # per-LED labels, the terminus name is a single rotated badge that
+    # truncates itself to fit on the frontend, so it isn't capped to the
+    # LED display width.
+    custom_terminus_left_name:  Optional[str] = Field(default=None, max_length=50)
+    custom_terminus_right_name: Optional[str] = Field(default=None, max_length=50)
 
 
 class ReorderPayload(BaseModel):

@@ -403,11 +403,13 @@ class LedStripService:
         strip = repo.get_strip(strip_id, board_id)
         if not strip:
             raise HTTPException(status_code=404, detail="LED strip not found")
+        # limit=50 matches led_strip.custom_terminus_left/right_name (String(50));
+        # the default limit=19 on _truncate is for per-LED labels, not this field.
         t = LedStripService._truncate
         if "custom_terminus_left_name" in fields_set:
-            strip.custom_terminus_left_name  = t(custom_terminus_left_name)
+            strip.custom_terminus_left_name  = t(custom_terminus_left_name, limit=50)
         if "custom_terminus_right_name" in fields_set:
-            strip.custom_terminus_right_name = t(custom_terminus_right_name)
+            strip.custom_terminus_right_name = t(custom_terminus_right_name, limit=50)
         repo.commit()
         return {
             "message": "OK",

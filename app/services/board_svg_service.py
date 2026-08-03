@@ -66,6 +66,22 @@ def _c(s: str | None, fallback: str = "#000000") -> str:
     return s if s.startswith("#") else f"#{s}"
 
 
+def _is_light_color(hex_color: str) -> bool:
+    """True for white/near-white line colors — the route square would
+    otherwise be invisible against the board's own white background."""
+    h = hex_color.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    if len(h) != 6:
+        return False
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return False
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    return luminance > 0.92
+
+
 def _dims(bt) -> dict:
     return {k: (getattr(bt, k) or _DEFAULTS[k]) for k in _DEFAULTS}
 
@@ -167,6 +183,15 @@ def _terminus_box(
 
     parts: list[str] = []
 
+    # Grey backing plate for a white/near-white line color — the square
+    # itself would otherwise vanish against the board's white background.
+    if _is_light_color(lc):
+        pad = 0.8
+        parts.append(
+            f'<rect x="{_p(rx - pad)}" y="{_p(box_top - pad)}" '
+            f'width="{_p(ROUTE_SZ + 2 * pad)}" height="{_p(TB_H + 2 * pad)}" '
+            f'rx="{_p(TB_RX + 0.5)}" fill="#dde1ec"/>'
+        )
     # Route square — all corners rounded (standalone element with gap)
     parts.append(
         f'<rect x="{_p(rx)}" y="{_p(box_top)}" width="{_p(ROUTE_SZ)}" height="{_p(TB_H)}" rx="{_p(TB_RX)}" fill="{lc}"/>'
@@ -353,8 +378,19 @@ def _build_strip(
             by   = ly - IB_H / 2              # vertically centred on label y
             # Name rect width fitted to text: ~1.6 mm/char + 2.5 mm padding
             ib_name_w = max(10.0, len(term) * 1.6 + 2.5)
+            # Grey backing plate behind a white/near-white route square only —
+            # it would otherwise be invisible against the board's white background.
+            ib_backdrop = ""
+            if _is_light_color(lc):
+                ib_pad = 0.6
+                ib_backdrop = (
+                    f'<rect x="{_p(bx - ib_pad)}" y="{_p(by - ib_pad)}" '
+                    f'width="{_p(IB_ROUTE_W + 2 * ib_pad)}" height="{_p(IB_H + 2 * ib_pad)}" '
+                    f'rx="{_p(IB_RX + 0.4)}" fill="#dde1ec"/>'
+                )
             parts.append(
                 f'<g transform="rotate(-60,{_p(x)},{_p(ly)})">'
+                f'{ib_backdrop}'
                 f'<rect x="{_p(bx)}" y="{_p(by)}" width="{_p(IB_ROUTE_W)}" height="{_p(IB_H)}" rx="{_p(IB_RX)}" fill="{lc}"/>'
                 f'<text x="{_p(bx + IB_ROUTE_W / 2)}" y="{_p(ly)}" '
                 f'text-anchor="middle" dominant-baseline="central" '
@@ -447,20 +483,29 @@ def _cut_marks(bgx: float, bgy: float, w: float, h: float) -> str:
 
 
 # ── Frame overlay ─────────────────────────────────────────────────────────────
+# Board outline (rounded rect) traced directly on the board's own bounding
+# box, plus 4 corner mounting holes — matches the reference layer supplied
+# for the physical enclosure, no separate bezel/overlap geometry needed.
+_FRAME_HOLE_INSET = 10.0  # mm from each edge to its mounting-hole centre
+_FRAME_HOLE_R     = 3.8   # mm — mounting-hole radius
+_FRAME_CORNER_RX  = 10.0  # mm — outline corner radius
+_FRAME_STROKE     = 'fill="none" stroke="#000" stroke-width=".1"'
+
+
 def _frame(bgx: float, bgy: float, dims: dict) -> str:
-    fox = dims["frame_overlap_x_mm"]
-    foy = dims["frame_overlap_y_mm"]
-    foL = bgx - fox;  foT = bgy - foy
-    foR = foL + dims["frame_outer_x_mm"]
-    foB = foT + dims["frame_outer_y_mm"]
-    fiL = bgx + fox;  fiT = bgy + foy
-    fiR = fiL + dims["frame_inner_x_mm"]
-    fiB = fiT + dims["frame_inner_y_mm"]
-    return (
-        f'<path fill="black" fill-rule="evenodd" '
-        f'd="M {_p(foL)} {_p(foT)} H {_p(foR)} V {_p(foB)} H {_p(foL)} Z '
-        f'M {_p(fiL)} {_p(fiT)} H {_p(fiR)} V {_p(fiB)} H {_p(fiL)} Z"/>'
-    )
+    w, h = dims["max_width_mm"], dims["max_height_mm"]
+    parts = [
+        f'<rect x="{_p(bgx)}" y="{_p(bgy)}" width="{_p(w)}" height="{_p(h)}" '
+        f'rx="{_p(_FRAME_CORNER_RX)}" {_FRAME_STROKE}/>'
+    ]
+    for cx, cy in (
+        (bgx + _FRAME_HOLE_INSET,     bgy + _FRAME_HOLE_INSET),
+        (bgx + w - _FRAME_HOLE_INSET, bgy + _FRAME_HOLE_INSET),
+        (bgx + _FRAME_HOLE_INSET,     bgy + h - _FRAME_HOLE_INSET),
+        (bgx + w - _FRAME_HOLE_INSET, bgy + h - _FRAME_HOLE_INSET),
+    ):
+        parts.append(f'<circle cx="{_p(cx)}" cy="{_p(cy)}" r="{_p(_FRAME_HOLE_R)}" {_FRAME_STROKE}/>')
+    return "\n".join(parts)
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
