@@ -33,6 +33,24 @@ class LedStripService:
         return color.upper()
 
     @staticmethod
+    def _normalize_optional_hex_color(value: str | None) -> str | None:
+        """Like _normalize_hex_color but None stays None instead of defaulting
+        to green — used for line_color, where None means "no override, follow
+        the line's official GTFS color" rather than "pick a default".
+        """
+        if value is None:
+            return None
+        color = value.strip()
+        if not LedStripService.HEX_COLOR_RE.fullmatch(color):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid line_color. Expected HEX RGB like #1F3C88",
+            )
+        if not color.startswith("#"):
+            color = f"#{color}"
+        return color.upper()
+
+    @staticmethod
     def _get_max_led(board) -> int:
         if board.board_type and board.board_type.max_led:
             return board.board_type.max_led
@@ -48,6 +66,7 @@ class LedStripService:
         central_stop_left_name: str,
         central_stop_right_name: str,
         led_color: str = None,
+        line_color: str | None = None,
         pre_stop_left_name: str | None = None,
         pre_stop_left_minutes: int | None = None,
         pre_stop_right_name: str | None = None,
@@ -63,6 +82,7 @@ class LedStripService:
 
         repo = LedStripRepository(db)
         led_color_hex = LedStripService._normalize_hex_color(led_color)
+        line_color_hex = LedStripService._normalize_optional_hex_color(line_color)
 
         board = repo.get_board(board_id)
         if not board:
@@ -109,6 +129,7 @@ class LedStripService:
             integrated_terminus=True,
             custom_terminus_left_name=left_t,
             custom_terminus_right_name=right_t,
+            line_color=line_color_hex,
         ))
 
         LedStripService._create_leds(
@@ -231,6 +252,7 @@ class LedStripService:
             "order_index":     strip.order_index,
             "customTerminusLeftName":  strip.custom_terminus_left_name,
             "customTerminusRightName": strip.custom_terminus_right_name,
+            "lineColor":       strip.line_color,
             "leds":            leds_payload,
         }
 
@@ -243,6 +265,7 @@ class LedStripService:
         central_stop_left_name: str | None,
         central_stop_right_name: str | None,
         led_color: str | None,
+        line_color: str | None = None,
         pre_stop_left_name: str | None = None,
         pre_stop_left_minutes: int | None = None,
         pre_stop_right_name: str | None = None,
@@ -257,6 +280,7 @@ class LedStripService:
 
         repo = LedStripRepository(db)
         led_color_hex = LedStripService._normalize_hex_color(led_color)
+        line_color_hex = LedStripService._normalize_optional_hex_color(line_color)
 
         strip = repo.get_strip(strip_id, board_id)
         if not strip:
@@ -290,6 +314,7 @@ class LedStripService:
         strip.line_agency_name = agency_name
         strip.custom_terminus_left_name  = left_t
         strip.custom_terminus_right_name = right_t
+        strip.line_color = line_color_hex
 
         for led in list(strip.leds):
             led.trip_stops.clear()

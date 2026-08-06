@@ -265,7 +265,7 @@ class BoardService:
                     "terminus0Name": term0_name,
                     "terminus1Name": term1_name,
                 }
-                strip_data["color"] = line_obj.color
+                strip_data["color"] = strip.line_color or line_obj.color
                 strip_data["textColor"] = line_obj.text_color
 
             rt_only = bool(getattr(strip, "rt_only", False))

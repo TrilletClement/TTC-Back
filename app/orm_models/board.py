@@ -60,6 +60,10 @@ class LedStrip(Base):
     rt_only = Column(Boolean, default=False, nullable=False)
     custom_terminus_left_name  = Column(String(50), nullable=True)
     custom_terminus_right_name = Column(String(50), nullable=True)
+    # Visual override for the route color drawn on the SVG banner/badge.
+    # NULL means "use the line's official GTFS color" — distinct from
+    # Led.led_color, which is the color the physical LEDs actually light up.
+    line_color = Column(String(50), nullable=True)
     line = relationship(
         "Line",
         backref="led_strips",

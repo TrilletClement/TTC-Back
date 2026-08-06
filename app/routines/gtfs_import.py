@@ -322,9 +322,14 @@ def _import_lines(agency_name: str, routes_csv_text: str):
     session = next(get_db())
     try:
         _ensure_agency(session, agency_name)
-        by_route_id = {l.route_id: l for l in session.query(Line).filter_by(agency_name=agency_name)}
+        existing_lines = list(session.query(Line).filter_by(agency_name=agency_name))
+        # route_id has no unique constraint and gets reused across releases, so two
+        # lines can legitimately share one — dedupe by_route_id off the full list,
+        # but keep by_combo built from the full list too, or a line hidden by the
+        # route_id collision silently drops out of collision-detection below.
+        by_route_id = {l.route_id: l for l in existing_lines}
         # (short_name, long_name) is the canonical identity — route_ids change between releases.
-        by_combo    = {(l.short_name, l.long_name): l for l in by_route_id.values()}
+        by_combo    = {(l.short_name, l.long_name): l for l in existing_lines}
         seen_combos: set[tuple] = set(by_combo.keys())
         to_add, updated, skipped = [], 0, 0
 

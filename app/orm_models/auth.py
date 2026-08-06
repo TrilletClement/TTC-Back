@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, func
 from sqlalchemy.orm import relationship
 from flask_security import UserMixin, RoleMixin
 
@@ -27,6 +27,7 @@ class User(Base, UserMixin):
     preferred_agency = Column(String(50), nullable=True)
     google_id = Column(String, nullable=True, unique=True, index=True)
     alert_display_pref = Column(String(10), nullable=False, default="banner")
+    created_at = Column(DateTime(timezone=True), nullable=True, server_default=func.now())
 
 
 class UserRoles(Base):

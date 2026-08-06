@@ -16,6 +16,7 @@ class LedStripCreate(BaseModel):
     central_stop_left_name: Optional[str] = None
     central_stop_right_name: Optional[str] = None
     led_color: Optional[str] = Field(default=None, pattern=r"^#?[0-9a-fA-F]{6}$")
+    line_color: Optional[str] = Field(default=None, pattern=r"^#?[0-9a-fA-F]{6}$")
     pre_stop_left_name: Optional[str] = None
     pre_stop_left_minutes: Optional[int] = Field(default=None, ge=1, le=300)
     pre_stop_right_name: Optional[str] = None
@@ -89,6 +90,7 @@ def add_led_strip(
         central_stop_left_name=payload.central_stop_left_name,
         central_stop_right_name=payload.central_stop_right_name,
         led_color=payload.led_color,
+        line_color=payload.line_color,
         pre_stop_left_name=payload.pre_stop_left_name,
         pre_stop_left_minutes=payload.pre_stop_left_minutes,
         pre_stop_right_name=payload.pre_stop_right_name,
@@ -183,6 +185,7 @@ def update_led_strip(
         central_stop_left_name=payload.central_stop_left_name,
         central_stop_right_name=payload.central_stop_right_name,
         led_color=payload.led_color,
+        line_color=payload.line_color,
         pre_stop_left_name=payload.pre_stop_left_name,
         pre_stop_left_minutes=payload.pre_stop_left_minutes,
         pre_stop_right_name=payload.pre_stop_right_name,

@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel
 
@@ -16,6 +17,7 @@ class UserOut(BaseModel):
     email: str
     active: bool
     roles: list[RoleOut] = []
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
