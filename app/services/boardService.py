@@ -31,7 +31,24 @@ class BoardService:
             owner_id = current_user.id
 
         boards = self.repo.get_boards_for_owner(owner_id)
-        return [{"id": b.id, "name": b.name, "owner_id": b.owner_id} for b in boards]
+        return [
+            {
+                "id": b.id,
+                "name": b.name,
+                "owner_id": b.owner_id,
+                "type": {
+                    "id": b.board_type.id,
+                    "name": b.board_type.name,
+                    "maxLedstrip": b.board_type.max_ledstrip,
+                } if b.board_type else None,
+                "ledstripCount": len(b.led_strips),
+                "device": {
+                    "id": b.esp32_devices[0].id,
+                    "name": b.esp32_devices[0].name or b.esp32_devices[0].mac_address,
+                } if b.esp32_devices else None,
+            }
+            for b in boards
+        ]
 
     def get_board_types(self):
         latest_version = self.repo.get_latest_price_version()

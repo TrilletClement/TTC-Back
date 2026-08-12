@@ -13,7 +13,16 @@ class BoardRepository:
     # ── Board ────────────────────────────────────────────────────────────────
 
     def get_boards_for_owner(self, owner_id: int) -> list[Board]:
-        return self.db.query(Board).filter_by(owner_id=owner_id, archived=False).all()
+        return (
+            self.db.query(Board)
+            .options(
+                joinedload(Board.board_type),
+                joinedload(Board.led_strips),
+                joinedload(Board.esp32_devices),
+            )
+            .filter_by(owner_id=owner_id, archived=False)
+            .all()
+        )
 
     def count_active_boards(self, owner_id: int) -> int:
         return self.db.query(Board).filter_by(owner_id=owner_id, archived=False).count()
