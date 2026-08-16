@@ -25,6 +25,12 @@ class LineService:
                 "id": str(line.id),
                 "longName": line.long_name,
                 "name": line.short_name,
+                # Matches the frontend `line` model's field name — the LED
+                # strip wizard's live preview (app-led-visualization) reads
+                # `line.shortName` for the route badge and otherwise falls
+                # back to the raw internal line id, since "name" above isn't
+                # a key it recognizes.
+                "shortName": line.short_name,
                 "color": line.color,
                 "textColor": line.text_color,
                 "text_color": line.text_color,

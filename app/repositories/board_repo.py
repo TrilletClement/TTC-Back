@@ -17,7 +17,7 @@ class BoardRepository:
             self.db.query(Board)
             .options(
                 joinedload(Board.board_type),
-                joinedload(Board.led_strips),
+                joinedload(Board.led_strips).joinedload(LedStrip.line),
                 joinedload(Board.esp32_devices),
             )
             .filter_by(owner_id=owner_id, archived=False)

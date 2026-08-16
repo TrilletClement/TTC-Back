@@ -46,9 +46,38 @@ class BoardService:
                     "id": b.esp32_devices[0].id,
                     "name": b.esp32_devices[0].name or b.esp32_devices[0].mac_address,
                 } if b.esp32_devices else None,
+                "lines": BoardService._build_board_lines_summary(b),
             }
             for b in boards
         ]
+
+    @staticmethod
+    def _resolve_line_color(strip: LedStrip, line_obj: Line) -> str:
+        # NULL line_color means "use the line's official GTFS color" — see
+        # LedStrip.line_color's docstring in orm_models/board.py.
+        return strip.line_color or line_obj.color
+
+    @staticmethod
+    def _build_board_lines_summary(board: Board) -> list[dict]:
+        # One badge per distinct line on the board (not per strip — a line
+        # can have two strips, e.g. both directions). Keyed on (line_id,
+        # agency_name) like LedStrip.line's own join condition, since line
+        # ids aren't unique across agencies.
+        seen: dict[tuple[int, str], dict] = {}
+        for strip in board.led_strips:
+            line_obj = strip.line
+            if not line_obj:
+                continue
+            key = (strip.line_id, strip.line_agency_name)
+            if key in seen:
+                continue
+            seen[key] = {
+                "lineId": line_obj.id,
+                "shortName": line_obj.short_name or str(line_obj.id),
+                "color": BoardService._resolve_line_color(strip, line_obj),
+                "textColor": line_obj.text_color,
+            }
+        return list(seen.values())
 
     def get_board_types(self):
         latest_version = self.repo.get_latest_price_version()
@@ -282,7 +311,7 @@ class BoardService:
                     "terminus0Name": term0_name,
                     "terminus1Name": term1_name,
                 }
-                strip_data["color"] = strip.line_color or line_obj.color
+                strip_data["color"] = BoardService._resolve_line_color(strip, line_obj)
                 strip_data["textColor"] = line_obj.text_color
 
             rt_only = bool(getattr(strip, "rt_only", False))
