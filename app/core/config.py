@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # OpenAI Moderation API (free) — screens free-text fields the customer
     # controls (LED labels, terminus names, board names). Empty = disabled,
     # content_filter.py falls back to its local blocklist.
-    OPENAI_API_KEY: str = ""
+    OPENAI_API_KEY: str = Field(...)
 
     # Mail
     MAIL_USERNAME: str = Field(...)

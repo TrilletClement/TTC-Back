@@ -406,8 +406,8 @@ class LedStripService:
         led = repo.get_led(led_id, strip_id)
         if not led:
             raise HTTPException(status_code=404, detail="LED not found")
-        assert_clean_text(custom_name, "Custom name")
-        assert_clean_text(custom_subname, "Custom subname")
+        assert_clean_text(custom_name, "CUSTOM_NAME", max_length=100)
+        assert_clean_text(custom_subname, "CUSTOM_SUBNAME", max_length=100)
         led.custom_name = custom_name
         led.custom_subname = custom_subname
         repo.commit()
@@ -431,8 +431,8 @@ class LedStripService:
         strip = repo.get_strip(strip_id, board_id)
         if not strip:
             raise HTTPException(status_code=404, detail="LED strip not found")
-        assert_clean_text(custom_terminus_left_name, "Terminus name")
-        assert_clean_text(custom_terminus_right_name, "Terminus name")
+        assert_clean_text(custom_terminus_left_name, "TERMINUS_NAME", max_length=50)
+        assert_clean_text(custom_terminus_right_name, "TERMINUS_NAME", max_length=50)
 
         # limit=50 matches led_strip.custom_terminus_left/right_name (String(50));
         # the default limit=19 on _truncate is for per-LED labels, not this field.

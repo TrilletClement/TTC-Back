@@ -105,7 +105,7 @@ class BoardService:
         name = (name or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="Board name is required")
-        assert_clean_text(name, "Board name")
+        assert_clean_text(name, "BOARD_NAME", max_length=100)
 
         active_count = self.repo.count_active_boards(current_user.id)
         if active_count >= self.BOARD_LIMIT:
@@ -129,9 +129,7 @@ class BoardService:
         new_name = (new_name or "").strip()
         if not new_name:
             raise HTTPException(status_code=400, detail="Board name cannot be empty")
-        if len(new_name) > 100:
-            raise HTTPException(status_code=400, detail="Board name too long (max 100 characters)")
-        assert_clean_text(new_name, "Board name")
+        assert_clean_text(new_name, "BOARD_NAME", max_length=100)
 
         board = self.repo.get_board_by_id(board_id)
         if not board or board.archived:
