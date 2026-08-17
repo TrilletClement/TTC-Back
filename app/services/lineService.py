@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 from math import asin, cos, radians, sin, sqrt
 from typing import Optional
 
@@ -34,6 +35,7 @@ class LineService:
                 "color": line.color,
                 "textColor": line.text_color,
                 "text_color": line.text_color,
+                "routeType": line.route_type,
             }
             for line in lines
         ]
@@ -47,21 +49,23 @@ class LineService:
         ]
 
     @staticmethod
-    def get_line_stops(line_id: int, db: Session):
+    def get_line_stops(
+        line_id: int,
+        db: Session,
+        trip_0_id: Optional[int] = None,
+        trip_1_id: Optional[int] = None,
+    ):
         try:
             repo = LineRepository(db)
             line = repo.get_line_by_id(line_id)
             if not line:
                 raise HTTPException(status_code=404, detail="Line not found")
 
-            trips = [
-                t
-                for t in [
-                    repo.get_trip_by_id(line.best_trip_0_id),
-                    repo.get_trip_by_id(line.best_trip_1_id),
-                ]
-                if t
-            ]
+            trip_0 = LineService._resolve_trip_override(repo, line, 0, trip_0_id) \
+                if trip_0_id else repo.get_trip_by_id(line.best_trip_0_id)
+            trip_1 = LineService._resolve_trip_override(repo, line, 1, trip_1_id) \
+                if trip_1_id else repo.get_trip_by_id(line.best_trip_1_id)
+            trips = [t for t in [trip_0, trip_1] if t]
             if not trips:
                 raise HTTPException(status_code=404, detail="No trips found")
 
@@ -79,12 +83,92 @@ class LineService:
                     "textColor": line.text_color,
                 },
                 "stops_by_direction": stops_by_direction,
+                "variants_by_direction": LineService.get_line_trip_variants(repo, line),
             }
 
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    @staticmethod
+    def _resolve_trip_override(repo: LineRepository, line, direction: int, trip_id: int):
+        """Resolve a branch override, rejecting ids that don't belong to this
+        line/direction (prevents cross-line/cross-direction id spoofing)."""
+        trip = repo.get_trip_by_id(trip_id)
+        if not trip or trip.line_id != line.id or trip.direction != direction:
+            raise HTTPException(status_code=400, detail=f"Invalid trip_{direction}_id for this line")
+        return trip
+
+    # A candidate terminus with fewer stops than this fraction of the
+    # direction's longest known pattern is treated as a short-turn/depot
+    # fragment rather than a genuine rider-facing branch (see
+    # get_line_trip_variants).
+    BRANCH_MIN_STOP_RATIO = 0.5
+
+    @staticmethod
+    def get_line_trip_variants(repo: LineRepository, line) -> dict:
+        """Branches per direction for this line, one entry per distinct
+        terminus. GTFS import creates a separate canonical Trip for every
+        exact stop-sequence signature, so real branching lines (e.g. TEC T1
+        Liège: Coronmeuse vs Liège Expo) can have several Trip rows sharing
+        the SAME terminus — a skipped stop on some runs, a different first
+        stop for early trips, etc. Those collapse into a single branch
+        option here (grouped by terminus_stop_id) so the picker shows only
+        meaningfully different choices, not every technical signature.
+        Within a group, the longest known pattern represents the branch
+        (see rationale below); trip_count is summed across the whole group
+        so it reflects the branch's real total frequency.
+
+        A direction can also contain rare, very short trips that happen to
+        share its direction_id purely as a GTFS data quirk (a depot
+        movement, a one-stop short-turn) — these aren't a real alternate
+        destination a rider would pick, so any candidate whose stop count
+        is under BRANCH_MIN_STOP_RATIO of the direction's longest pattern
+        is dropped rather than surfaced as a "branch".
+        """
+        groups: dict[tuple, list] = defaultdict(list)
+        for trip in repo.get_trips_by_line(line.id):
+            groups[(trip.direction, trip.terminus_stop_id, trip.terminus_agency_name)].append(trip)
+
+        candidates_by_direction: dict[int, list[dict]] = defaultdict(list)
+        for (direction, _stop_id, _agency), trips in groups.items():
+            # Longest known pattern wins here — NOT stop_count * trip_count
+            # (that formula is for picking the line's single overall best
+            # trip). For enumerating a branch's own stops we always want the
+            # most complete pattern to this terminus, even if it's rarer,
+            # otherwise a frequent-but-short shuttle/short-turn variant can
+            # shadow a fuller trip and silently drop the shared trunk stops
+            # from the picker.
+            best_trip, best_stop_count, terminus_name = None, -1, None
+            for trip in trips:
+                trip_stops = repo.get_trip_stops_with_stops(trip.id)
+                if not trip_stops:
+                    continue
+                stop_count = len(trip_stops)
+                if stop_count > best_stop_count:
+                    best_trip, best_stop_count = trip, stop_count
+                    terminus_name = trip_stops[-1][0].name
+            if best_trip is None:
+                continue
+            candidates_by_direction[direction].append({
+                "trip_id": best_trip.id,
+                "terminus_name": terminus_name,
+                "stop_count": best_stop_count,
+                "trip_count": sum(t.trip_count for t in trips),
+                "is_best": best_trip.id in (line.best_trip_0_id, line.best_trip_1_id),
+            })
+
+        variants_by_direction: dict[str, list[dict]] = {"0": [], "1": []}
+        for direction, direction_candidates in candidates_by_direction.items():
+            longest = max(c["stop_count"] for c in direction_candidates)
+            kept = [
+                c for c in direction_candidates
+                if c["stop_count"] >= longest * LineService.BRANCH_MIN_STOP_RATIO
+            ]
+            kept.sort(key=lambda v: v["is_best"], reverse=True)
+            variants_by_direction[str(direction)] = kept
+        return variants_by_direction
 
     # Stops within this radius of the user's position are all considered —
     # multimodal hubs (e.g. a tram platform and a bus platform a few tens of

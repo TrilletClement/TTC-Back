@@ -39,8 +39,13 @@ def get_nearest_stop(lat: float, lon: float, db: Session = Depends(get_db)):
 
 @router.get("/{line_id}/stops")
 @require_user
-def get_line_stops(line_id: str, db: Session = Depends(get_db)):
-    result = LineService.get_line_stops(line_id, db)
+def get_line_stops(
+    line_id: str,
+    trip_0_id: Optional[int] = None,
+    trip_1_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    result = LineService.get_line_stops(line_id, db, trip_0_id, trip_1_id)
     if isinstance(result, tuple):
         raise HTTPException(status_code=result[1], detail=result[0])
     return result

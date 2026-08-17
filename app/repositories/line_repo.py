@@ -32,6 +32,16 @@ class LineRepository:
     def get_trip_by_id(self, trip_id) -> Optional[Trip]:
         return self.db.query(Trip).filter_by(id=trip_id).first()
 
+    def get_trips_by_line(self, line_id: int) -> list[Trip]:
+        """All canonical Trips for a line, across both directions — includes
+        branch variants that lost the best_trip_{0,1}_id slot at import."""
+        return (
+            self.db.query(Trip)
+            .filter(Trip.line_id == line_id)
+            .order_by(Trip.direction, Trip.trip_count.desc())
+            .all()
+        )
+
     def get_trip_stops_with_stops(self, trip_id) -> list[tuple]:
         return (
             self.db.query(Stop, TripStop.sequence)

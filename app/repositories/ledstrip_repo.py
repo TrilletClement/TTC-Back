@@ -85,6 +85,43 @@ class LedStripRepository:
     def get_stop(self, stop_id, agency_name: str) -> Optional[Stop]:
         return self.db.query(Stop).filter_by(stop_id=stop_id, agency_name=agency_name).first()
 
+    def get_sibling_trip_stops(self, line_id: int, trip_stop_ids: list[int]) -> dict[int, list[TripStop]]:
+        """For each given trip_stop id, the TripStops of OTHER canonical trips
+        of the same line + direction that serve the same physical stop.
+
+        Used at LED-creation time so a LED on a branching line's shared trunk
+        gets linked to every trip variant passing its stop — a vehicle on
+        either branch then lights it, while post-divergence stops (absent
+        from the other branch's trips) stay branch-specific automatically.
+        """
+        if not trip_stop_ids:
+            return {}
+        primary = sa.orm.aliased(TripStop)
+        primary_trip = sa.orm.aliased(Trip)
+        sibling_trip = sa.orm.aliased(Trip)
+        rows = (
+            self.db.query(primary.id, TripStop)
+            .join(primary_trip, primary_trip.id == primary.trip_id)
+            .join(
+                TripStop,
+                (TripStop.stop_stop_id == primary.stop_stop_id)
+                & (TripStop.stop_agency_name == primary.stop_agency_name)
+                & (TripStop.trip_id != primary.trip_id),
+            )
+            .join(
+                sibling_trip,
+                (sibling_trip.id == TripStop.trip_id)
+                & (sibling_trip.line_id == line_id)
+                & (sibling_trip.direction == primary_trip.direction),
+            )
+            .filter(primary.id.in_(trip_stop_ids))
+            .all()
+        )
+        siblings: dict[int, list[TripStop]] = {}
+        for primary_id, sibling_ts in rows:
+            siblings.setdefault(primary_id, []).append(sibling_ts)
+        return siblings
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def flush(self) -> None:

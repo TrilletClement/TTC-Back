@@ -73,6 +73,8 @@ class LedStripService:
         pre_stop_right_name: str | None = None,
         pre_stop_right_minutes: int | None = None,
         order_index_override: int = None,
+        trip_0_id: int | None = None,
+        trip_1_id: int | None = None,
         db: Session = None,
     ):
         if not all([agency_name, line_id]) or (not central_stop_left_name and not central_stop_right_name):
@@ -104,7 +106,7 @@ class LedStripService:
             else repo.max_order_index(board_id) + 1
         )
 
-        trips = LedStripService._get_trips_by_direction(repo, agency_name, line_id)
+        trips = LedStripService._get_trips_by_direction(repo, agency_name, line_id, trip_0_id, trip_1_id)
         if not trips[0] and not trips[1]:
             raise HTTPException(status_code=404, detail="Could not find any trips for this line")
 
@@ -131,12 +133,15 @@ class LedStripService:
             custom_terminus_left_name=left_t,
             custom_terminus_right_name=right_t,
             line_color=line_color_hex,
+            trip_0_id=trip_0_id,
+            trip_1_id=trip_1_id,
         ))
 
         LedStripService._create_leds(
             repo,
             agency_name=agency_name,
             led_strip_id=strip.id,
+            line_id=line_id,
             selected_stops=selected_stops,
             central_position=central_position,
             led_color=led_color_hex,
@@ -160,6 +165,8 @@ class LedStripService:
         pre_stop_left_minutes: int | None = None,
         pre_stop_right_name: str | None = None,
         pre_stop_right_minutes: int | None = None,
+        trip_0_id: int | None = None,
+        trip_1_id: int | None = None,
         db: Session = None,
     ):
         """Read-only dry run of create_led_strip: computes the exact LED layout
@@ -181,7 +188,7 @@ class LedStripService:
 
         max_led = LedStripService._get_max_led(board)
 
-        trips = LedStripService._get_trips_by_direction(repo, agency_name, line_id)
+        trips = LedStripService._get_trips_by_direction(repo, agency_name, line_id, trip_0_id, trip_1_id)
         if not trips[0] and not trips[1]:
             raise HTTPException(status_code=404, detail="Could not find any trips for this line")
 
@@ -254,6 +261,8 @@ class LedStripService:
             "customTerminusLeftName":  strip.custom_terminus_left_name,
             "customTerminusRightName": strip.custom_terminus_right_name,
             "lineColor":       strip.line_color,
+            "trip0Id":         strip.trip_0_id,
+            "trip1Id":         strip.trip_1_id,
             "leds":            leds_payload,
         }
 
@@ -271,6 +280,8 @@ class LedStripService:
         pre_stop_left_minutes: int | None = None,
         pre_stop_right_name: str | None = None,
         pre_stop_right_minutes: int | None = None,
+        trip_0_id: int | None = None,
+        trip_1_id: int | None = None,
         db: Session = None,
     ):
         if not all([agency_name, line_id]) or (not central_stop_left_name and not central_stop_right_name):
@@ -293,7 +304,7 @@ class LedStripService:
 
         max_led = LedStripService._get_max_led(board)
 
-        trips = LedStripService._get_trips_by_direction(repo, agency_name, line_id)
+        trips = LedStripService._get_trips_by_direction(repo, agency_name, line_id, trip_0_id, trip_1_id)
         if not trips[0] and not trips[1]:
             raise HTTPException(status_code=404, detail="Could not find any trips for this line")
 
@@ -316,6 +327,8 @@ class LedStripService:
         strip.custom_terminus_left_name  = left_t
         strip.custom_terminus_right_name = right_t
         strip.line_color = line_color_hex
+        strip.trip_0_id = trip_0_id
+        strip.trip_1_id = trip_1_id
 
         for led in list(strip.leds):
             led.trip_stops.clear()
@@ -326,6 +339,7 @@ class LedStripService:
             repo,
             agency_name=agency_name,
             led_strip_id=strip.id,
+            line_id=line_id,
             selected_stops=selected_stops,
             central_position=central_position,
             led_color=led_color_hex,
@@ -473,7 +487,7 @@ class LedStripService:
         return left_name, right_name
 
     @staticmethod
-    def _get_trips_by_direction(repo: LedStripRepository, agency_name, line_id):
+    def _get_trips_by_direction(repo: LedStripRepository, agency_name, line_id, trip_0_id=None, trip_1_id=None):
         line = repo.get_line(line_id, agency_name)
         if not line:
             raise HTTPException(
@@ -481,9 +495,23 @@ class LedStripService:
                 detail=f"Line with id {line_id} and agency_name {agency_name} not found",
             )
         return {
-            0: repo.get_trip(line.best_trip_0_id),
-            1: repo.get_trip(line.best_trip_1_id),
+            0: LedStripService._resolve_trip_override(repo, line, 0, trip_0_id),
+            1: LedStripService._resolve_trip_override(repo, line, 1, trip_1_id),
         }
+
+    @staticmethod
+    def _resolve_trip_override(repo: LedStripRepository, line, direction: int, trip_id: int | None):
+        """Branch override for lines with several stop-sequence variants per
+        direction (see Line.best_trip_{0,1}_id). Falls back to the line's
+        best trip when no override is given; rejects ids that don't belong
+        to this line/direction (prevents cross-line/cross-direction id
+        spoofing via the API)."""
+        if trip_id is None:
+            return repo.get_trip(getattr(line, f"best_trip_{direction}_id"))
+        trip = repo.get_trip(trip_id)
+        if not trip or trip.line_id != line.id or trip.direction != direction:
+            raise HTTPException(status_code=400, detail=f"Invalid trip_{direction}_id for this line")
+        return trip
 
     @staticmethod
     def _get_trip_stops_by_direction(repo: LedStripRepository, trips):
@@ -755,6 +783,7 @@ class LedStripService:
         repo: LedStripRepository,
         agency_name: str,
         led_strip_id: int,
+        line_id: int,
         selected_stops,
         central_position,
         led_color: str,
@@ -764,6 +793,14 @@ class LedStripService:
         descriptors = LedStripService._build_led_descriptors(
             repo, agency_name, selected_stops, central_position, led_color, pre_stop_overrides, max_led,
         )
+
+        # Same-stop TripStops from the line's OTHER trip variants (same
+        # direction). On a branching line, trunk stops appear in every
+        # branch's trip — linking them all means a vehicle on either branch
+        # lights the LED, while post-divergence stops (absent from the other
+        # branch) stay branch-specific with no extra logic.
+        primary_ids = [d["trip_stop"].id for d in descriptors if d["trip_stop"]]
+        siblings = repo.get_sibling_trip_stops(int(line_id), primary_ids)
 
         for d in descriptors:
             led = repo.add_led(Led(
@@ -777,7 +814,11 @@ class LedStripService:
             ))
 
             if d["trip_stop"]:
+                # Primary first — board_svg_service reads trip_stops[0] for
+                # the label fallback.
                 led.trip_stops.append(d["trip_stop"])
+                for sibling in siblings.get(d["trip_stop"].id, []):
+                    led.trip_stops.append(sibling)
 
     _SMART_LOWER: frozenset[str] = frozenset({
         'le','la','les','un','une','de','du','des','à','au','aux','en','par','pour',

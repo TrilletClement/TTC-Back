@@ -22,6 +22,11 @@ class LedStripCreate(BaseModel):
     pre_stop_right_name: Optional[str] = None
     pre_stop_right_minutes: Optional[int] = Field(default=None, ge=1, le=300)
     order_index: Optional[int] = Field(default=None, ge=1)
+    # Branch override for lines with several stop-sequence variants per
+    # direction (e.g. TEC T1 Liège: Coronmeuse vs Liège Expo). None = follow
+    # the line's best_trip_{0,1}_id, same as before this field existed.
+    trip_0_id: Optional[int] = None
+    trip_1_id: Optional[int] = None
 
     @model_validator(mode="after")
     def check_central_stop_present(self) -> "LedStripCreate":
@@ -96,6 +101,8 @@ def add_led_strip(
         pre_stop_right_name=payload.pre_stop_right_name,
         pre_stop_right_minutes=payload.pre_stop_right_minutes,
         order_index_override=payload.order_index,
+        trip_0_id=payload.trip_0_id,
+        trip_1_id=payload.trip_1_id,
         db=db,
     )
 
@@ -119,6 +126,8 @@ def preview_led_strip(
         pre_stop_left_minutes=payload.pre_stop_left_minutes,
         pre_stop_right_name=payload.pre_stop_right_name,
         pre_stop_right_minutes=payload.pre_stop_right_minutes,
+        trip_0_id=payload.trip_0_id,
+        trip_1_id=payload.trip_1_id,
         db=db,
     )
 
@@ -190,6 +199,8 @@ def update_led_strip(
         pre_stop_left_minutes=payload.pre_stop_left_minutes,
         pre_stop_right_name=payload.pre_stop_right_name,
         pre_stop_right_minutes=payload.pre_stop_right_minutes,
+        trip_0_id=payload.trip_0_id,
+        trip_1_id=payload.trip_1_id,
         db=db,
     )
 

@@ -235,6 +235,60 @@ One cart session = one `Order` + one or more `OrderItem`s.
   shifts the static window by the last specified delay (`eff` LATERAL) — otherwise a
   late bus traverses downstream stops with windows already in the past (LED dark).
 
+## Branching lines (trip variants) — added 2026-08-17
+
+Some lines have several **branches** sharing a common trunk but ending at different
+termini with the same GTFS `direction_id` (canonical case: TEC tram T1 Liège —
+trunk from Sclessin Standard, then Coronmeuse OR Liège Expo). How it works:
+
+- **Canonical trips**: GTFS import dedupes raw trips by signature
+  `(line_id, direction, ordered stop list)` → one `Trip` + `TripStop` rows per
+  distinct pattern. A branching direction therefore has **several** canonical
+  Trips. Only one wins `line.best_trip_{0,1}_id` (score = stop_count × trip_count);
+  the others survive in DB but used to be unreachable from any UI/API path.
+- **Variant listing**: `GET /lines/{id}/stops` now also returns
+  `variants_by_direction` (`LineService.get_line_trip_variants`). Variants are
+  **grouped by terminus** (`terminus_stop_id`) — technical signature duplicates
+  (skipped stop, different first stop) collapse into one entry, represented by
+  the **longest** pattern for that terminus (not the score formula — a frequent
+  short-turn must not shadow the full pattern and hide trunk stops).
+  `BRANCH_MIN_STOP_RATIO = 0.5`: a candidate terminus with < 50 % of the
+  direction's longest pattern is a short-turn/depot fragment, not a branch —
+  dropped. Non-branching lines end up with length-1 lists → the frontend shows
+  no branch UI at all (`led-strip-modal`, step 3, `branchOptions0/1.length > 1`).
+- **Per-strip override**: `led_strip.trip_0_id` / `trip_1_id` (nullable, FK →
+  `trip.id`, `ondelete="SET NULL"`). NULL = follow the line's best trip (all
+  pre-existing strips, all normal lines). Set = the wizard's branch choice; used
+  by `GET /lines/{id}/stops?trip_0_id=&trip_1_id=` (stop picker) and
+  `LedStripService._get_trips_by_direction` (create/update/preview). Both
+  validate the trip belongs to the right line + direction (400 otherwise).
+  `SET NULL` matters: gtfs_import's orphan cleanup bulk-DELETEs trips (bypasses
+  ORM), so the DB FK is what makes a stale strip fall back to best-trip
+  gracefully instead of erroring.
+- **Shared trunk lights for any branch**: at LED creation
+  (`LedStripService._create_leds`), each LED links not only its own TripStop but
+  also every **sibling** TripStop (same line, same direction, same physical stop)
+  from the line's other canonical trips
+  (`LedStripRepository.get_sibling_trip_stops`, one bulk query). Trunk stops →
+  linked to every branch's trip → a vehicle on either branch lights them.
+  Post-divergence stops have no sibling on the other branch → branch-specific
+  automatically. The realtime read side needed **zero changes**: the matview has
+  no per-LED trip assumption, `vehicle_incoming` is per trip_stop, and
+  `BoardService` computes `led_is_on = any(...)` over the LED's trip_stops.
+  Primary TripStop is always appended **first** — `board_svg_service` reads
+  `trip_stops[0]` for label fallback.
+- **Reimport link rebuild**: `_rebuild_trip_stop_led_links` (gtfs_import) now
+  remaps broken led↔trip_stop links by `(stop, line of the strip, direction from
+  led.type)` → **all** matching trip_stops. Previously it picked the first
+  trip_stop matching the stop alone — which collapsed trunk multi-links to a
+  single link on every reimport AND could remap onto a different line serving
+  the same physical stop.
+- Old strips saved before this feature keep single links until re-saved via the
+  wizard or until the next full GTFS reimport (whose rebuild now multi-links).
+- Known follow-on (not done): the geolocation "use my location" shortcut
+  (`find_nearest_stop_with_lines`) still only reads best trips — no branch
+  awareness.
+
 ## What NOT to do
 
 - Do not add `SENDCLOUD_SANDBOX` or `SENDCLOUD_SHIPPING_OPTION_CODE` env vars — removed intentionally.

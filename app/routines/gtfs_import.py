@@ -41,6 +41,7 @@ import requests
 import sqlalchemy as sa
 from google.transit import gtfs_realtime_pb2
 
+from app.core.tec_line_colors import TEC_LINE_COLORS
 from app.orm_models.alert import LineAlert, line_alert_line
 from app.orm_models.db import get_db
 from app.orm_models.gtfs import Agency, GtfsImportLog, Line, Stop, Trip, TripStop
@@ -191,33 +192,52 @@ def _rebuild_trip_stop_led_links(session, agency_name: str, snapshot: dict[int, 
         print(f"  trip_stop_led_link: {len(broken)} broken links deleted")
         return
 
-    # 3. Trouver les nouveaux trip_stop_id via stop_stop_id
+    # 3. Trouver les nouveaux trip_stop_id via stop_stop_id, restreints à la
+    # ligne + direction du LED concerné : le même arrêt physique peut être
+    # desservi par d'autres lignes (on ne veut pas remapper dessus), et une
+    # ligne à branches a plusieurs trips par direction passant par le tronc
+    # commun — le LED doit être relié à TOUS ces trip_stop (un véhicule de
+    # n'importe quelle branche l'allume), pas au "premier trouvé".
     stop_ids_needed = list({v[0] for v in old_to_stop.values()})
     new_stop_rows = session.execute(sa.text("""
-        SELECT id, stop_stop_id, stop_agency_name
-        FROM trip_stop
-        WHERE stop_stop_id = ANY(:ids)
-          AND stop_agency_name = :a
+        SELECT ts.id, ts.stop_stop_id, t.line_id, t.direction
+        FROM trip_stop ts
+        JOIN trip t ON t.id = ts.trip_id
+        WHERE ts.stop_stop_id = ANY(:ids)
+          AND ts.stop_agency_name = :a
     """), {"ids": stop_ids_needed, "a": agency_name}).all()
 
-    # stop_stop_id -> nouveau trip_stop_id (prend le premier trouvé)
-    stop_to_new_ts: dict[str, int] = {}
+    # (stop_stop_id, line_id, direction) -> tous les nouveaux trip_stop_id
+    stop_to_new_ts: dict[tuple[str, int, int], list[int]] = {}
     for row in new_stop_rows:
-        if row.stop_stop_id not in stop_to_new_ts:
-            stop_to_new_ts[row.stop_stop_id] = row.id
+        stop_to_new_ts.setdefault((row.stop_stop_id, row.line_id, row.direction), []).append(row.id)
+
+    # led_id -> (line_id, direction) via sa bande et son type (left/c_left = 0)
+    led_rows = session.execute(sa.text("""
+        SELECT led.id AS led_id, ls.line_id, led.type
+        FROM led
+        JOIN led_strip ls ON ls.id = led.ledstrip_id
+        WHERE led.id = ANY(:led_ids)
+    """), {"led_ids": list({row.led_id for row in broken})}).all()
+    led_context: dict[int, tuple[int, int]] = {
+        row.led_id: (row.line_id, 0 if row.type in ("left", "c_left") else 1)
+        for row in led_rows
+    }
 
     # 4. Reconstruire les liens
     to_insert = []
     to_delete = []
     for led_id, old_ts_id in broken:
         mapping = old_to_stop.get(old_ts_id)
-        if mapping:
+        context = led_context.get(led_id)
+        new_ts_ids: list[int] = []
+        if mapping and context:
             stop_stop_id, _ = mapping
-            new_ts_id = stop_to_new_ts.get(stop_stop_id)
-            if new_ts_id:
+            line_id, direction = context
+            new_ts_ids = stop_to_new_ts.get((stop_stop_id, line_id, direction), [])
+        if new_ts_ids:
+            for new_ts_id in new_ts_ids:
                 to_insert.append({"trip_stop_id": new_ts_id, "led_id": led_id})
-            else:
-                to_delete.append({"led_id": led_id, "trip_stop_id": old_ts_id})
         else:
             to_delete.append({"led_id": led_id, "trip_stop_id": old_ts_id})
 
@@ -312,6 +332,15 @@ def _ensure_agency(session, agency_name: str, country: str = "Belgium") -> Agenc
 # Static import — lines, stops, calendar, trips
 # ---------------------------------------------------------------------------
 
+def _tec_hastus_id(route_id: str) -> str | None:
+    """Extract the Hastus line ID from a TEC route_id, e.g.
+    "gr:tec:B0210-24013" -> "B0210". Used to look up TEC_LINE_COLORS,
+    since TEC's own routes.txt route_color is a #FFCD00 placeholder for
+    every line."""
+    tail = route_id.rsplit(":", 1)[-1]
+    return tail.split("-", 1)[0] or None
+
+
 def _import_lines(agency_name: str, routes_csv_text: str):
     tic    = time.time()
     reader = csv.DictReader(StringIO(routes_csv_text))
@@ -353,6 +382,10 @@ def _import_lines(agency_name: str, routes_csv_text: str):
             if has_color:
                 raw_c = (row.get("route_color") or "000000").strip().lstrip("#")
                 data["color"] = "#" + raw_c.zfill(6).upper()
+                if agency_name == "TEC" and route_id:
+                    tec_color = TEC_LINE_COLORS.get(_tec_hastus_id(route_id))
+                    if tec_color:
+                        data["color"] = tec_color
             if has_text_color:
                 raw_tc = (row.get("route_text_color") or "FFFFFF").strip().lstrip("#")
                 data["text_color"] = "#" + raw_tc.zfill(6).upper()

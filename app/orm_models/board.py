@@ -60,6 +60,12 @@ class LedStrip(Base):
     rt_only = Column(Boolean, default=False, nullable=False)
     custom_terminus_left_name  = Column(String(50), nullable=True)
     custom_terminus_right_name = Column(String(50), nullable=True)
+    # Branch override for lines with several stop-sequence variants per
+    # direction (e.g. TEC T1 Liège: Coronmeuse vs Liège Expo). NULL means
+    # "follow the line's best_trip_{0,1}_id" — the default for every line
+    # that has only one variant per direction.
+    trip_0_id = Column(Integer, ForeignKey("trip.id", ondelete="SET NULL"), nullable=True)
+    trip_1_id = Column(Integer, ForeignKey("trip.id", ondelete="SET NULL"), nullable=True)
     # Visual override for the route color drawn on the SVG banner/badge.
     # NULL means "use the line's official GTFS color" — distinct from
     # Led.led_color, which is the color the physical LEDs actually light up.
