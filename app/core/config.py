@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     TEC_API_KEY: str = ""
     TURNSTILE_SECRET_KEY: str = Field(...)
 
+    # OpenAI Moderation API (free) — screens free-text fields the customer
+    # controls (LED labels, terminus names, board names). Empty = disabled,
+    # content_filter.py falls back to its local blocklist.
+    OPENAI_API_KEY: str = ""
+
     # Mail
     MAIL_USERNAME: str = Field(...)
     MAIL_PASSWORD: str = Field(...)

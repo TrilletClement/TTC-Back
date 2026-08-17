@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.content_filter import assert_clean_text
 from app.orm_models.auth import User
 from app.orm_models.board import Board, BoardType, Led, LedStrip
 from app.orm_models.gtfs import Line, Stop, Trip
@@ -104,6 +105,7 @@ class BoardService:
         name = (name or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="Board name is required")
+        assert_clean_text(name, "Board name")
 
         active_count = self.repo.count_active_boards(current_user.id)
         if active_count >= self.BOARD_LIMIT:
@@ -129,6 +131,7 @@ class BoardService:
             raise HTTPException(status_code=400, detail="Board name cannot be empty")
         if len(new_name) > 100:
             raise HTTPException(status_code=400, detail="Board name too long (max 100 characters)")
+        assert_clean_text(new_name, "Board name")
 
         board = self.repo.get_board_by_id(board_id)
         if not board or board.archived:

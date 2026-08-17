@@ -78,10 +78,9 @@ class AuthService:
     def update_preferences(self, user: User, preferred_agency: Optional[str],
                             alert_display_pref: Optional[str] = None) -> dict:
         user.preferred_agency = preferred_agency
-        if alert_display_pref is not None:
-            if alert_display_pref not in {"off", "icon", "banner"}:
-                raise ValidationError(f"Invalid alert_display_pref '{alert_display_pref}'")
-            user.alert_display_pref = alert_display_pref
+        if alert_display_pref is not None and alert_display_pref not in {"off", "icon", "banner"}:
+            raise ValidationError(f"Invalid alert_display_pref '{alert_display_pref}'")
+        user.alert_display_pref = alert_display_pref
         self.repo.commit()
         return {"message": "Préférences mises à jour"}
 

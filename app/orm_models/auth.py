@@ -26,7 +26,7 @@ class User(Base, UserMixin):
     confirmation_token_expiry = Column(DateTime, nullable=True)
     preferred_agency = Column(String(50), nullable=True)
     google_id = Column(String, nullable=True, unique=True, index=True)
-    alert_display_pref = Column(String(10), nullable=False, default="banner")
+    alert_display_pref = Column(String(10), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=True, server_default=func.now())
 
 
