@@ -140,7 +140,7 @@ class LineService:
             # otherwise a frequent-but-short shuttle/short-turn variant can
             # shadow a fuller trip and silently drop the shared trunk stops
             # from the picker.
-            best_trip, best_stop_count, terminus_name = None, -1, None
+            best_trip, best_stop_count, terminus_name, best_trip_stops = None, -1, None, None
             for trip in trips:
                 trip_stops = repo.get_trip_stops_with_stops(trip.id)
                 if not trip_stops:
@@ -149,6 +149,7 @@ class LineService:
                 if stop_count > best_stop_count:
                     best_trip, best_stop_count = trip, stop_count
                     terminus_name = trip_stops[-1][0].name
+                    best_trip_stops = trip_stops
             if best_trip is None:
                 continue
             candidates_by_direction[direction].append({
@@ -157,6 +158,20 @@ class LineService:
                 "stop_count": best_stop_count,
                 "trip_count": sum(t.trip_count for t in trips),
                 "is_best": best_trip.id in (line.best_trip_0_id, line.best_trip_1_id),
+                # Full ordered stop list of the branch's own pattern — lets
+                # the frontend merge every branch into one flat, annotated
+                # stop picker instead of asking the user to pick a branch
+                # first (see led-strip-modal's mergedStopEntries).
+                "stops": [
+                    {
+                        "id": f"{stop.stop_id}_{stop.agency_name}",
+                        "stop_id": stop.stop_id,
+                        "name": stop.name,
+                        "agency_name": stop.agency_name,
+                        "sequence": sequence,
+                    }
+                    for stop, sequence in best_trip_stops
+                ],
             })
 
         variants_by_direction: dict[str, list[dict]] = {"0": [], "1": []}
