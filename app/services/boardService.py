@@ -247,6 +247,55 @@ class BoardService:
         return ids
 
     @staticmethod
+    def _collect_line_led_colors(board) -> dict[int, str]:
+        """line_id -> the LED colour that line's own strip lights up with.
+
+        Used to resolve the colour of a shared-trunk LED (see
+        LedStripService.link_cross_line_trunk) whose trip_stops span more
+        than one line — each "on" trip_stop's colour is looked up by its
+        OWN line here rather than always using led_obj.led_color, which is
+        only correct for the LED's own line.
+        """
+        colors: dict[int, str] = {}
+        for strip in board.led_strips:
+            if strip.line_id in colors:
+                continue
+            for led in strip.leds:
+                if led.led_color:
+                    colors[strip.line_id] = led.led_color
+                    break
+        return colors
+
+    @staticmethod
+    def _parse_hex_color(color: str | None) -> tuple[int, int, int] | None:
+        if not color:
+            return None
+        hex_str = color.lstrip("#").strip()
+        if len(hex_str) == 3:
+            hex_str = "".join(c * 2 for c in hex_str)
+        if len(hex_str) != 6:
+            return None
+        try:
+            return (int(hex_str[0:2], 16), int(hex_str[2:4], 16), int(hex_str[4:6], 16))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _blend_led_colors(colors: list[str]) -> str:
+        """Simple per-channel RGB average. One physical LED can only show a
+        single colour, so when a shared-trunk LED has 2+ distinct lines
+        simultaneously incoming, blend them instead of arbitrarily picking
+        one — used only when there's more than one distinct colour among
+        the LED's "on" trip_stops (see _build_led_data/_build_led_status)."""
+        parsed = [p for p in (BoardService._parse_hex_color(c) for c in colors) if p]
+        if not parsed:
+            return colors[0] if colors else "#00FF00"
+        r = round(sum(p[0] for p in parsed) / len(parsed))
+        g = round(sum(p[1] for p in parsed) / len(parsed))
+        b = round(sum(p[2] for p in parsed) / len(parsed))
+        return f"#{r:02X}{g:02X}{b:02X}"
+
+    @staticmethod
     def _get_interval_active_trip_stop_ids(db: Session, trip_stop_ids: list[int]) -> dict[int, bool]:
         if not trip_stop_ids:
             return {}
@@ -275,6 +324,7 @@ class BoardService:
     def _build_led_strips_data(board, db: Session):
         trip_stop_ids = BoardService._collect_trip_stop_ids(board)
         interval_active_ids = BoardService._get_interval_active_trip_stop_ids(db, trip_stop_ids)
+        line_led_colors = BoardService._collect_line_led_colors(board)
 
         led_strips_data = []
         for strip in board.led_strips:
@@ -306,6 +356,7 @@ class BoardService:
                 strip_data["line"] = {
                     "id": line_obj.id,
                     "shortName": line_obj.short_name,
+                    "routeType": line_obj.route_type,
                     "color": line_obj.color,
                     "textColor": line_obj.text_color,
                     "agencyName": line_obj.agency_name,
@@ -318,7 +369,7 @@ class BoardService:
             rt_only = bool(getattr(strip, "rt_only", False))
             leds_sorted = sorted(strip.leds, key=lambda led: (led.ledstrip_index or 0, led.id or 0))
             strip_data["leds"] = [
-                BoardService._build_led_data(led_obj, interval_active_ids, rt_only)
+                BoardService._build_led_data(led_obj, interval_active_ids, rt_only, line_led_colors)
                 for led_obj in leds_sorted
             ]
 
@@ -388,10 +439,12 @@ class BoardService:
 
     @staticmethod
     def _build_led_data(led_obj: Led, interval_active_ids: dict[int, bool] | None = None,
-                        rt_only: bool = False):
+                        rt_only: bool = False, line_led_colors: dict[int, str] | None = None):
         _interval = interval_active_ids or {}
+        _line_colors = line_led_colors or {}
 
         trip_stops_data = []
+        on_colors: set[str] = set()
         for ts in led_obj.trip_stops:
             legacy_incoming = bool(ts.vehicle_incoming)
             interval_incoming = ts.id in _interval
@@ -400,6 +453,13 @@ class BoardService:
             is_realtime_flag = legacy_incoming or (interval_incoming and _interval[ts.id])
             # rt_only strips ignore pure-schedule intervals: LED lights only on confirmed RT
             is_on = is_realtime_flag if rt_only else (legacy_incoming or interval_incoming)
+
+            if is_on:
+                # Cross-line trunk sharing (LedStripService.link_cross_line_trunk)
+                # links one LED to trip_stops from more than one line — the
+                # colour for THIS trip_stop is its own line's, not necessarily
+                # led_obj.led_color (which is only the LED's own strip's line).
+                on_colors.add(_line_colors.get(ts.trip.line_id, led_obj.led_color))
 
             trip_stops_data.append({
                 "tripStopId":      ts.id,
@@ -414,6 +474,11 @@ class BoardService:
             })
 
         led_is_on = any(ts["isOn"] for ts in trip_stops_data)
+        # Single physical LED, one RGB value: unchanged (led_obj.led_color) unless
+        # 2+ distinct lines are simultaneously on, in which case blend them —
+        # the overwhelming common case (no cross-line pairing, or only one line
+        # on at a time) is byte-identical to before this feature existed.
+        led_color = BoardService._blend_led_colors(sorted(on_colors)) if len(on_colors) > 1 else led_obj.led_color
 
         return {
             "ledId":          led_obj.id,
@@ -421,7 +486,7 @@ class BoardService:
             "customName":     led_obj.custom_name,
             "customSubname":  led_obj.custom_subname,
             "type":           led_obj.type,
-            "ledColor":       led_obj.led_color,
+            "ledColor":       led_color,
             "preStopMinutes": led_obj.pre_travel_minutes,
             "isOn":           led_is_on,
             "tripStops":      trip_stops_data,

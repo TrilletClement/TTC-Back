@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
-from app.core.user_access import require_user
+from app.core.user_access import require_admin, require_user
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.services.ledStripService import LedStripService
@@ -70,6 +70,10 @@ class TerminusLabelPatch(BaseModel):
     # LED display width.
     custom_terminus_left_name:  Optional[str] = Field(default=None, max_length=50)
     custom_terminus_right_name: Optional[str] = Field(default=None, max_length=50)
+
+
+class LinkTrunkPayload(BaseModel):
+    other_strip_id: int
 
 
 class ReorderPayload(BaseModel):
@@ -221,6 +225,29 @@ def patch_led_strip_settings(
         rt_only=payload.rt_only,
         db=db,
     )
+
+
+@router.get("/boards/{board_id}/led_strips/{strip_id}/trunk_candidates")
+@require_admin  # TODO: still being tested — open to require_user once the feature is validated
+def get_trunk_candidates(
+    board_id: int,
+    strip_id: int,
+    current_user: User,
+    db: Session = Depends(get_db),
+):
+    return LedStripService.get_trunk_candidates(board_id, strip_id, db)
+
+
+@router.post("/boards/{board_id}/led_strips/{strip_id}/link_trunk")
+@require_admin  # TODO: still being tested — open to require_user once the feature is validated
+def link_cross_line_trunk(
+    board_id: int,
+    strip_id: int,
+    payload: LinkTrunkPayload,
+    current_user: User,
+    db: Session = Depends(get_db),
+):
+    return LedStripService.link_cross_line_trunk(board_id, strip_id, payload.other_strip_id, db)
 
 
 @router.patch("/boards/{board_id}/led_strips/{strip_id}/terminus")

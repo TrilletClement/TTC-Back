@@ -386,6 +386,50 @@ class LedStripService:
         return {"message": "LED strip deleted successfully", "led_strip_id": strip_id}
 
     @staticmethod
+    def get_trunk_candidates(board_id: int, strip_id: int, db: Session) -> list[dict]:
+        repo  = LedStripRepository(db)
+        strip = repo.get_strip(strip_id, board_id)
+        if not strip:
+            raise HTTPException(status_code=404, detail="LED strip not found")
+        return repo.find_trunk_candidate_strips(strip_id)
+
+    # Explicit, human-confirmed pairing — never inferred automatically. Two
+    # different lines merely touching the same physical stop is common (an
+    # ordinary interchange) and isn't proof of a real shared corridor; only
+    # a human picking a candidate from get_trunk_candidates (already
+    # filtered to a run >= LedStripRepository.MIN_TRUNK_LEN) confirms it.
+    # Mirrors _create_leds' own-line sibling linking (below), just run
+    # against an existing strip pair instead of at creation time, and in
+    # both directions since either strip's LEDs can gain the other's stops.
+    @staticmethod
+    def link_cross_line_trunk(board_id: int, strip_id: int, other_strip_id: int, db: Session) -> dict:
+        if strip_id == other_strip_id:
+            raise HTTPException(status_code=400, detail="Cannot link a strip to itself")
+        repo   = LedStripRepository(db)
+        strip  = repo.get_strip(strip_id, board_id)
+        other  = repo.get_strip(other_strip_id, board_id)
+        if not strip or not other:
+            raise HTTPException(status_code=404, detail="LED strip not found")
+        if strip.line_id == other.line_id:
+            raise HTTPException(status_code=400, detail="Both strips are on the same line")
+
+        linked_pairs = 0
+        for a, b in ((strip, other), (other, strip)):
+            ts_ids = [ts.id for led in a.leds for ts in led.trip_stops]
+            siblings = repo.get_cross_line_sibling_trip_stops(ts_ids, b.line_id)
+            for led in a.leds:
+                existing_ids = {ts.id for ts in led.trip_stops}
+                for ts in list(led.trip_stops):
+                    for sibling in siblings.get(ts.id, []):
+                        if sibling.id not in existing_ids:
+                            led.trip_stops.append(sibling)
+                            existing_ids.add(sibling.id)
+                            linked_pairs += 1
+
+        repo.commit()
+        return {"message": "OK", "linkedPairs": linked_pairs}
+
+    @staticmethod
     def patch_strip_settings(
         board_id: int,
         strip_id: int,

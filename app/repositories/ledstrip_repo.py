@@ -8,6 +8,11 @@ from app.orm_models.gtfs import Line, Stop, Trip, TripStop
 
 
 class LedStripRepository:
+    # Same threshold the frontend's cosmetic trunk preview uses
+    # (led-visualization.ts MIN_TRUNK_LEN) — below this a shared stop is
+    # more likely an incidental interchange than a real shared corridor.
+    MIN_TRUNK_LEN = 3
+
     def __init__(self, db: Session):
         self.db = db
 
@@ -121,6 +126,114 @@ class LedStripRepository:
         for primary_id, sibling_ts in rows:
             siblings.setdefault(primary_id, []).append(sibling_ts)
         return siblings
+
+    def get_cross_line_sibling_trip_stops(
+        self, trip_stop_ids: list[int], other_line_id: int,
+    ) -> dict[int, list[TripStop]]:
+        """For each given trip_stop id, the TripStops of a DIFFERENT line's
+        trips serving the same physical stop.
+
+        Used when a human confirms two strips on a board share a physical
+        corridor (see LedStripService.link_cross_line_trunk) — every LED on
+        the shared stretch then gets linked to both lines' TripStops, so a
+        vehicle on either line lights it. Unlike get_sibling_trip_stops
+        (same line, same direction), direction isn't filtered here: a
+        different line's direction_id isn't guaranteed comparable to this
+        one's, and the caller already knows which concrete strip/line it's
+        pairing against. line_id alone identifies a Line (global PK, see
+        get_sibling_trip_stops), no agency filter needed.
+        """
+        if not trip_stop_ids:
+            return {}
+        primary = sa.orm.aliased(TripStop)
+        sibling_trip = sa.orm.aliased(Trip)
+        rows = (
+            self.db.query(primary.id, TripStop)
+            .join(
+                TripStop,
+                (TripStop.stop_stop_id == primary.stop_stop_id)
+                & (TripStop.stop_agency_name == primary.stop_agency_name)
+                & (TripStop.trip_id != primary.trip_id),
+            )
+            .join(
+                sibling_trip,
+                (sibling_trip.id == TripStop.trip_id)
+                & (sibling_trip.line_id == other_line_id),
+            )
+            .filter(primary.id.in_(trip_stop_ids))
+            .all()
+        )
+        siblings: dict[int, list[TripStop]] = {}
+        for primary_id, sibling_ts in rows:
+            siblings.setdefault(primary_id, []).append(sibling_ts)
+        return siblings
+
+    @staticmethod
+    def _longest_common_run(a_keys: list[tuple[str, str]], b_keys: list[tuple[str, str]]) -> int:
+        """Longest run of consecutive matching physical stops between two
+        ordered stop-key sequences, tried both forward and with `b`
+        reversed (two lines can run through a shared corridor in opposite
+        order) — same idea as the frontend's findTrunk, simplified to just
+        the length since callers here only need a yes/no candidate signal.
+        """
+        best = 0
+        for seq in (b_keys, list(reversed(b_keys))):
+            prev_row = [0] * (len(seq) + 1)
+            for i in range(1, len(a_keys) + 1):
+                cur_row = [0] * (len(seq) + 1)
+                for j in range(1, len(seq) + 1):
+                    if a_keys[i - 1] == seq[j - 1]:
+                        cur_row[j] = prev_row[j - 1] + 1
+                        best = max(best, cur_row[j])
+                prev_row = cur_row
+        return best
+
+    def find_trunk_candidate_strips(self, strip_id: int) -> list[dict]:
+        """Other strips on the same board, on a different line, whose stop
+        sequence overlaps this strip's by >= MIN_TRUNK_LEN consecutive
+        physical stops — candidates offered to a human for an explicit
+        cross-line trunk link (get_cross_line_sibling_trip_stops does the
+        actual linking once one is picked).
+        """
+        strip = self.db.query(LedStrip).filter_by(id=strip_id).first()
+        if not strip:
+            return []
+
+        def ordered_stop_keys(s: LedStrip) -> list[tuple[str, str]]:
+            keys: list[tuple[str, str]] = []
+            for led in s.leds:
+                for ts in led.trip_stops:
+                    key = (ts.stop_stop_id, ts.stop_agency_name)
+                    if not keys or keys[-1] != key:
+                        keys.append(key)
+            return keys
+
+        a_keys = ordered_stop_keys(strip)
+        if not a_keys:
+            return []
+
+        other_strips = (
+            self.db.query(LedStrip)
+            .filter(
+                LedStrip.board_id == strip.board_id,
+                LedStrip.id != strip.id,
+                LedStrip.line_id != strip.line_id,
+            )
+            .all()
+        )
+
+        candidates = []
+        for other in other_strips:
+            overlap = self._longest_common_run(a_keys, ordered_stop_keys(other))
+            if overlap >= self.MIN_TRUNK_LEN:
+                candidates.append({
+                    "stripId": other.id,
+                    "lineId": other.line_id,
+                    "lineAgencyName": other.line_agency_name,
+                    "routeLabel": other.line.short_name if other.line else str(other.line_id),
+                    "overlapLength": overlap,
+                })
+        return candidates
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

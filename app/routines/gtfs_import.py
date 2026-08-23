@@ -117,24 +117,37 @@ def refresh_active_intervals() -> None:
         session.close()
 
 
-def _snapshot_led_stop_mapping(session) -> dict[int, tuple[str, str]]:
-    """Capture old_trip_stop_id → (stop_id, agency_name) for all stops linked to LEDs.
+def _snapshot_led_stop_mapping(session) -> dict[int, tuple[str, str, int, int]]:
+    """Capture old_trip_stop_id → (stop_id, agency_name, line_id, direction)
+    for all stops linked to LEDs.
+
+    line_id/direction come from the trip stop's OWN canonical trip (via
+    canonical_trip_id), not from the LED's strip — a LED can be linked to
+    TripStops from more than one line (cross-line trunk sharing, see
+    LedStripService.link_cross_line_trunk), so each link needs its own
+    context to remap correctly; deriving it from "the LED's strip" would
+    only ever match that strip's own line and silently drop any
+    cross-line-linked stop on rebuild.
 
     Must be called BEFORE raw_gtfs_stop_time is deleted during re-import, otherwise
     the canonical_trip_stop_id values are gone and the rebuild cannot remap broken links.
     """
     rows = session.execute(sa.text("""
-        SELECT DISTINCT rst.canonical_trip_stop_id, rst.stop_id, rgt.agency_name
+        SELECT DISTINCT rst.canonical_trip_stop_id, rst.stop_id, rgt.agency_name, t.line_id, t.direction
         FROM raw_gtfs_stop_time rst
         JOIN raw_gtfs_trip rgt ON rgt.id = rst.raw_trip_id
+        JOIN trip t ON t.id = rgt.canonical_trip_id
         WHERE rst.canonical_trip_stop_id IN (
             SELECT DISTINCT trip_stop_id FROM trip_stop_led_link
         )
     """)).all()
-    return {row.canonical_trip_stop_id: (row.stop_id, row.agency_name) for row in rows}
+    return {
+        row.canonical_trip_stop_id: (row.stop_id, row.agency_name, row.line_id, row.direction)
+        for row in rows
+    }
 
 
-def _rebuild_trip_stop_led_links(session, agency_name: str, snapshot: dict[int, tuple[str, str]] | None = None) -> None:
+def _rebuild_trip_stop_led_links(session, agency_name: str, snapshot: dict[int, tuple[str, str, int, int]] | None = None) -> None:
     """Répare les liens trip_stop_led_link qui pointent vers des trip_stop_id
     qui n'existent plus, en les remappant via stop_stop_id + stop_agency_name.
 
@@ -162,20 +175,21 @@ def _rebuild_trip_stop_led_links(session, agency_name: str, snapshot: dict[int, 
 
     # Use the pre-import snapshot when available (avoids querying already-replaced raw data).
     # Fall back to querying raw_gtfs_stop_time for the case where this is called without a snapshot.
-    old_to_stop: dict[int, tuple[str, str]] = {}  # old_id -> (stop_stop_id, agency_name)
+    old_to_stop: dict[int, tuple[str, str, int, int]] = {}  # old_id -> (stop_stop_id, agency_name, line_id, direction)
     if snapshot is not None:
         for ts_id in broken_ts_ids:
             if ts_id in snapshot:
                 old_to_stop[ts_id] = snapshot[ts_id]
     else:
         rows = session.execute(sa.text("""
-            SELECT DISTINCT rst.canonical_trip_stop_id, rst.stop_id, rgt.agency_name
+            SELECT DISTINCT rst.canonical_trip_stop_id, rst.stop_id, rgt.agency_name, t.line_id, t.direction
             FROM raw_gtfs_stop_time rst
             JOIN raw_gtfs_trip rgt ON rgt.id = rst.raw_trip_id
+            JOIN trip t ON t.id = rgt.canonical_trip_id
             WHERE rst.canonical_trip_stop_id = ANY(:ids)
         """), {"ids": broken_ts_ids}).all()
         for row in rows:
-            old_to_stop[row.canonical_trip_stop_id] = (row.stop_id, row.agency_name)
+            old_to_stop[row.canonical_trip_stop_id] = (row.stop_id, row.agency_name, row.line_id, row.direction)
 
     if not old_to_stop:
         # Fallback: les anciens canonical_trip_stop_id ne sont plus dans raw_gtfs_stop_time
@@ -193,11 +207,16 @@ def _rebuild_trip_stop_led_links(session, agency_name: str, snapshot: dict[int, 
         return
 
     # 3. Trouver les nouveaux trip_stop_id via stop_stop_id, restreints à la
-    # ligne + direction du LED concerné : le même arrêt physique peut être
-    # desservi par d'autres lignes (on ne veut pas remapper dessus), et une
-    # ligne à branches a plusieurs trips par direction passant par le tronc
-    # commun — le LED doit être relié à TOUS ces trip_stop (un véhicule de
-    # n'importe quelle branche l'allume), pas au "premier trouvé".
+    # ligne + direction du lien D'ORIGINE (pas de la strip du LED) : le même
+    # arrêt physique peut être desservi par d'autres lignes (on ne veut pas
+    # remapper dessus), et une ligne à branches a plusieurs trips par
+    # direction passant par le tronc commun — le LED doit être relié à TOUS
+    # ces trip_stop (un véhicule de n'importe quelle branche l'allume), pas
+    # au "premier trouvé". Utiliser le contexte du lien d'origine (pas celui
+    # de la strip) permet aussi à un lien "tronc commun inter-lignes" (voir
+    # LedStripService.link_cross_line_trunk) de survivre au rebuild : ce
+    # lien-là pointe vers une ligne différente de celle de la strip du LED,
+    # donc dériver le contexte depuis la strip le raterait systématiquement.
     stop_ids_needed = list({v[0] for v in old_to_stop.values()})
     new_stop_rows = session.execute(sa.text("""
         SELECT ts.id, ts.stop_stop_id, t.line_id, t.direction
@@ -212,28 +231,14 @@ def _rebuild_trip_stop_led_links(session, agency_name: str, snapshot: dict[int, 
     for row in new_stop_rows:
         stop_to_new_ts.setdefault((row.stop_stop_id, row.line_id, row.direction), []).append(row.id)
 
-    # led_id -> (line_id, direction) via sa bande et son type (left/c_left = 0)
-    led_rows = session.execute(sa.text("""
-        SELECT led.id AS led_id, ls.line_id, led.type
-        FROM led
-        JOIN led_strip ls ON ls.id = led.ledstrip_id
-        WHERE led.id = ANY(:led_ids)
-    """), {"led_ids": list({row.led_id for row in broken})}).all()
-    led_context: dict[int, tuple[int, int]] = {
-        row.led_id: (row.line_id, 0 if row.type in ("left", "c_left") else 1)
-        for row in led_rows
-    }
-
     # 4. Reconstruire les liens
     to_insert = []
     to_delete = []
     for led_id, old_ts_id in broken:
         mapping = old_to_stop.get(old_ts_id)
-        context = led_context.get(led_id)
         new_ts_ids: list[int] = []
-        if mapping and context:
-            stop_stop_id, _ = mapping
-            line_id, direction = context
+        if mapping:
+            stop_stop_id, _agency, line_id, direction = mapping
             new_ts_ids = stop_to_new_ts.get((stop_stop_id, line_id, direction), [])
         if new_ts_ids:
             for new_ts_id in new_ts_ids:

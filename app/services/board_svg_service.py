@@ -245,11 +245,16 @@ def _build_strip(
     is_tec   = (strip.line_agency_name or "").lower() == "tec"
     line     = strip.line
 
-    lc       = "#FFD34E" if is_tec else _c(line.color if line else None, "#d84b3a")
+    # Same resolution as everywhere else in the app (BoardService._resolve_line_color,
+    # led-visualization.ts pickLineColor): per-strip override wins, then the line's
+    # official GTFS color, then an agency-appropriate default — never force TEC to
+    # yellow when the strip has its own configured color.
+    default_lc = "#FFD34E" if is_tec else "#d84b3a"
+    lc       = _c(strip.line_color or (line.color if line else None), default_lc)
     tc       = _c(line.text_color if line else None, "#ffffff")
     s_stroke = "#1f3c88"
     tb_fill  = "#1f3c88"
-    lw       = str(RAIL_W)
+    lw       = str(RAIL_W_T if is_tec else RAIL_W)
 
     has_cl = any(l.type == "c_left"  for l in leds)
     has_cr = any(l.type == "c_right" for l in leds)
