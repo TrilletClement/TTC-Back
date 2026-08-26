@@ -8,6 +8,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.core.security.jwt import create_access_token, get_current_user
 from app.domain.exceptions import BusinessError, ValidationError
 from app.orm_models.auth import User
@@ -49,7 +50,8 @@ async def verify_turnstile(token: str, remote_ip: str = None) -> bool:
 
 
 @router.post("/login")
-def login(payload: LoginRequest, svc: AuthService = Depends(get_service)):
+@limiter.limit("10/minute")
+def login(request: Request, payload: LoginRequest, svc: AuthService = Depends(get_service)):
     try:
         return svc.login(payload.email, payload.password)
     except BusinessError as e:
@@ -57,7 +59,8 @@ def login(payload: LoginRequest, svc: AuthService = Depends(get_service)):
 
 
 @router.post("/token")
-def token(form_data: OAuth2PasswordRequestForm = Depends(), svc: AuthService = Depends(get_service)):
+@limiter.limit("10/minute")
+def token(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), svc: AuthService = Depends(get_service)):
     try:
         return svc.login(form_data.username, form_data.password)
     except BusinessError as e:
@@ -65,6 +68,7 @@ def token(form_data: OAuth2PasswordRequestForm = Depends(), svc: AuthService = D
 
 
 @router.post("/register")
+@limiter.limit("5/minute")
 async def register(payload: RegisterRequest, request: Request, svc: AuthService = Depends(get_service)):
     if not await verify_turnstile(payload.turnstileToken, request.client.host if request.client else None):
         raise HTTPException(status_code=400, detail="Validation CAPTCHA échouée")
@@ -100,12 +104,14 @@ def update_preferences(
 
 
 @router.post("/forgot-password")
-async def forgot_password(payload: ForgotPasswordRequest, svc: AuthService = Depends(get_service)):
+@limiter.limit("5/minute")
+async def forgot_password(request: Request, payload: ForgotPasswordRequest, svc: AuthService = Depends(get_service)):
     return await svc.forgot_password(payload.email)
 
 
 @router.post("/reset-password")
-def reset_password(payload: ResetPasswordRequest, svc: AuthService = Depends(get_service)):
+@limiter.limit("10/minute")
+def reset_password(request: Request, payload: ResetPasswordRequest, svc: AuthService = Depends(get_service)):
     try:
         return svc.reset_password(payload.token, payload.password)
     except ValidationError as e:
@@ -113,7 +119,8 @@ def reset_password(payload: ResetPasswordRequest, svc: AuthService = Depends(get
 
 
 @router.post("/resend-confirmation")
-async def resend_confirmation(payload: ResendConfirmRequest, svc: AuthService = Depends(get_service)):
+@limiter.limit("5/minute")
+async def resend_confirmation(request: Request, payload: ResendConfirmRequest, svc: AuthService = Depends(get_service)):
     return await svc.resend_confirmation(payload.email)
 
 

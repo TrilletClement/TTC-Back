@@ -2,10 +2,14 @@ from fastapi import FastAPI, Request, Security
 from fastapi.responses import Response
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.routines import scheduler
 from app.routers import payments, auth, boards, devices, ledstrips, orders, line, blog, update, adminOta, adminUsers, adminDevices, adminPrices, adminOrders, shipping, provisioning, adminSettings, adminShipping, adminGtfs, public, gifts, support, adminSupport, alerts
 from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.core.security.jwt import get_current_user
 from app.orm_models.auth import User
 
@@ -18,6 +22,10 @@ app = FastAPI(
     title="Transport API",
     lifespan=lifespan
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 @app.middleware("http")
 async def handle_options(request: Request, call_next):
@@ -33,6 +41,17 @@ async def handle_options(request: Request, call_next):
             }
         )
     response = await call_next(request)
+    return response
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # No-op over plain HTTP (browsers only honor HSTS on HTTPS responses) —
+    # safe to send unconditionally for local/dev traffic.
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
     return response
 
 # CORS Middleware (keep this as-is)

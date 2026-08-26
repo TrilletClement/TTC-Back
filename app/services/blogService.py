@@ -2,6 +2,8 @@ import re
 from datetime import datetime
 from typing import Optional
 
+import nh3
+
 from app.domain.exceptions import NotFoundError, BusinessError
 from app.orm_models.auth import User
 from app.orm_models.blog import BlogPost
@@ -11,6 +13,14 @@ from app.repositories.blog_repo import BlogRepository
 def _generate_slug(title: str) -> str:
     slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
     return slug
+
+
+def _sanitize_content(content: str) -> str:
+    # The frontend renders this via bypassSecurityTrustHtml with no client-side
+    # sanitization — this is the only place stripping scripts/event handlers/
+    # javascript: URLs before the HTML is stored, so it must run on every
+    # write, not just be trusted because only editors can call this.
+    return nh3.clean(content)
 
 
 def _is_editor(user: User) -> bool:
@@ -42,7 +52,7 @@ class BlogService:
             slug=slug,
             title=title,
             description=description,
-            content=content,
+            content=_sanitize_content(content),
             author_id=author.id,
             published=published,
         )
@@ -69,7 +79,7 @@ class BlogService:
         if description:
             post.description = description
         if content:
-            post.content = content
+            post.content = _sanitize_content(content)
         if published is not None:
             post.published = published
 
