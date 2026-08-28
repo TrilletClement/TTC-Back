@@ -8,6 +8,7 @@ from app.domain.exceptions import BusinessError, ValidationError
 from app.orm_models.order import Order, OrderDetails, OrderItem
 from app.repositories.order_repo import OrderRepository
 from app.services.giftService import GiftService
+from app.services.svg_validation import validate_board_svg
 
 
 class OrderService:
@@ -25,6 +26,7 @@ class OrderService:
                 status_code=400,
                 detail="board_id and svg_content are required",
             )
+        validate_board_svg(svg_content)
 
         repo = OrderRepository(db)
         board = repo.get_board_by_id(board_id)

@@ -120,6 +120,23 @@ class AuthService:
             logger.info(f"Email renvoyé à {user.email}")
         return {"message": "Si ce compte existe, un nouvel email a été envoyé"}
 
+    def create_oauth_handoff(self, user: User) -> str:
+        token = secrets.token_urlsafe(32)
+        user.oauth_handoff_token = token
+        user.oauth_handoff_token_expiry = datetime.utcnow() + timedelta(minutes=2)
+        self.repo.commit()
+        return token
+
+    def exchange_oauth_handoff(self, token: str) -> dict:
+        user = self.repo.get_by_oauth_handoff_token(token)
+        if not user or not user.oauth_handoff_token_expiry or user.oauth_handoff_token_expiry < datetime.utcnow():
+            raise ValidationError("invalid-or-expired-code")
+        user.oauth_handoff_token = None
+        user.oauth_handoff_token_expiry = None
+        self.repo.commit()
+        roles = [role.name for role in user.roles]
+        return {"access_token": create_access_token(user.email, roles=roles), "token_type": "bearer"}
+
     def get_or_create_google_user(self, email: str, google_id: str) -> User:
         user = self.repo.get_by_email(email)
         if user:

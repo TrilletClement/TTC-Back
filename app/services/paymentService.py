@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.orm_models.auth import User
 from app.orm_models.order import Order, OrderDetails, OrderGift, OrderItem
 from app.repositories.order_repo import OrderRepository
+from app.services.svg_validation import validate_board_svg
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 WEBHOOK_SECRET = settings.STRIPE_WEBHOOK_SECRET
@@ -101,6 +102,7 @@ class PaymentService:
                     status_code=404,
                     detail=f"Board #{item.boardId} not found or not owned by you",
                 )
+            validate_board_svg(item.svg)
             unit_amount = _compute_price(board, current_version, repo)
             item_boards.append((item, board, unit_amount))
 

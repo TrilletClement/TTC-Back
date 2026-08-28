@@ -9,13 +9,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.rate_limit import limiter
-from app.core.security.jwt import create_access_token, get_current_user
+from app.core.security.jwt import get_current_user
 from app.domain.exceptions import BusinessError, ValidationError
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.repositories.auth_repo import AuthRepository
-from app.schemas.auth import (ForgotPasswordRequest, LoginRequest,
-                               PreferencesUpdate, RegisterRequest,
+from app.schemas.auth import (ForgotPasswordRequest, GoogleExchangeRequest,
+                               LoginRequest, PreferencesUpdate, RegisterRequest,
                                ResendConfirmRequest, ResetPasswordRequest)
 from app.services.authService import AuthService
 
@@ -160,7 +160,15 @@ async def google_callback(code: str, svc: AuthService = Depends(get_service)):
     if not email:
         raise HTTPException(status_code=400, detail="Email non fourni par Google")
 
-    user  = svc.get_or_create_google_user(email, google_id)
-    roles = [role.name for role in user.roles]
-    jwt   = create_access_token(user.email, roles=roles)
-    return RedirectResponse(f"{settings.FRONTEND_URL}/auth/callback?token={jwt}")
+    user = svc.get_or_create_google_user(email, google_id)
+    code = svc.create_oauth_handoff(user)
+    return RedirectResponse(f"{settings.FRONTEND_URL}/auth/callback?code={code}")
+
+
+@router.post("/auth/google/exchange")
+@limiter.limit("10/minute")
+def google_exchange(request: Request, payload: GoogleExchangeRequest, svc: AuthService = Depends(get_service)):
+    try:
+        return svc.exchange_oauth_handoff(payload.code)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))

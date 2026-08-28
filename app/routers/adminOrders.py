@@ -66,7 +66,7 @@ def get_order(order_id: int, current_user: User, svc: AdminOrdersService = Depen
 @require_admin
 def patch_order(order_id: int, payload: OrderPatch, current_user: User, svc: AdminOrdersService = Depends(get_service)):
     try:
-        return svc.patch_order(order_id, payload)
+        return svc.patch_order(order_id, payload, current_user)
     except (NotFoundError, BusinessError, ValidationError) as e:
         raise _handle(e)
 
@@ -84,7 +84,7 @@ async def update_gift(order_id: int, payload: GiftUpdate, current_user: User, sv
 @require_admin
 def associate_device(item_id: int, payload: AssociateDevicePayload, current_user: User, svc: AdminOrdersService = Depends(get_service)):
     try:
-        return svc.associate_device(item_id, payload)
+        return svc.associate_device(item_id, payload, current_user)
     except (NotFoundError, BusinessError, ValidationError) as e:
         raise _handle(e)
 
@@ -100,7 +100,7 @@ def ship_order(
     from app.services import adminShippingService
     fallback_code = adminShippingService.get_first_enabled(db)
     try:
-        return svc.ship_order(order_id, fallback_option_code=fallback_code)
+        return svc.ship_order(order_id, current_user, fallback_option_code=fallback_code)
     except (NotFoundError, BusinessError, ValidationError) as e:
         raise _handle(e)
 

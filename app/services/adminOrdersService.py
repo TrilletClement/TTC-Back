@@ -1,7 +1,9 @@
 from typing import Optional
 
+from app.core import audit
 from app.core.config import settings
 from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
+from app.orm_models.auth import User
 from app.orm_models.order import Order, OrderItem
 from app.repositories.order_repo import OrderRepository
 from app.schemas.order import OrderOut, OrderItemOut, AddressOut, GiftOut, GiftUpdate, OrderPatch, AssociateDevicePayload
@@ -133,7 +135,7 @@ class AdminOrdersService:
             for d in self.repo.list_all_devices()
         ]
 
-    def patch_order(self, order_id: int, payload: OrderPatch) -> OrderOut:
+    def patch_order(self, order_id: int, payload: OrderPatch, current_user: User) -> OrderOut:
         o = self.repo.get_by_id(order_id)
         if not o:
             raise NotFoundError("Order", order_id)
@@ -141,6 +143,8 @@ class AdminOrdersService:
         if payload.status is not None:
             if payload.status not in ORDER_STATUSES:
                 raise ValidationError(f"Invalid status. Allowed: {ORDER_STATUSES}")
+            if payload.status != o.status:
+                audit.record(current_user, "order_status_change", f"order:{order_id}", detail=f"{o.status}->{payload.status}")
             o.status = payload.status
 
         if payload.tracking_number is not None:
@@ -168,7 +172,7 @@ class AdminOrdersService:
         await GiftService(self.repo).update_gift_fields(o, payload)
         return _build_order_out(o, include_svg=True)
 
-    def associate_device(self, item_id: int, payload: AssociateDevicePayload) -> OrderOut:
+    def associate_device(self, item_id: int, payload: AssociateDevicePayload, current_user: User) -> OrderOut:
         item = self.repo.get_item_by_id(item_id)
         if not item:
             raise NotFoundError("OrderItem", item_id)
@@ -195,9 +199,10 @@ class AdminOrdersService:
         o.status = "processing"
 
         self.repo.save(o)
+        audit.record(current_user, "associate_device", f"order_item:{item_id}", detail=f"device:{device.id}")
         return _build_order_out(o, include_svg=True)
 
-    def ship_order(self, order_id: int, fallback_option_code: Optional[str] = None) -> OrderOut:
+    def ship_order(self, order_id: int, current_user: User, fallback_option_code: Optional[str] = None) -> OrderOut:
         from app.services import sendcloudService
 
         o = self.repo.get_by_id(order_id)
@@ -244,6 +249,7 @@ class AdminOrdersService:
         o.status = "shipped"
 
         self.repo.save(o)
+        audit.record(current_user, "ship_order", f"order:{order_id}", detail=result.parcel_id)
         return _build_order_out(o)
 
     def get_label_url(self, order_id: int) -> str:

@@ -15,6 +15,9 @@ class AuthRepository:
     def get_by_confirmation_token(self, token: str) -> User | None:
         return self.db.query(User).filter(User.confirmation_token == token).first()
 
+    def get_by_oauth_handoff_token(self, token: str) -> User | None:
+        return self.db.query(User).filter(User.oauth_handoff_token == token).first()
+
     def save(self, user: User) -> User:
         self.db.add(user)
         self.db.commit()

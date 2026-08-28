@@ -48,19 +48,20 @@ def toggle_user_active(
 def assign_role(
     user_id: int,
     payload: AssignRoleRequest,
+    current_user: User,
     svc: AdminUserService = Depends(get_service),
 ):
     try:
-        return svc.assign_role(user_id, payload.role_id)
+        return svc.assign_role(user_id, payload.role_id, current_user)
     except (NotFoundError, BusinessError) as e:
         raise _handle(e)
 
 
 @router.delete("/{user_id}/roles/{role_id}")
 @require_admin
-def remove_role(user_id: int, role_id: int, svc: AdminUserService = Depends(get_service)):
+def remove_role(user_id: int, role_id: int, current_user: User, svc: AdminUserService = Depends(get_service)):
     try:
-        return svc.remove_role(user_id, role_id)
+        return svc.remove_role(user_id, role_id, current_user)
     except (NotFoundError, BusinessError) as e:
         raise _handle(e)
 
@@ -73,17 +74,17 @@ def list_roles(svc: AdminUserService = Depends(get_service)):
 
 @router.post("/roles", response_model=RoleOut)
 @require_admin
-def create_role(payload: RoleCreate, svc: AdminUserService = Depends(get_service)):
+def create_role(payload: RoleCreate, current_user: User, svc: AdminUserService = Depends(get_service)):
     try:
-        return svc.create_role(payload.name, payload.description)
+        return svc.create_role(payload.name, payload.description, current_user)
     except (NotFoundError, BusinessError) as e:
         raise _handle(e)
 
 
 @router.delete("/roles/{role_id}")
 @require_admin
-def delete_role(role_id: int, svc: AdminUserService = Depends(get_service)):
+def delete_role(role_id: int, current_user: User, svc: AdminUserService = Depends(get_service)):
     try:
-        return svc.delete_role(role_id)
+        return svc.delete_role(role_id, current_user)
     except (NotFoundError, BusinessError) as e:
         raise _handle(e)

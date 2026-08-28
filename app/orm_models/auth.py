@@ -1,18 +1,17 @@
 from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, func
 from sqlalchemy.orm import relationship
-from flask_security import UserMixin, RoleMixin
 
 from app.orm_models.db import Base
 
 
-class Role(Base, RoleMixin):
+class Role(Base):
     __tablename__ = "role"
     id = Column(Integer, primary_key=True)
     name = Column(String(80), unique=True)
     description = Column(String(255))
 
 
-class User(Base, UserMixin):
+class User(Base):
     __tablename__ = "user"
     id = Column(Integer, primary_key=True)
     email = Column(String(120), unique=True, nullable=False)
@@ -24,6 +23,8 @@ class User(Base, UserMixin):
     reset_token_expiry = Column(DateTime, nullable=True)   
     confirmation_token = Column(String(100), nullable=True)
     confirmation_token_expiry = Column(DateTime, nullable=True)
+    oauth_handoff_token = Column(String(100), nullable=True)
+    oauth_handoff_token_expiry = Column(DateTime, nullable=True)
     preferred_agency = Column(String(50), nullable=True)
     google_id = Column(String, nullable=True, unique=True, index=True)
     alert_display_pref = Column(String(10), nullable=True)
