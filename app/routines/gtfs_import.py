@@ -441,6 +441,28 @@ def _parse_coord(value: str | None) -> float | None:
         return None
 
 
+# Agencies whose feed bakes both languages into one stop_name string
+# ("GARE DU MIDI/ZUIDSTATION"), separator-delimited, French first.
+_BILINGUAL_AGENCIES = {"STIB", "SNCB"}
+
+
+def _split_stop_name(name: str, agency_name: str) -> tuple[str | None, str | None]:
+    """French/Dutch halves of a stop name, per agency (see Stop.name_fr/name_nl).
+
+    STIB/SNCB combine both languages in one string; split on the separator
+    when present, otherwise there's only a French half to offer. De Lijn is
+    Dutch-only; everything else (TEC included) is treated as French-only.
+    """
+    if agency_name in _BILINGUAL_AGENCIES:
+        if "/" in name:
+            fr, _, nl = name.partition("/")
+            return fr.strip() or None, nl.strip() or None
+        return name or None, None
+    if agency_name == "DE_LIJN":
+        return None, name or None
+    return name or None, None
+
+
 def _import_stops(agency_name: str, stops_csv_text: str):
     tic     = time.time()
     reader  = csv.DictReader(StringIO(stops_csv_text))
@@ -456,11 +478,15 @@ def _import_stops(agency_name: str, stops_csv_text: str):
             lon = _parse_coord(row.get("stop_lon"))
             if not stop_id:
                 continue
+            name_fr, name_nl = _split_stop_name(stop_name, agency_name)
             if stop_id in existing:
                 s = existing[stop_id]
                 changed = False
                 if s.name != stop_name:
                     s.name = stop_name
+                    changed = True
+                if s.name_fr != name_fr or s.name_nl != name_nl:
+                    s.name_fr, s.name_nl = name_fr, name_nl
                     changed = True
                 if s.lat != lat or s.lon != lon:
                     s.lat, s.lon = lat, lon
@@ -468,7 +494,10 @@ def _import_stops(agency_name: str, stops_csv_text: str):
                 if changed:
                     updated += 1
             else:
-                to_add.append(Stop(stop_id=stop_id, name=stop_name, agency_name=agency_name, lat=lat, lon=lon))
+                to_add.append(Stop(
+                    stop_id=stop_id, name=stop_name, name_fr=name_fr, name_nl=name_nl,
+                    agency_name=agency_name, lat=lat, lon=lon,
+                ))
         if to_add:
             session.bulk_save_objects(to_add)
         session.commit()

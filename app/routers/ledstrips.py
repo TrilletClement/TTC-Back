@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
@@ -27,6 +27,10 @@ class LedStripCreate(BaseModel):
     # the line's best_trip_{0,1}_id, same as before this field existed.
     trip_0_id: Optional[int] = None
     trip_1_id: Optional[int] = None
+    # Which language to show for stops with a split name (STIB, SNCB — see
+    # Stop.name_fr/name_nl). None = leave it to the line's/stop's default
+    # resolution (French first, see LedStripService._resolve_stop_name).
+    stop_name_language: Optional[Literal["fr", "nl"]] = None
 
     @model_validator(mode="after")
     def check_central_stop_present(self) -> "LedStripCreate":
@@ -107,6 +111,7 @@ def add_led_strip(
         order_index_override=payload.order_index,
         trip_0_id=payload.trip_0_id,
         trip_1_id=payload.trip_1_id,
+        stop_name_language=payload.stop_name_language,
         db=db,
     )
 
@@ -132,6 +137,7 @@ def preview_led_strip(
         pre_stop_right_minutes=payload.pre_stop_right_minutes,
         trip_0_id=payload.trip_0_id,
         trip_1_id=payload.trip_1_id,
+        stop_name_language=payload.stop_name_language,
         db=db,
     )
 
@@ -205,6 +211,7 @@ def update_led_strip(
         pre_stop_right_minutes=payload.pre_stop_right_minutes,
         trip_0_id=payload.trip_0_id,
         trip_1_id=payload.trip_1_id,
+        stop_name_language=payload.stop_name_language,
         db=db,
     )
 

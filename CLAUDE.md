@@ -115,7 +115,7 @@ All components are standalone (no NgModules). Declare imports in the `@Component
 
 | File | What lives there |
 |------|-----------------|
-| `models/order.ts` | `Order`, `OrderItem`, `AdminOrder`, `AdminOrderItem`, `OrderAddress`, `OrderStatus`, `OrderPatch`, `DeviceSelectOption`, `CreateOrderPayload` |
+| `models/order.ts` | `Order`, `OrderItem`, `AdminOrder`, `AdminOrderItem`, `OrderAddress`, `OrderStatus`, `OrderPatch`, `DeviceSelectOption` |
 | `models/shipping.ts` | `ShippingOption`, `AvailableShippingOption` |
 | `models/device-admin.ts` | `DeviceAdminOut`, `DeviceBoardOut`, `DeviceFirmwareOut`, `DeviceHardwareOut`, `DeviceOrderOut`, `BoardListOut` |
 | `models/ota.ts` | `FirmwarePackage`, `HardwareConfig`, `DeviceOverride`, `OtaData`, all settings types |

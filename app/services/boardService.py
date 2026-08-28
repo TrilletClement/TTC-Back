@@ -348,6 +348,7 @@ class BoardService:
                 "rtOnly": bool(getattr(strip, "rt_only", False)),
                 "customTerminusLeftName":  getattr(strip, "custom_terminus_left_name",  None),
                 "customTerminusRightName": getattr(strip, "custom_terminus_right_name", None),
+                "stopNameLanguage": getattr(strip, "stop_name_language", None),
             }
 
             if line_obj:

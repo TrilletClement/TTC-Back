@@ -11,7 +11,7 @@ class AdminDevicesService:
     def _build_device_out(self, d: ESP32Device) -> DeviceAdminOut:
         board_out = None
         if d.board:
-            orders = self.repo.get_orders_for_board(d.board_id)
+            orders = self.repo.get_orders_for_device(d.id)
             board_out = BoardOut(
                 id=d.board.id,
                 name=d.board.name,

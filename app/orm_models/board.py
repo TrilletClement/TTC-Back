@@ -70,6 +70,11 @@ class LedStrip(Base):
     # NULL means "use the line's official GTFS color" — distinct from
     # Led.led_color, which is the color the physical LEDs actually light up.
     line_color = Column(String(50), nullable=True)
+    # Which language to show for stops with a split name_fr/name_nl (STIB,
+    # SNCB — see Stop.name_fr/name_nl). NULL means the wizard's UI-language
+    # default was never overridden; baked into each Led.custom_name at
+    # creation time, not re-resolved on read.
+    stop_name_language = Column(String(2), nullable=True)
     line = relationship(
         "Line",
         backref="led_strips",

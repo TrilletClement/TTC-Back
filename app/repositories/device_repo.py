@@ -21,11 +21,11 @@ class DeviceRepository:
     def get_by_id(self, device_id: int) -> ESP32Device | None:
         return self.db.query(ESP32Device).filter(ESP32Device.id == device_id).first()
 
-    def get_orders_for_board(self, board_id: int) -> list[Order]:
+    def get_orders_for_device(self, device_id: int) -> list[Order]:
         return (
             self.db.query(Order)
             .join(OrderItem, OrderItem.order_id == Order.id)
-            .filter(OrderItem.board_id == board_id)
+            .filter(OrderItem.esp_device_id == device_id)
             .order_by(Order.created_at.desc())
             .all()
         )

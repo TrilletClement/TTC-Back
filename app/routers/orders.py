@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.user_access import require_user
@@ -9,28 +8,6 @@ from app.schemas.order import GiftUpdate
 from app.services.orderService import OrderService
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
-
-
-class OrderCreate(BaseModel):
-    board_id: int
-    svg_content: str
-    details: dict
-
-
-@router.post("")
-@require_user
-def create_order(
-    payload: OrderCreate,
-    current_user: User,
-    db: Session = Depends(get_db),
-):
-    return OrderService.create_order(
-        payload.board_id,
-        payload.svg_content,
-        payload.details,
-        current_user.id,
-        db,
-    )
 
 
 @router.get("")

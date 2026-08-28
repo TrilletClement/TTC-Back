@@ -106,19 +106,34 @@ class LineService:
     # get_line_trip_variants).
     BRANCH_MIN_STOP_RATIO = 0.5
 
+    # Within a terminus group, a shorter pattern is folded into an
+    # already-kept one (treated as a technical duplicate — a skipped stop,
+    # a different first stop on an early run) when at least this fraction
+    # of its own stops already appear in what's kept. Below this overlap,
+    # it's introducing a real stretch of stops the kept pattern doesn't
+    # have — a genuine second branch that happens to converge on the same
+    # terminus (see get_line_trip_variants) — so it's kept as its own
+    # variant instead of being silently dropped.
+    BRANCH_OVERLAP_THRESHOLD = 0.8
+
     @staticmethod
     def get_line_trip_variants(repo: LineRepository, line) -> dict:
         """Branches per direction for this line, one entry per distinct
-        terminus. GTFS import creates a separate canonical Trip for every
-        exact stop-sequence signature, so real branching lines (e.g. TEC T1
-        Liège: Coronmeuse vs Liège Expo) can have several Trip rows sharing
-        the SAME terminus — a skipped stop on some runs, a different first
-        stop for early trips, etc. Those collapse into a single branch
-        option here (grouped by terminus_stop_id) so the picker shows only
-        meaningfully different choices, not every technical signature.
-        Within a group, the longest known pattern represents the branch
-        (see rationale below); trip_count is summed across the whole group
-        so it reflects the branch's real total frequency.
+        pattern. GTFS import creates a separate canonical Trip for every
+        exact stop-sequence signature, so a real branching line can diverge
+        at either end: at the terminus (TEC T1 Liège: Coronmeuse vs Liège
+        Expo, heading away from the trunk) or at the origin (the same two
+        branches, heading back, converging on the SAME terminus). Trips
+        are first grouped by terminus, since that's still the common case;
+        within each group, patterns are compared by stop overlap rather
+        than just kept-or-dropped by length, so a pattern that shares a
+        terminus with an already-kept one but adds a real stretch of new
+        stops (a different origin) survives as its own variant instead of
+        being discarded as a technical duplicate (see
+        BRANCH_OVERLAP_THRESHOLD). trip_count is attributed to whichever
+        kept variant a trip actually overlaps with, so each variant's
+        count reflects its own real frequency rather than the whole
+        terminus group's.
 
         A direction can also contain rare, very short trips that happen to
         share its direction_id purely as a GTFS data quirk (a depot
@@ -136,43 +151,53 @@ class LineService:
             # Longest known pattern wins here — NOT stop_count * trip_count
             # (that formula is for picking the line's single overall best
             # trip). For enumerating a branch's own stops we always want the
-            # most complete pattern to this terminus, even if it's rarer,
-            # otherwise a frequent-but-short shuttle/short-turn variant can
-            # shadow a fuller trip and silently drop the shared trunk stops
-            # from the picker.
-            best_trip, best_stop_count, terminus_name, best_trip_stops = None, -1, None, None
+            # most complete pattern first, even if it's rarer, otherwise a
+            # frequent-but-short shuttle/short-turn variant can shadow a
+            # fuller trip and silently drop the shared trunk stops from the
+            # picker.
+            loaded = []
             for trip in trips:
                 trip_stops = repo.get_trip_stops_with_stops(trip.id)
-                if not trip_stops:
+                if trip_stops:
+                    loaded.append((trip, trip_stops))
+            loaded.sort(key=lambda pair: len(pair[1]), reverse=True)
+
+            kept: list[dict] = []
+            for trip, trip_stops in loaded:
+                stop_ids = {(stop.stop_id, stop.agency_name) for stop, _ in trip_stops}
+                covered = set().union(*(k["_stop_ids"] for k in kept)) if kept else set()
+                overlap = len(stop_ids & covered) / len(stop_ids)
+                if kept and overlap >= LineService.BRANCH_OVERLAP_THRESHOLD:
+                    best = max(kept, key=lambda k: len(stop_ids & k["_stop_ids"]))
+                    best["trip_count"] += trip.trip_count
                     continue
-                stop_count = len(trip_stops)
-                if stop_count > best_stop_count:
-                    best_trip, best_stop_count = trip, stop_count
-                    terminus_name = trip_stops[-1][0].name
-                    best_trip_stops = trip_stops
-            if best_trip is None:
-                continue
-            candidates_by_direction[direction].append({
-                "trip_id": best_trip.id,
-                "terminus_name": terminus_name,
-                "stop_count": best_stop_count,
-                "trip_count": sum(t.trip_count for t in trips),
-                "is_best": best_trip.id in (line.best_trip_0_id, line.best_trip_1_id),
-                # Full ordered stop list of the branch's own pattern — lets
-                # the frontend merge every branch into one flat, annotated
-                # stop picker instead of asking the user to pick a branch
-                # first (see led-strip-modal's mergedStopEntries).
-                "stops": [
-                    {
-                        "id": f"{stop.stop_id}_{stop.agency_name}",
-                        "stop_id": stop.stop_id,
-                        "name": stop.name,
-                        "agency_name": stop.agency_name,
-                        "sequence": sequence,
-                    }
-                    for stop, sequence in best_trip_stops
-                ],
-            })
+                kept.append({
+                    "trip_id": trip.id,
+                    "terminus_name": trip_stops[-1][0].name,
+                    "origin_name": trip_stops[0][0].name,
+                    "stop_count": len(trip_stops),
+                    "trip_count": trip.trip_count,
+                    "is_best": trip.id in (line.best_trip_0_id, line.best_trip_1_id),
+                    "_stop_ids": stop_ids,
+                    # Full ordered stop list of the branch's own pattern —
+                    # lets the frontend merge every branch into one flat,
+                    # annotated stop picker instead of asking the user to
+                    # pick a branch first (see led-strip-modal's
+                    # mergedStopEntries).
+                    "stops": [
+                        {
+                            "id": f"{stop.stop_id}_{stop.agency_name}",
+                            "stop_id": stop.stop_id,
+                            "name": stop.name,
+                            "agency_name": stop.agency_name,
+                            "sequence": sequence,
+                        }
+                        for stop, sequence in trip_stops
+                    ],
+                })
+            for c in kept:
+                del c["_stop_ids"]
+            candidates_by_direction[direction].extend(kept)
 
         variants_by_direction: dict[str, list[dict]] = {"0": [], "1": []}
         for direction, direction_candidates in candidates_by_direction.items():

@@ -30,6 +30,12 @@ class Stop(Base):
     __tablename__ = "stop"
     stop_id = Column(String(100), nullable=False)
     name = Column(String(100), nullable=False)
+    # Split out of `name` for agencies whose feed combines both languages in
+    # one string (STIB/SNCB: "GARE DU MIDI/ZUIDSTATION"); NULL when that
+    # language isn't known for this stop (e.g. De Lijn only ever fills
+    # name_nl). See LedStripService.format_stop_label / _resolve_stop_name.
+    name_fr = Column(String(100), nullable=True)
+    name_nl = Column(String(100), nullable=True)
     agency_name = Column(String(100), ForeignKey("agency.name"), nullable=False)
     lat = Column(Float, nullable=True)
     lon = Column(Float, nullable=True)

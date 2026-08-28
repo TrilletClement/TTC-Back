@@ -1,76 +1,13 @@
-import json
-
 from fastapi import HTTPException
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.domain.exceptions import BusinessError, ValidationError
-from app.orm_models.order import Order, OrderDetails, OrderItem
 from app.repositories.order_repo import OrderRepository
 from app.services.giftService import GiftService
-from app.services.svg_validation import validate_board_svg
 
 
 class OrderService:
-
-    @staticmethod
-    def create_order(
-        board_id: int,
-        svg_content: str,
-        details: str | dict | None,
-        user_id: int | None,
-        db: Session,
-    ):
-        if not board_id or not svg_content:
-            raise HTTPException(
-                status_code=400,
-                detail="board_id and svg_content are required",
-            )
-        validate_board_svg(svg_content)
-
-        repo = OrderRepository(db)
-        board = repo.get_board_by_id(board_id)
-        if not board:
-            raise HTTPException(status_code=404, detail="Board not found")
-
-        shipping_details = None
-        if details:
-            try:
-                payload = details if isinstance(details, dict) else json.loads(details)
-                od = OrderDetails(
-                    first_name    = payload.get("firstName") or "",
-                    last_name     = payload.get("lastName") or "",
-                    address_line1 = payload.get("addressLine1") or "",
-                    city          = payload.get("city") or "",
-                    postal_code   = payload.get("postalCode") or "",
-                    country       = payload.get("country") or "",
-                    phone         = payload.get("phone"),
-                    user_id       = user_id,
-                )
-                shipping_details = repo.create_order_details(od)
-            except Exception:
-                pass
-
-        current_version = repo.get_current_price_version()
-
-        order = repo.create_order(Order(
-            shipping_details_id = shipping_details.id if shipping_details else None,
-            billing_details_id  = shipping_details.id if shipping_details else None,
-            status              = "pending",
-            price_version_id    = current_version.id if current_version else None,
-            user_id             = user_id,
-            amount_cents        = 0,
-        ))
-
-        repo.create_order_item(OrderItem(
-            order_id     = order.id,
-            board_id     = board_id,
-            svg_content  = svg_content,
-            amount_cents = 0,
-        ))
-        db.commit()
-
-        return {"message": "Order created", "order_id": order.id}
 
     @staticmethod
     async def update_gift(order_id: int, payload, user_id: int, db: Session):

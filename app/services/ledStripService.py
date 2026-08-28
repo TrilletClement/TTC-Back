@@ -75,6 +75,7 @@ class LedStripService:
         order_index_override: int = None,
         trip_0_id: int | None = None,
         trip_1_id: int | None = None,
+        stop_name_language: str | None = None,
         db: Session = None,
     ):
         if not all([agency_name, line_id]) or (not central_stop_left_name and not central_stop_right_name):
@@ -123,7 +124,7 @@ class LedStripService:
             trip_stops, central_indexes, pre_stop_overrides, max_led=max_led,
         )
 
-        left_t, right_t = LedStripService._compute_terminus_names(trip_stops, agency_name)
+        left_t, right_t = LedStripService._compute_terminus_names(trip_stops, agency_name, stop_name_language)
         strip = repo.add_strip(LedStrip(
             board_id=board.id,
             line_id=line_id,
@@ -135,6 +136,7 @@ class LedStripService:
             line_color=line_color_hex,
             trip_0_id=trip_0_id,
             trip_1_id=trip_1_id,
+            stop_name_language=stop_name_language,
         ))
 
         LedStripService._create_leds(
@@ -147,6 +149,7 @@ class LedStripService:
             led_color=led_color_hex,
             pre_stop_overrides=pre_stop_overrides,
             max_led=max_led,
+            lang=stop_name_language,
         )
 
         repo.commit()
@@ -167,6 +170,7 @@ class LedStripService:
         pre_stop_right_minutes: int | None = None,
         trip_0_id: int | None = None,
         trip_1_id: int | None = None,
+        stop_name_language: str | None = None,
         db: Session = None,
     ):
         """Read-only dry run of create_led_strip: computes the exact LED layout
@@ -205,10 +209,11 @@ class LedStripService:
             trip_stops, central_indexes, pre_stop_overrides, max_led=max_led,
         )
 
-        left_t, right_t = LedStripService._compute_terminus_names(trip_stops, agency_name)
+        left_t, right_t = LedStripService._compute_terminus_names(trip_stops, agency_name, stop_name_language)
 
         descriptors = LedStripService._build_led_descriptors(
             repo, agency_name, selected_stops, central_position, led_color_hex, pre_stop_overrides, max_led,
+            stop_name_language,
         )
 
         return {
@@ -263,6 +268,7 @@ class LedStripService:
             "lineColor":       strip.line_color,
             "trip0Id":         strip.trip_0_id,
             "trip1Id":         strip.trip_1_id,
+            "stopNameLanguage": strip.stop_name_language,
             "leds":            leds_payload,
         }
 
@@ -282,6 +288,7 @@ class LedStripService:
         pre_stop_right_minutes: int | None = None,
         trip_0_id: int | None = None,
         trip_1_id: int | None = None,
+        stop_name_language: str | None = None,
         db: Session = None,
     ):
         if not all([agency_name, line_id]) or (not central_stop_left_name and not central_stop_right_name):
@@ -321,7 +328,7 @@ class LedStripService:
             trip_stops, central_indexes, pre_stop_overrides, max_led=max_led,
         )
 
-        left_t, right_t = LedStripService._compute_terminus_names(trip_stops, agency_name)
+        left_t, right_t = LedStripService._compute_terminus_names(trip_stops, agency_name, stop_name_language)
         strip.line_id = int(line_id)
         strip.line_agency_name = agency_name
         strip.custom_terminus_left_name  = left_t
@@ -329,6 +336,7 @@ class LedStripService:
         strip.line_color = line_color_hex
         strip.trip_0_id = trip_0_id
         strip.trip_1_id = trip_1_id
+        strip.stop_name_language = stop_name_language
 
         for led in list(strip.leds):
             led.trip_stops.clear()
@@ -345,6 +353,7 @@ class LedStripService:
             led_color=led_color_hex,
             pre_stop_overrides=pre_stop_overrides,
             max_led=max_led,
+            lang=stop_name_language,
         )
 
         repo.commit()
@@ -510,7 +519,19 @@ class LedStripService:
     # ── Helpers privés ───────────────────────────────────────────────────────────
 
     @staticmethod
-    def _compute_terminus_names(trip_stops: dict, agency_name: str) -> tuple[str | None, str | None]:
+    def _resolve_stop_name(stop, lang: str | None) -> str:
+        """Pick a stop's display name for `lang` ('fr'/'nl'), falling back to
+        the other language when the requested one isn't known for this stop
+        (TEC/De Lijn only ever have one), and to the raw combined `name` for
+        stops imported before the name_fr/name_nl split existed."""
+        if lang == "nl":
+            return stop.name_nl or stop.name_fr or stop.name
+        return stop.name_fr or stop.name_nl or stop.name
+
+    @staticmethod
+    def _compute_terminus_names(
+        trip_stops: dict, agency_name: str, lang: str | None = None,
+    ) -> tuple[str | None, str | None]:
         """Return (left_name, right_name) formatted from the last stop of each direction.
 
         direction 1 → left terminus
@@ -520,7 +541,9 @@ class LedStripService:
             if not stops:
                 return None
             last_ts = stops[-1]
-            return last_ts.stop.name if last_ts and last_ts.stop else None
+            if not last_ts or not last_ts.stop:
+                return None
+            return LedStripService._resolve_stop_name(last_ts.stop, lang)
 
         left_raw  = _last_stop_name(trip_stops.get(1))
         right_raw = _last_stop_name(trip_stops.get(0))
@@ -740,6 +763,7 @@ class LedStripService:
         led_color: str,
         pre_stop_overrides=None,
         max_led: int = 12,
+        lang: str | None = None,
     ) -> list[dict]:
         """Compute, for each of the `max_led` slots, the (type, label, trip_stop)
         that slot would get. Pure/read-only — used both to persist real LEDs and
@@ -774,7 +798,8 @@ class LedStripService:
             if ts:
                 stop = repo.get_stop(ts.stop_stop_id, agency_name)
                 if stop and stop.name:
-                    custom_name, custom_subname = LedStripService.format_stop_label(stop.name, agency_name)
+                    resolved_name = LedStripService._resolve_stop_name(stop, lang)
+                    custom_name, custom_subname = LedStripService.format_stop_label(resolved_name, agency_name)
                 else:
                     custom_name = ts.stop_stop_id
 
@@ -833,9 +858,10 @@ class LedStripService:
         led_color: str,
         pre_stop_overrides=None,
         max_led: int = 12,
+        lang: str | None = None,
     ):
         descriptors = LedStripService._build_led_descriptors(
-            repo, agency_name, selected_stops, central_position, led_color, pre_stop_overrides, max_led,
+            repo, agency_name, selected_stops, central_position, led_color, pre_stop_overrides, max_led, lang,
         )
 
         # Same-stop TripStops from the line's OTHER trip variants (same
