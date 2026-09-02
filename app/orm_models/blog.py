@@ -11,6 +11,7 @@ class BlogPost(Base):
     title = Column(String(255), nullable=False)
     description = Column(String(500))
     content = Column(Text, nullable=False)  # Contenu HTML
+    cover_image_url = Column(String(500), nullable=True)
     author_id = Column(Integer, ForeignKey("user.id"), nullable=False)
     published = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -26,6 +27,7 @@ class BlogPost(Base):
             "title": self.title,
             "description": self.description,
             "content": self.content,
+            "cover_image_url": self.cover_image_url,
             "author": {
                 "id": self.author.id,
                 "email": self.author.email
@@ -41,6 +43,7 @@ class BlogPost(Base):
             "slug": self.slug,
             "title": self.title,
             "description": self.description,
+            "cover_image_url": self.cover_image_url,
             "date": self.created_at.strftime("%Y-%m-%d") if self.created_at else None,
             "author": self.author.email if self.author else None
         }

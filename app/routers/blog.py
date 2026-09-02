@@ -8,13 +8,17 @@ from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.repositories.blog_repo import BlogRepository
 from app.schemas.blog import BlogPostCreate, BlogPostPublish, BlogPostUpdate
-from app.services.blogService import BlogEmbedStorage, BlogService
+from app.services.blogService import BlogCoverStorage, BlogEmbedStorage, BlogService
 
 router = APIRouter(prefix="/api/blog", tags=["blog"])
 
 
 def get_service(db: Session = Depends(get_db)) -> BlogService:
-    return BlogService(BlogRepository(db), BlogEmbedStorage(settings.BLOG_EMBEDS_DIR))
+    return BlogService(
+        BlogRepository(db),
+        BlogEmbedStorage(settings.BLOG_EMBEDS_DIR),
+        BlogCoverStorage(settings.BLOG_EMBEDS_DIR),
+    )
 
 
 def _handle(exc: NotFoundError | BusinessError | ValidationError) -> HTTPException:
@@ -88,6 +92,15 @@ def upload_embed(current_user: User, file: UploadFile = File(...), svc: BlogServ
         raise _handle(e)
 
 
+@router.post("/covers")
+@require_editor
+def upload_cover(current_user: User, file: UploadFile = File(...), svc: BlogService = Depends(get_service)):
+    try:
+        return svc.upload_cover(file, current_user)
+    except (BusinessError, ValidationError) as e:
+        raise _handle(e)
+
+
 @router.post("/posts")
 @require_editor
 def create_post(payload: BlogPostCreate, current_user: User, svc: BlogService = Depends(get_service)):
@@ -99,6 +112,7 @@ def create_post(payload: BlogPostCreate, current_user: User, svc: BlogService = 
             content=payload.content,
             author=current_user,
             published=payload.published if is_admin else False,
+            cover_image_url=payload.cover_image_url,
         ).to_dict()
     except (NotFoundError, BusinessError) as e:
         raise _handle(e)
@@ -114,6 +128,7 @@ def update_post(slug: str, payload: BlogPostUpdate, current_user: User, svc: Blo
             title=payload.title,
             description=payload.description,
             content=payload.content,
+            cover_image_url=payload.cover_image_url,
         ).to_dict()
     except (NotFoundError, BusinessError) as e:
         raise _handle(e)
