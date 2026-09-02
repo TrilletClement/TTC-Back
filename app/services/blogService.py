@@ -1,10 +1,16 @@
+import os
 import re
+import secrets
+from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import nh3
+from fastapi import UploadFile
 
-from app.domain.exceptions import NotFoundError, BusinessError
+from app.core.config import settings
+from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
 from app.orm_models.auth import User
 from app.orm_models.blog import BlogPost
 from app.repositories.blog_repo import BlogRepository
@@ -15,24 +21,110 @@ def _generate_slug(title: str) -> str:
     return slug
 
 
+# Blog posts may embed one rich/interactive artifact via <iframe> (e.g. a
+# published Claude Artifact or a self-hosted bundle export) — see the "Insérer
+# un artifact" editor toolbar button. Allowed only with a locked-down sandbox
+# so the embedded document can run its own JS but can never touch this site's
+# DOM/cookies, navigate the parent, or open popups.
+_TAGS = deepcopy(nh3.ALLOWED_TAGS)
+_TAGS.add("iframe")
+
+_ATTRIBUTES = deepcopy(nh3.ALLOWED_ATTRIBUTES)
+_ATTRIBUTES["iframe"] = {"src", "width", "height", "title", "loading"}
+
+# Forced unconditionally regardless of what the editor typed — nh3 applies
+# these last, so an editor-supplied sandbox="allow-scripts allow-same-origin"
+# (which would defeat the sandbox) is overwritten, not merged.
+_SET_ATTRIBUTE_VALUES = {
+    "iframe": {"sandbox": "allow-scripts", "referrerpolicy": "no-referrer"},
+}
+
+
+def _attribute_filter(tag: str, attribute: str, value: str) -> Optional[str]:
+    if tag != "iframe" or attribute != "src":
+        return value
+    # Our own uploaded embeds (BlogEmbedStorage) are always trusted, even over
+    # plain http:// in local dev where API_BASE_URL isn't https — anything
+    # else (a hand-typed external embed) must be https.
+    if value.startswith(settings.API_BASE_URL) or value.startswith("https://"):
+        return value
+    return None
+
+
 def _sanitize_content(content: str) -> str:
     # The frontend renders this via bypassSecurityTrustHtml with no client-side
     # sanitization — this is the only place stripping scripts/event handlers/
     # javascript: URLs before the HTML is stored, so it must run on every
     # write, not just be trusted because only editors can call this.
-    return nh3.clean(content)
+    return nh3.clean(
+        content,
+        tags=_TAGS,
+        attributes=_ATTRIBUTES,
+        set_tag_attribute_values=_SET_ATTRIBUTE_VALUES,
+        attribute_filter=_attribute_filter,
+    )
 
 
 def _is_editor(user: User) -> bool:
     return any(role.id in (1, 2) for role in user.roles)
 
 
+class BlogEmbedStorage:
+    """Stores uploaded artifact bundles served back under /static/blog-embeds
+    (see main.py's StaticFiles mount + the security_headers carve-out that
+    re-opens framing for that one path)."""
+
+    MAX_SIZE_BYTES = 25 * 1024 * 1024
+
+    def __init__(self, embeds_dir: str):
+        self.embeds_dir = embeds_dir
+
+    def _safe_filename(self, original: str) -> str:
+        # Never trust the client-supplied name as a path — strip any
+        # directory components, keep a short readable stem, and always force
+        # a fresh random suffix + .html extension so uploads can't collide
+        # or overwrite each other regardless of what two editors upload.
+        stem = Path(original or "embed").stem
+        stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", stem).strip("-").lower()[:50] or "embed"
+        return f"{stem}-{secrets.token_hex(4)}.html"
+
+    def save(self, file: UploadFile) -> str:
+        if not (file.filename or "").lower().endswith((".html", ".htm")):
+            raise ValidationError("Only .html files can be embedded")
+
+        os.makedirs(self.embeds_dir, exist_ok=True)
+        filename = self._safe_filename(file.filename)
+        path = os.path.join(self.embeds_dir, filename)
+
+        written = 0
+        with open(path, "wb") as out:
+            while chunk := file.file.read(1024 * 1024):
+                written += len(chunk)
+                if written > self.MAX_SIZE_BYTES:
+                    out.close()
+                    os.remove(path)
+                    raise ValidationError("File too large (max 25 MB)")
+                out.write(chunk)
+
+        return filename
+
+
 class BlogService:
-    def __init__(self, repo: BlogRepository):
+    def __init__(self, repo: BlogRepository, embed_storage: Optional[BlogEmbedStorage] = None):
         self.repo = repo
+        self.embed_storage = embed_storage
 
     def list_posts(self, published_only: bool = True) -> list[BlogPost]:
         return self.repo.list_all(published_only)
+
+    def upload_embed(self, file: UploadFile, author: User) -> dict:
+        if not _is_editor(author):
+            raise BusinessError("Only editors can upload artifact embeds")
+        if not self.embed_storage:
+            raise BusinessError("Embed storage is not configured")
+
+        filename = self.embed_storage.save(file)
+        return {"url": f"{settings.API_BASE_URL}/static/blog-embeds/{filename}"}
 
     def get_post(self, slug: str, published_only: bool = True) -> BlogPost:
         post = self.repo.get_by_slug(slug, published_only)

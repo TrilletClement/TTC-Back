@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     # Firmware storage — mount a volume here in Docker so files survive redeploys
     FIRMWARE_DIR: str = "/data/firmware"
 
+    # Blog artifact embeds (self-contained HTML bundles uploaded via the blog
+    # editor's "Artifact" button, served back under /static/blog-embeds and
+    # framed by the blog post) — mount a volume here in Docker, same reason.
+    BLOG_EMBEDS_DIR: str = "/data/blog-embeds"
+
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

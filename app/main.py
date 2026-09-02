@@ -1,5 +1,8 @@
+import os
+
 from fastapi import FastAPI, Request, Security
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
@@ -47,11 +50,23 @@ async def handle_options(request: Request, call_next):
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # No-op over plain HTTP (browsers only honor HSTS on HTTPS responses) —
     # safe to send unconditionally for local/dev traffic.
     response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+
+    # Blog artifact embeds are served from here and framed by the blog page
+    # (see BlogService._sanitize_content — iframe src is restricted to
+    # https:// and always sandboxed there). X-Frame-Options only supports a
+    # single origin (or DENY/SAMEORIGIN) so it can't express "embeddable only
+    # by our own frontend, cross-origin" — CSP frame-ancestors can, and
+    # modern browsers prefer it over X-Frame-Options when both are present.
+    # Every other response keeps the blanket DENY.
+    if request.url.path.startswith("/static/blog-embeds/"):
+        ancestors = " ".join(settings.CORS_ORIGINS)
+        response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
+    else:
+        response.headers["X-Frame-Options"] = "DENY"
     return response
 
 # CORS Middleware (keep this as-is)
@@ -88,6 +103,17 @@ app.include_router(public.router)
 app.include_router(gifts.router)
 app.include_router(support.router)
 app.include_router(adminSupport.router)
+
+# Static bundle files embedded in blog posts via <iframe> (see BlogEditorComponent's
+# "Artifact" toolbar button + BlogEmbedStorage.save). Framing is re-opened for
+# this path only in security_headers above. Docker mounts a volume at
+# BLOG_EMBEDS_DIR so uploads survive redeploys — same reasoning as firmware.
+os.makedirs(settings.BLOG_EMBEDS_DIR, exist_ok=True)
+app.mount(
+    "/static/blog-embeds",
+    StaticFiles(directory=settings.BLOG_EMBEDS_DIR),
+    name="blog-embeds",
+)
 
 @app.get("/")
 def root():

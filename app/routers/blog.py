@@ -1,26 +1,28 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.user_access import require_admin, require_admin_or_editor, require_editor
-from app.domain.exceptions import NotFoundError, BusinessError
+from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.repositories.blog_repo import BlogRepository
 from app.schemas.blog import BlogPostCreate, BlogPostPublish, BlogPostUpdate
-from app.services.blogService import BlogService
+from app.services.blogService import BlogEmbedStorage, BlogService
 
 router = APIRouter(prefix="/api/blog", tags=["blog"])
 
 
 def get_service(db: Session = Depends(get_db)) -> BlogService:
-    return BlogService(BlogRepository(db))
+    return BlogService(BlogRepository(db), BlogEmbedStorage(settings.BLOG_EMBEDS_DIR))
 
 
-def _handle(exc: NotFoundError | BusinessError) -> HTTPException:
-    return HTTPException(
-        status_code=404 if isinstance(exc, NotFoundError) else 403,
-        detail=str(exc),
-    )
+def _handle(exc: NotFoundError | BusinessError | ValidationError) -> HTTPException:
+    if isinstance(exc, NotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, ValidationError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=403, detail=str(exc))
 
 
 # ── public ────────────────────────────────────────────────────────────────────
@@ -76,6 +78,15 @@ def delete_post(slug: str, current_user: User, svc: BlogService = Depends(get_se
 
 
 # ── editor ────────────────────────────────────────────────────────────────────
+
+@router.post("/embeds")
+@require_editor
+def upload_embed(current_user: User, file: UploadFile = File(...), svc: BlogService = Depends(get_service)):
+    try:
+        return svc.upload_embed(file, current_user)
+    except (BusinessError, ValidationError) as e:
+        raise _handle(e)
+
 
 @router.post("/posts")
 @require_editor

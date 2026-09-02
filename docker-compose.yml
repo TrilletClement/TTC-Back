@@ -29,6 +29,7 @@ services:
       - "8000:8000"
     volumes:
       - ./firmware_packages:/data/firmware
+      - ./blog_embeds:/data/blog-embeds
       # Intermediate CA key + cert — used by FastAPI to sign device certs.
       # Created by ca/setup-ca.sh; never committed to git.
       - ./ca/intermediate/private/inter.key:/etc/device-ca/inter.key:ro
