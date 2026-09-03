@@ -69,6 +69,22 @@ def _is_editor(user: User) -> bool:
     return any(role.id in (1, 2) for role in user.roles)
 
 
+_SRC_RE = re.compile(r'src="([^"]+)"')
+
+
+def _referenced_filenames(content: Optional[str], cover_image_url: Optional[str]) -> set[str]:
+    """Filenames this post points at under /static/blog-embeds/ — from the
+    cover image and from any src= in the sanitized content (iframe embeds,
+    or an editor-inserted <img>). Used to spot embeds an update/delete just
+    orphaned so BlogAssetStorage.save()'s always-fresh-filename uploads don't
+    accumulate forever."""
+    prefix = f"{settings.API_BASE_URL}/static/blog-embeds/"
+    urls = list(_SRC_RE.findall(content)) if content else []
+    if cover_image_url:
+        urls.append(cover_image_url)
+    return {url[len(prefix):] for url in urls if url.startswith(prefix)}
+
+
 class BlogAssetStorage:
     """Stores uploaded files served back under /static/blog-embeds — artifact
     bundles and post cover images share the directory (and StaticFiles mount
@@ -134,6 +150,34 @@ class BlogService:
 
     def list_posts(self, published_only: bool = True) -> list[BlogPost]:
         return self.repo.list_all(published_only)
+
+    def _assets_dir(self) -> Optional[str]:
+        storage = self.embed_storage or self.cover_storage
+        return storage.assets_dir if storage else None
+
+    def _delete_embed_file(self, filename: str) -> None:
+        assets_dir = self._assets_dir()
+        if not assets_dir:
+            return
+        try:
+            os.remove(os.path.join(assets_dir, filename))
+        except FileNotFoundError:
+            pass
+
+    def _cleanup_orphaned_files(self, stale_candidates: set[str], exclude_post_id: Optional[int]) -> None:
+        # A filename is only truly orphaned if no OTHER post still references
+        # it — cheap to check since post volume is low, and avoids ever
+        # deleting a file another post legitimately points at.
+        if not stale_candidates:
+            return
+        for post in self.repo.list_all(published_only=False):
+            if post.id == exclude_post_id:
+                continue
+            stale_candidates -= _referenced_filenames(post.content, post.cover_image_url)
+            if not stale_candidates:
+                return
+        for filename in stale_candidates:
+            self._delete_embed_file(filename)
 
     def upload_embed(self, file: UploadFile, author: User) -> dict:
         if not _is_editor(author):
@@ -202,6 +246,8 @@ class BlogService:
         if not (_is_editor(author) or post.author_id == author.id):
             raise BusinessError("You don't have permission to edit this post")
 
+        old_filenames = _referenced_filenames(post.content, post.cover_image_url)
+
         if title:
             post.title = title
             post.slug  = _generate_slug(title)
@@ -215,7 +261,12 @@ class BlogService:
             post.cover_image_url = cover_image_url or None
 
         post.updated_at = datetime.utcnow()
-        return self.repo.save(post)
+        saved = self.repo.save(post)
+
+        new_filenames = _referenced_filenames(saved.content, saved.cover_image_url)
+        self._cleanup_orphaned_files(old_filenames - new_filenames, exclude_post_id=saved.id)
+
+        return saved
 
     def delete_post(self, slug: str, author: User) -> dict:
         post = self.repo.get_by_slug(slug, published_only=False)
@@ -223,5 +274,9 @@ class BlogService:
             raise NotFoundError("Article", slug)
         if not (_is_editor(author) or post.author_id == author.id):
             raise BusinessError("You don't have permission to delete this post")
+
+        filenames = _referenced_filenames(post.content, post.cover_image_url)
+        post_id = post.id
         self.repo.delete(post)
+        self._cleanup_orphaned_files(filenames, exclude_post_id=post_id)
         return {"message": "Article deleted successfully"}
