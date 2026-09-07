@@ -1,5 +1,7 @@
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
+
 from app.core import audit
 from app.domain.exceptions import NotFoundError, BusinessError
 from app.orm_models.auth import User, Role, UserRoles
@@ -23,6 +25,26 @@ class AdminUserService:
         self.repo.commit()
         audit.record(current_user, "activate" if active else "deactivate", f"user:{user_id}")
         return {"message": f"User {'activated' if active else 'deactivated'}", "user_id": user_id}
+
+    def delete_unconfirmed_user(self, user_id: int, current_user: User) -> dict:
+        # Scoped to accounts that never confirmed their email (active=False
+        # doubles as "email confirmed" — see AuthService.confirm_email) —
+        # not a general-purpose delete-any-user endpoint. A confirmed account
+        # may already have orders/boards/devices pointing at it (FK
+        # restrict, no cascade), and deleting someone's real account is a
+        # much bigger decision than clearing out a dead signup.
+        user = self.repo.get_by_id(user_id)
+        if not user:
+            raise NotFoundError("User", user_id)
+        if user.active:
+            raise BusinessError("Only unconfirmed accounts (pending email validation) can be deleted this way")
+        try:
+            self.repo.delete(user)
+        except IntegrityError:
+            self.repo.rollback()
+            raise BusinessError("Cannot delete: this account already has associated data")
+        audit.record(current_user, "delete_unconfirmed_user", f"user:{user_id}", detail=user.email)
+        return {"message": "Unconfirmed account deleted", "user_id": user_id}
 
     def assign_role(self, user_id: int, role_id: int, current_user: User) -> dict:
         if not self.repo.get_by_id(user_id):

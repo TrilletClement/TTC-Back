@@ -42,3 +42,6 @@ class UserRepository:
 
     def commit(self) -> None:
         self.db.commit()
+
+    def rollback(self) -> None:
+        self.db.rollback()

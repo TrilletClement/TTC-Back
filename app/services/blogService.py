@@ -155,9 +155,47 @@ _RESIZE_SCRIPT = """<script>
 
 
 def _inject_resize_script(html: str) -> str:
+    # Idempotent: also relied on by backfill_embed_resize_scripts() below,
+    # which re-scans every file on every startup — without this check it
+    # would pile up a duplicate <script> block each restart.
+    if "stibEmbedHeight" in html:
+        return html
     if _BODY_CLOSE_RE.search(html):
         return _BODY_CLOSE_RE.sub(lambda m: _RESIZE_SCRIPT + m.group(0), html, count=1)
     return html + _RESIZE_SCRIPT
+
+
+def backfill_embed_resize_scripts(assets_dir: str) -> int:
+    """One-off self-heal, meant to be called once at startup (see main.py).
+
+    _inject_resize_script only ever ran inside BlogEmbedStorage.save(), i.e.
+    at upload time — added 2026-09-07. Any embed uploaded before that (on any
+    environment, including whatever's already sitting in production's
+    BLOG_EMBEDS_DIR volume) never got the script, so its post stays boxed
+    into a fixed viewport slice with its own internal scrollbar forever,
+    looking "broken" even though the code is deployed and correct for new
+    uploads. Re-scanning the whole directory is cheap (a handful of small
+    files) and safe to repeat every restart since _inject_resize_script is
+    idempotent.
+    """
+    if not os.path.isdir(assets_dir):
+        return 0
+    fixed = 0
+    for name in os.listdir(assets_dir):
+        if not name.lower().endswith((".html", ".htm")):
+            continue
+        path = os.path.join(assets_dir, name)
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+        except OSError:
+            continue
+        patched = _inject_resize_script(content)
+        if patched != content:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(patched)
+            fixed += 1
+    return fixed
 
 
 class BlogEmbedStorage(BlogAssetStorage):

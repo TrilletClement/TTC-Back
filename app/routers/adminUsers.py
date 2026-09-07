@@ -43,6 +43,19 @@ def toggle_user_active(
         raise _handle(e)
 
 
+@router.delete("/{user_id}")
+@require_admin
+def delete_unconfirmed_user(
+    user_id: int,
+    current_user: User,
+    svc: AdminUserService = Depends(get_service),
+):
+    try:
+        return svc.delete_unconfirmed_user(user_id, current_user)
+    except (NotFoundError, BusinessError) as e:
+        raise _handle(e)
+
+
 @router.post("/{user_id}/roles")
 @require_admin
 def assign_role(

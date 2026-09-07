@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.rate_limit import limiter
 from app.core.security.jwt import get_current_user
 from app.orm_models.auth import User
+from app.services.blogService import backfill_embed_resize_scripts
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -109,6 +110,13 @@ app.include_router(adminSupport.router)
 # this path only in security_headers above. Docker mounts a volume at
 # BLOG_EMBEDS_DIR so uploads survive redeploys — same reasoning as firmware.
 os.makedirs(settings.BLOG_EMBEDS_DIR, exist_ok=True)
+# Self-heal embeds uploaded before the resize-reporting script existed (see
+# backfill_embed_resize_scripts) — otherwise those posts stay stuck with a
+# fixed-height iframe + internal scrollbar on every environment until someone
+# manually re-uploads them, which is exactly what made this look like it
+# "only works locally" (fresh local test uploads got the script; older posts
+# already sitting on the server's persisted volume didn't).
+backfill_embed_resize_scripts(settings.BLOG_EMBEDS_DIR)
 app.mount(
     "/static/blog-embeds",
     StaticFiles(directory=settings.BLOG_EMBEDS_DIR),
