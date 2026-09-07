@@ -127,9 +127,51 @@ class BlogAssetStorage:
         return filename
 
 
+_BODY_CLOSE_RE = re.compile(r"</body\s*>", re.IGNORECASE)
+
+# Reports the embed's real content height to the parent page so
+# [slug].page.ts can size the <iframe> to match instead of boxing it into a
+# fixed viewport slice (which forced a confusing double-scroll: one scrollbar
+# for the outer page, another inside the iframe for whatever didn't fit).
+# ResizeObserver (not `load`) because these bundles finish unpacking their
+# content asynchronously well after `load` fires. postMessage works even
+# through `sandbox="allow-scripts"` with no `allow-same-origin` — it's exactly
+# the communication channel sandboxing is designed to still allow.
+_RESIZE_SCRIPT = """<script>
+(function () {
+  var lastHeight = 0;
+  function report() {
+    var height = document.documentElement.scrollHeight;
+    if (height !== lastHeight) {
+      lastHeight = height;
+      window.parent.postMessage({ stibEmbedHeight: height }, '*');
+    }
+  }
+  new ResizeObserver(report).observe(document.documentElement);
+  window.addEventListener('load', report);
+  report();
+})();
+</script>"""
+
+
+def _inject_resize_script(html: str) -> str:
+    if _BODY_CLOSE_RE.search(html):
+        return _BODY_CLOSE_RE.sub(lambda m: _RESIZE_SCRIPT + m.group(0), html, count=1)
+    return html + _RESIZE_SCRIPT
+
+
 class BlogEmbedStorage(BlogAssetStorage):
     def __init__(self, assets_dir: str):
         super().__init__(assets_dir, (".html", ".htm"), 25 * 1024 * 1024)
+
+    def save(self, file: UploadFile) -> str:
+        filename = super().save(file)
+        path = os.path.join(self.assets_dir, filename)
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(_inject_resize_script(content))
+        return filename
 
 
 class BlogCoverStorage(BlogAssetStorage):
