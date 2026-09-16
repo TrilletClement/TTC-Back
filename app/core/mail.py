@@ -211,6 +211,30 @@ async def _send_import_failure_alert(agency_name: str, error: str, traceback_str
     await fast_mail.send_message(message)
 
 
+async def send_newsletter_email(recipient_email: str, subject: str, body_html: str, unsubscribe_url: str) -> None:
+    html_body = f"""
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"></head>
+<body style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    {body_html}
+    <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+    <p style="font-size: 12px; color: #999;">
+        transport.trillet.be — Belgique<br>
+        <a href="{unsubscribe_url}" style="color: #999;">Se désinscrire de la newsletter</a>
+    </p>
+</body>
+</html>
+    """
+    message = MessageSchema(
+        subject=subject,
+        recipients=[recipient_email],
+        body=html_body,
+        subtype="html",
+    )
+    await fast_mail.send_message(message)
+
+
 def notify_import_failure(agency_name: str, error: Exception) -> None:
     """Sync wrapper — safe to call from the blocking scheduler (no running event loop)."""
     tb_str = _tb.format_exc()

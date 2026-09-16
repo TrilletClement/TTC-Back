@@ -289,6 +289,28 @@ trunk from Sclessin Standard, then Coronmeuse OR Liège Expo). How it works:
   (`find_nearest_stop_with_lines`) still only reads best trips — no branch
   awareness.
 
+## Newsletter — added 2026-09-16
+
+- Single table `newsletter_subscriber` (email, nullable `user_id`, `source`,
+  `unsubscribe_token`, `subscribed_at`, `unsubscribed_at`) covers **both**
+  registered users and anonymous devblog visitors — no separate opt-in flag on
+  `User`. `NewsletterService.subscribe(email, user_id, source)` is idempotent:
+  re-subscribing an unsubscribed email just clears `unsubscribed_at` instead of
+  erroring on the unique email constraint.
+- Sign-up entry points: the register form checkbox (`newsletter_opt_in` on
+  `RegisterRequest` → `AuthService.register` calls `NewsletterService`
+  directly, source `"register"`), the devblog listing page, and the bottom of
+  every article (`app-newsletter-signup`, source `"blog"`). Hidden on blog
+  preview mode.
+- Unsubscribe is public, token-based (`GET /api/newsletter/unsubscribe?token=`),
+  soft (`unsubscribed_at` set, row kept) — link is auto-appended to every
+  campaign email by `send_newsletter_email` in `mail.py`.
+- Admin campaign send (`POST /api/admin/newsletter/send`, `require_admin` —
+  not editor, since it emails the whole list) is fire-and-forget via FastAPI
+  `BackgroundTasks`, sequential per-recipient SMTP send. No queue, no retry,
+  no scheduling — fine for a hobby-project list size; revisit if the list
+  grows enough that plain SMTP stops being viable (deliverability, send time).
+
 ## What NOT to do
 
 - Do not add `SENDCLOUD_SANDBOX` or `SENDCLOUD_SHIPPING_OPTION_CODE` env vars — removed intentionally.

@@ -24,6 +24,7 @@ class RegisterRequest(BaseModel):
     password: str
     turnstileToken: str
     preferred_agency: str = ''
+    newsletter_opt_in: bool = False
 
     @field_validator('password')
     @classmethod

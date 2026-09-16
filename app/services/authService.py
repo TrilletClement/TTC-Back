@@ -10,6 +10,8 @@ from app.core.security.jwt import create_access_token, hash_password, verify_pas
 from app.domain.exceptions import NotFoundError, BusinessError, ValidationError
 from app.orm_models.auth import User
 from app.repositories.auth_repo import AuthRepository
+from app.repositories.newsletter_repo import NewsletterRepository
+from app.services.newsletterService import NewsletterService
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,10 @@ class AuthService:
         roles = [role.name for role in user.roles]
         return {"access_token": create_access_token(user.email, roles=roles), "token_type": "bearer"}
 
-    async def register(self, email: str, password: str, base_url: str, preferred_agency: str = "") -> dict:
+    async def register(
+        self, email: str, password: str, base_url: str,
+        preferred_agency: str = "", newsletter_opt_in: bool = False,
+    ) -> dict:
         if not email or not password:
             raise ValidationError("Email and password are required")
 
@@ -46,6 +51,8 @@ class AuthService:
             preferred_agency=preferred_agency,
         )
         self.repo.save(user)
+        if newsletter_opt_in:
+            NewsletterService(NewsletterRepository(self.repo.db)).subscribe(email, user_id=user.id, source="register")
         await send_confirmation_email(email, f"{settings.FRONTEND_URL}/confirm-email?token={token}")
         return {"message": "Inscription réussie. Vérifiez votre email pour confirmer votre compte."}
 

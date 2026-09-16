@@ -73,7 +73,10 @@ async def register(payload: RegisterRequest, request: Request, svc: AuthService 
     if not await verify_turnstile(payload.turnstileToken, request.client.host if request.client else None):
         raise HTTPException(status_code=400, detail="Validation CAPTCHA échouée")
     try:
-        return await svc.register(payload.email, payload.password, str(request.base_url).rstrip("/"), payload.preferred_agency)
+        return await svc.register(
+            payload.email, payload.password, str(request.base_url).rstrip("/"),
+            payload.preferred_agency, payload.newsletter_opt_in,
+        )
     except (BusinessError, ValidationError) as e:
         raise _handle(e)
 
