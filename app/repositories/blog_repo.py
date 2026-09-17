@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.orm_models.blog import BlogPost
 
 
@@ -7,13 +7,16 @@ class BlogRepository:
         self.db = db
 
     def list_all(self, published_only: bool = True) -> list[BlogPost]:
-        q = self.db.query(BlogPost)
+        # to_dict()/to_list_dict() both read post.author — without eager
+        # loading, listing N posts fires N extra lazy-load queries for their
+        # authors on every call to the public blog list and the admin list.
+        q = self.db.query(BlogPost).options(joinedload(BlogPost.author))
         if published_only:
             q = q.filter(BlogPost.published == True)
         return q.order_by(BlogPost.created_at.desc()).all()
 
     def get_by_slug(self, slug: str, published_only: bool = True) -> BlogPost | None:
-        q = self.db.query(BlogPost).filter(BlogPost.slug == slug)
+        q = self.db.query(BlogPost).options(joinedload(BlogPost.author)).filter(BlogPost.slug == slug)
         if published_only:
             q = q.filter(BlogPost.published == True)
         return q.first()

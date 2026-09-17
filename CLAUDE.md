@@ -122,6 +122,7 @@ All components are standalone (no NgModules). Declare imports in the `@Component
 | `models/admin-user.ts` | `RoleInfo`, `UserAdminOut` |
 | `models/autocomplete.ts` | `AutocompleteOption` |
 | `models/led.ts` | `Led`, `LedTripStop` (not `TripStop` — that's the GTFS model in `models/tripStop.ts`) |
+| `models/article-block.ts` | `BlockKind`, `ArticleBlock`, `ArticleDoc`, per-block `*Data` interfaces, `ImageValue`/`ImageRatio` — blog block editor |
 
 **Layering rule — dependency direction:**
 ```
@@ -310,6 +311,48 @@ trunk from Sclessin Standard, then Coronmeuse OR Liège Expo). How it works:
   `BackgroundTasks`, sequential per-recipient SMTP send. No queue, no retry,
   no scheduling — fine for a hobby-project list size; revisit if the list
   grows enough that plain SMTP stops being viable (deliverability, send time).
+
+## Éditeur d'articles par blocs — added 2026-09-17
+
+- Un article de blog a deux représentations : `blog_post.blocks` (JSONB, liste
+  de `{id, kind, data}` — **source de vérité** de l'éditeur visuel) et
+  `blog_post.content` (HTML **rendu**, servi tel quel par `[slug].page.ts`,
+  utilisé pour les extraits/temps de lecture/SEO). `blocks = NULL` signifie
+  article HTML libre (articles d'avant l'éditeur, embeds d'artifact) :
+  `blog-editor` s'ouvre alors en mode HTML au lieu d'écraser le contenu.
+- **Un seul renderer**, `services/article-render.service.ts` (TS). Il produit
+  l'aperçu live de l'éditeur ET le HTML persistué dans `content`. Ne pas
+  écrire de renderer Python miroir : le backend stocke et assainit, il ne rend
+  rien. Ajouter un bloc = un `kind` dans `models/article-block.ts`, une
+  fonction dans le renderer, un `@case` dans l'inspecteur.
+- Le rendu est **tout en styles inline** (aucune classe, aucun `<style>`) pour
+  être identique dans l'aperçu, sur la page publique et dans un export. nh3
+  autorise donc `style` sur les balises structurelles (`_STYLABLE` dans
+  `blogService.py`) — écriture réservée aux rôles editor/admin, et
+  `<style>`/`<link>`/`<script>` restent interdits. **Ne pas retirer `style` de
+  l'allowlist** : tous les articles publiés perdraient leur mise en page.
+- Une seule couleur d'accent par article (`blog_post.accent_color`, `#RRGGBB`),
+  injectée par le renderer partout où la maquette portait du vert. Le
+  sélecteur (`article-color-picker`, fork de `led-color-picker` + HEX +
+  curseurs RGB) avertit sous 4.5:1 de contraste blanc/accent.
+- Les numéros de section sont calculés par position dans la liste de blocs —
+  jamais saisis. Réordonner renumérote.
+- Les images des blocs passent par `POST /api/blog/covers` (même stockage
+  `static/blog-embeds`, 8 Mo, JPG/PNG/WebP/GIF). Le recadrage est un
+  `aspect-ratio` + `object-fit`, non destructif. Le nettoyage des fichiers
+  orphelins fonctionne sans changement : `_referenced_filenames` scanne les
+  `src=` du `content` rendu.
+- `PUT /posts/{slug}` distingue « blocs non fournis » de « blocs effacés » via
+  `blocks_provided="blocks" in payload.model_fields_set`. Ne pas remplacer ce
+  test par une vérification de valeur : `PATCH /publish` ne parle pas de
+  blocs et effacerait le document.
+
+### What NOT to do (ajouts)
+
+- Ne pas ajouter de renderer de blocs côté Python — un seul renderer, en TS.
+- Ne pas retirer `style` de l'allowlist nh3 (voir ci-dessus).
+- Ne pas stocker de largeur en pixels dans un bloc : les articles doivent
+  reflow sur mobile.
 
 ## What NOT to do
 

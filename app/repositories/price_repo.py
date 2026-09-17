@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.orm_models.board import BoardType
 from app.orm_models.price import PriceVersion, BoardTypePrice
 
@@ -8,7 +8,13 @@ class PriceRepository:
         self.db = db
 
     def list_versions(self) -> list[PriceVersion]:
-        return self.db.query(PriceVersion).order_by(PriceVersion.created_at.desc()).all()
+        # AdminPricesService.list_versions sorts v.prices per version.
+        return (
+            self.db.query(PriceVersion)
+            .options(joinedload(PriceVersion.prices))
+            .order_by(PriceVersion.created_at.desc())
+            .all()
+        )
 
     def get_board_types(self) -> dict[int, str]:
         return {bt.id: bt.name for bt in self.db.query(BoardType).all()}

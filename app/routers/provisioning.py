@@ -13,6 +13,7 @@ The caller must present the HOME_SERVER_SECRET in the Authorization header:
     Authorization: Bearer <HOME_SERVER_SECRET>
 """
 
+import hmac
 from typing import Optional
 
 from cryptography import x509
@@ -47,7 +48,9 @@ class SigningResponse(BaseModel):
 
 def _verify_home_server(authorization: Optional[str] = Header(default=None)) -> None:
     expected = f"Bearer {settings.HOME_SERVER_SECRET}"
-    if not settings.HOME_SERVER_SECRET or authorization != expected:
+    # compare_digest, not `!=` — this guards a bearer secret, same as the
+    # SendCloud webhook signature check (sendcloudService.verify_webhook).
+    if not settings.HOME_SERVER_SECRET or not hmac.compare_digest(authorization or "", expected):
         raise HTTPException(status_code=401, detail="Unauthorized enrollment proxy")
 
 

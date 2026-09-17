@@ -8,10 +8,13 @@ class AdminDevicesService:
     def __init__(self, repo: DeviceRepository):
         self.repo = repo
 
-    def _build_device_out(self, d: ESP32Device) -> DeviceAdminOut:
+    def _build_device_out(self, d: ESP32Device, orders_by_device: dict[int, list] | None = None) -> DeviceAdminOut:
         board_out = None
         if d.board:
-            orders = self.repo.get_orders_for_device(d.id)
+            orders = (
+                orders_by_device.get(d.id, []) if orders_by_device is not None
+                else self.repo.get_orders_for_device(d.id)
+            )
             board_out = BoardOut(
                 id=d.board.id,
                 name=d.board.name,
@@ -39,7 +42,9 @@ class AdminDevicesService:
         )
 
     def list_devices(self) -> list[DeviceAdminOut]:
-        return [self._build_device_out(d) for d in self.repo.list_all()]
+        devices = self.repo.list_all()
+        orders_by_device = self.repo.get_orders_for_devices([d.id for d in devices if d.board])
+        return [self._build_device_out(d, orders_by_device) for d in devices]
 
     def list_user_emails(self) -> list[str]:
         return self.repo.list_user_emails()

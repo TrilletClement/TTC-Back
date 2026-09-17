@@ -49,7 +49,6 @@ def get_current_user(
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         email: str = payload.get("sub")
-        token_roles: list[str] = payload.get("roles", [])
         if email is None:
             raise credentials_exception
     except JWTError as e:
@@ -63,11 +62,25 @@ def get_current_user(
             detail="User not found",
             headers={"WWW-Authenticate": authenticate_value},
         )
+    # Re-checked on every request, not just at login: a deactivated account's
+    # already-issued token must stop working immediately, not survive until
+    # its natural expiry (up to JWT_EXPIRE_MINUTES later).
+    if not user.active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account is deactivated",
+            headers={"WWW-Authenticate": authenticate_value},
+        )
 
     if security_scopes.scopes:
+        # Always re-derived from the DB, never from the token's own `roles`
+        # claim — a role granted or revoked after the token was issued must
+        # take effect on the next request, not at the token's next refresh.
+        # `require_roles(*roles)` callers (e.g. require_admin_or_editor) want
+        # ANY of the listed roles, not all of them at once.
         user_roles = {role.name for role in user.roles}
         required = set(security_scopes.scopes)
-        if not required.issubset(user_roles) and not required.issubset(set(token_roles)):
+        if not (required & user_roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not enough permissions",

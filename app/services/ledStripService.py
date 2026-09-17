@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.content_filter import assert_clean_text
+from app.orm_models.auth import User
 from app.orm_models.board import Led, LedStrip
 from app.repositories.ledstrip_repo import LedStripRepository
 from app.routines.gtfs_import import refresh_active_intervals
@@ -57,6 +58,20 @@ class LedStripService:
             return board.board_type.max_led
         return 12
 
+    @staticmethod
+    def _assert_board_access(repo: "LedStripRepository", board_id: int, current_user: User) -> None:
+        """Every LED-strip endpoint operates on a board via `board_id` alone —
+        without this check any logged-in user could read/write any other
+        user's board (board ids are small sequential ints, trivially
+        enumerable). Mirrors BoardService's own owner_id check; 404 (not 403)
+        so a non-owner can't even confirm the board exists."""
+        is_admin = "admin" in [role.name for role in current_user.roles]
+        if is_admin:
+            return
+        board = repo.get_board(board_id)
+        if not board or board.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Board not found")
+
     # ── CRUD publics ─────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -66,6 +81,7 @@ class LedStripService:
         line_id: int,
         central_stop_left_name: str,
         central_stop_right_name: str,
+        current_user: User,
         led_color: str = None,
         line_color: str | None = None,
         pre_stop_left_name: str | None = None,
@@ -85,6 +101,7 @@ class LedStripService:
             )
 
         repo = LedStripRepository(db)
+        LedStripService._assert_board_access(repo, board_id, current_user)
         led_color_hex = LedStripService._normalize_hex_color(led_color)
         line_color_hex = LedStripService._normalize_optional_hex_color(line_color)
 
@@ -163,6 +180,7 @@ class LedStripService:
         line_id: int,
         central_stop_left_name: str,
         central_stop_right_name: str,
+        current_user: User,
         led_color: str = None,
         pre_stop_left_name: str | None = None,
         pre_stop_left_minutes: int | None = None,
@@ -184,6 +202,7 @@ class LedStripService:
             )
 
         repo = LedStripRepository(db)
+        LedStripService._assert_board_access(repo, board_id, current_user)
         led_color_hex = LedStripService._normalize_hex_color(led_color)
 
         board = repo.get_board(board_id)
@@ -223,8 +242,9 @@ class LedStripService:
         }
 
     @staticmethod
-    def get_led_strip_by_id(board_id: int, strip_id: int, db: Session):
+    def get_led_strip_by_id(board_id: int, strip_id: int, current_user: User, db: Session):
         repo  = LedStripRepository(db)
+        LedStripService._assert_board_access(repo, board_id, current_user)
         strip = repo.get_strip(strip_id, board_id)
         if not strip:
             raise HTTPException(status_code=404, detail="LED strip not found")
@@ -281,6 +301,7 @@ class LedStripService:
         central_stop_left_name: str | None,
         central_stop_right_name: str | None,
         led_color: str | None,
+        current_user: User,
         line_color: str | None = None,
         pre_stop_left_name: str | None = None,
         pre_stop_left_minutes: int | None = None,
@@ -298,6 +319,7 @@ class LedStripService:
             )
 
         repo = LedStripRepository(db)
+        LedStripService._assert_board_access(repo, board_id, current_user)
         led_color_hex = LedStripService._normalize_hex_color(led_color)
         line_color_hex = LedStripService._normalize_optional_hex_color(line_color)
 
@@ -361,8 +383,9 @@ class LedStripService:
         return {"message": "LED strip updated successfully", "led_strip_id": strip.id}
 
     @staticmethod
-    def move_strip_to_slot(board_id: int, strip_id: int, order_index: int, db: Session):
+    def move_strip_to_slot(board_id: int, strip_id: int, order_index: int, current_user: User, db: Session):
         repo  = LedStripRepository(db)
+        LedStripService._assert_board_access(repo, board_id, current_user)
         strip = repo.get_strip(strip_id, board_id)
         if not strip:
             raise HTTPException(status_code=404, detail="LED strip not found")
@@ -375,8 +398,9 @@ class LedStripService:
         return {"message": "OK"}
 
     @staticmethod
-    def reorder_strips(board_id: int, ordered_ids: list[int], db: Session):
+    def reorder_strips(board_id: int, ordered_ids: list[int], current_user: User, db: Session):
         repo = LedStripRepository(db)
+        LedStripService._assert_board_access(repo, board_id, current_user)
         for position, strip_id in enumerate(ordered_ids, start=1):
             strip = repo.get_strip_by_id_for_reorder(strip_id, board_id)
             if strip:
@@ -385,8 +409,9 @@ class LedStripService:
         return {"message": "Strips reordered"}
 
     @staticmethod
-    def delete_led_strip(board_id: int, strip_id: int, db: Session):
+    def delete_led_strip(board_id: int, strip_id: int, current_user: User, db: Session):
         repo  = LedStripRepository(db)
+        LedStripService._assert_board_access(repo, board_id, current_user)
         strip = repo.get_strip(strip_id, board_id)
         if not strip:
             raise HTTPException(status_code=404, detail="LED strip not found")
@@ -442,11 +467,13 @@ class LedStripService:
     def patch_strip_settings(
         board_id: int,
         strip_id: int,
+        current_user: User,
         db: Session,
         integrated_terminus: bool | None = None,
         rt_only: bool | None = None,
     ):
         repo  = LedStripRepository(db)
+        LedStripService._assert_board_access(repo, board_id, current_user)
         strip = repo.get_strip(strip_id, board_id)
         if not strip:
             raise HTTPException(status_code=404, detail="LED strip not found")
@@ -464,9 +491,11 @@ class LedStripService:
         led_id: int,
         custom_name: str | None,
         custom_subname: str | None,
+        current_user: User,
         db: Session,
     ):
         repo  = LedStripRepository(db)
+        LedStripService._assert_board_access(repo, board_id, current_user)
         strip = repo.get_strip(strip_id, board_id)
         if not strip:
             raise HTTPException(status_code=404, detail="LED strip not found")
@@ -492,9 +521,11 @@ class LedStripService:
         fields_set: set[str],
         custom_terminus_left_name: str | None,
         custom_terminus_right_name: str | None,
+        current_user: User,
         db: Session,
     ):
         repo  = LedStripRepository(db)
+        LedStripService._assert_board_access(repo, board_id, current_user)
         strip = repo.get_strip(strip_id, board_id)
         if not strip:
             raise HTTPException(status_code=404, detail="LED strip not found")

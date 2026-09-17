@@ -102,6 +102,7 @@ def add_led_strip(
         line_id=payload.line_id,
         central_stop_left_name=payload.central_stop_left_name,
         central_stop_right_name=payload.central_stop_right_name,
+        current_user=current_user,
         led_color=payload.led_color,
         line_color=payload.line_color,
         pre_stop_left_name=payload.pre_stop_left_name,
@@ -130,6 +131,7 @@ def preview_led_strip(
         line_id=payload.line_id,
         central_stop_left_name=payload.central_stop_left_name,
         central_stop_right_name=payload.central_stop_right_name,
+        current_user=current_user,
         led_color=payload.led_color,
         pre_stop_left_name=payload.pre_stop_left_name,
         pre_stop_left_minutes=payload.pre_stop_left_minutes,
@@ -150,7 +152,7 @@ def reorder_led_strips(
     current_user: User,
     db: Session = Depends(get_db),
 ):
-    return LedStripService.reorder_strips(board_id, payload.ordered_ids, db)
+    return LedStripService.reorder_strips(board_id, payload.ordered_ids, current_user, db)
 
 
 @router.patch("/boards/{board_id}/led_strips/{strip_id}/slot")
@@ -162,7 +164,7 @@ def move_strip_to_slot(
     current_user: User,
     db: Session = Depends(get_db),
 ):
-    return LedStripService.move_strip_to_slot(board_id, strip_id, payload.order_index, db)
+    return LedStripService.move_strip_to_slot(board_id, strip_id, payload.order_index, current_user, db)
 
 
 @router.get("/boards/{board_id}/led_strips/{strip_id}")
@@ -173,7 +175,7 @@ def get_led_strip(
     current_user: User,
     db: Session = Depends(get_db),
 ):
-    return LedStripService.get_led_strip_by_id(board_id, strip_id, db)
+    return LedStripService.get_led_strip_by_id(board_id, strip_id, current_user, db)
 
 
 @router.delete("/boards/{board_id}/led_strips/{strip_id}")
@@ -184,7 +186,7 @@ def delete_led_strip(
     current_user: User,
     db: Session = Depends(get_db),
 ):
-    return LedStripService.delete_led_strip(board_id, strip_id, db)
+    return LedStripService.delete_led_strip(board_id, strip_id, current_user, db)
 
 
 @router.put("/boards/{board_id}/led_strips/{strip_id}")
@@ -204,6 +206,7 @@ def update_led_strip(
         central_stop_left_name=payload.central_stop_left_name,
         central_stop_right_name=payload.central_stop_right_name,
         led_color=payload.led_color,
+        current_user=current_user,
         line_color=payload.line_color,
         pre_stop_left_name=payload.pre_stop_left_name,
         pre_stop_left_minutes=payload.pre_stop_left_minutes,
@@ -228,6 +231,7 @@ def patch_led_strip_settings(
     return LedStripService.patch_strip_settings(
         board_id=board_id,
         strip_id=strip_id,
+        current_user=current_user,
         integrated_terminus=payload.integrated_terminus,
         rt_only=payload.rt_only,
         db=db,
@@ -272,6 +276,7 @@ def patch_terminus_labels(
         fields_set=payload.model_fields_set,
         custom_terminus_left_name=payload.custom_terminus_left_name,
         custom_terminus_right_name=payload.custom_terminus_right_name,
+        current_user=current_user,
         db=db,
     )
 
@@ -292,5 +297,6 @@ def patch_led_label(
         led_id=led_id,
         custom_name=payload.custom_name,
         custom_subname=payload.custom_subname,
+        current_user=current_user,
         db=db,
     )

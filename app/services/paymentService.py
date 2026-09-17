@@ -50,12 +50,28 @@ def _resolve_shipping(
     postal_code: str,
     option_code: str,
     item_count: int,
+    db: Session,
 ) -> tuple[int, str, list[str]]:
-    from app.services import sendcloudService
+    from app.services import sendcloudService, adminShippingService
 
     code = country.upper().strip()
 
-    if option_code and sendcloudService._enabled():
+    # The public preview endpoint (routers/shipping.py) already restricts
+    # results to admin-approved countries/options — this is the same check
+    # applied where it actually matters: a client can call this endpoint
+    # directly without ever hitting the preview one, so without it a
+    # customer could check out to a country or via a carrier/service level
+    # the store operator never enabled, which admin fulfillment then honors
+    # unquestioningly (shipping_option_code is stored as-is on the order and
+    # passed straight to SendCloud at ship time).
+    if code not in adminShippingService.get_allowed_country_codes(db):
+        raise HTTPException(status_code=400, detail="We do not ship to this country.")
+
+    allowed_options = set(adminShippingService.get_enabled_codes(db))
+    if not option_code or option_code not in allowed_options:
+        raise HTTPException(status_code=400, detail="Invalid shipping option.")
+
+    if sendcloudService._enabled():
         weight_kg = max(item_count, 1) * _KG_PER_ITEM
         price = sendcloudService.get_option_price_cents(option_code, code, "", weight_kg)
         if price is not None:
@@ -112,6 +128,7 @@ class PaymentService:
             getattr(payload, "shipping_postal_code", ""),
             getattr(payload, "shipping_option_code", ""),
             len(payload.items),
+            db,
         )
         shipping_options = [_build_stripe_shipping_option(cost_cents, ship_label)]
 

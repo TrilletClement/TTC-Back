@@ -113,6 +113,8 @@ def create_post(payload: BlogPostCreate, current_user: User, svc: BlogService = 
             author=current_user,
             published=payload.published if is_admin else False,
             cover_image_url=payload.cover_image_url,
+            blocks=payload.blocks,
+            accent_color=payload.accent_color,
         ).to_dict()
     except (NotFoundError, BusinessError) as e:
         raise _handle(e)
@@ -129,6 +131,9 @@ def update_post(slug: str, payload: BlogPostUpdate, current_user: User, svc: Blo
             description=payload.description,
             content=payload.content,
             cover_image_url=payload.cover_image_url,
+            blocks=payload.blocks,
+            accent_color=payload.accent_color,
+            blocks_provided="blocks" in payload.model_fields_set,
         ).to_dict()
     except (NotFoundError, BusinessError) as e:
         raise _handle(e)

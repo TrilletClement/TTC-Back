@@ -16,7 +16,21 @@ class DeviceRepository:
     # ── admin ─────────────────────────────────────────────────────────────────
 
     def list_all(self) -> list[ESP32Device]:
-        return self.db.query(ESP32Device).order_by(ESP32Device.registered_at.desc().nullslast()).all()
+        # AdminDevicesService._build_device_out reads board/owner/hardware/
+        # current_firmware/target_firmware for every device in the fleet —
+        # without eager loading that's 1+5N queries on the admin device list.
+        return (
+            self.db.query(ESP32Device)
+            .options(
+                joinedload(ESP32Device.board),
+                joinedload(ESP32Device.owner),
+                joinedload(ESP32Device.hardware),
+                joinedload(ESP32Device.current_firmware),
+                joinedload(ESP32Device.target_firmware),
+            )
+            .order_by(ESP32Device.registered_at.desc().nullslast())
+            .all()
+        )
 
     def get_by_id(self, device_id: int) -> ESP32Device | None:
         return self.db.query(ESP32Device).filter(ESP32Device.id == device_id).first()
@@ -29,6 +43,23 @@ class DeviceRepository:
             .order_by(Order.created_at.desc())
             .all()
         )
+
+    def get_orders_for_devices(self, device_ids: list[int]) -> dict[int, list[Order]]:
+        """Batched form of get_orders_for_device, for the admin device list —
+        one query for the whole fleet instead of one per device with a board."""
+        if not device_ids:
+            return {}
+        rows = (
+            self.db.query(Order, OrderItem.esp_device_id)
+            .join(OrderItem, OrderItem.order_id == Order.id)
+            .filter(OrderItem.esp_device_id.in_(device_ids))
+            .order_by(Order.created_at.desc())
+            .all()
+        )
+        result: dict[int, list[Order]] = {}
+        for order, device_id in rows:
+            result.setdefault(device_id, []).append(order)
+        return result
 
     def get_user_by_email(self, email: str) -> User | None:
         return self.db.query(User).filter(User.email == email).first()

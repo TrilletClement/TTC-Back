@@ -161,7 +161,14 @@ class OrderRepository:
         return self.db.query(ESP32Device).filter(ESP32Device.owner_id.is_(None)).all()
 
     def list_all_devices(self) -> list[ESP32Device]:
-        return self.db.query(ESP32Device).order_by(ESP32Device.registered_at.desc().nullslast()).all()
+        # AdminOrdersService.list_all_devices reads d.owner.email per row for
+        # the device-select dropdown — eager-load avoids 1+N lazy loads.
+        return (
+            self.db.query(ESP32Device)
+            .options(joinedload(ESP32Device.owner))
+            .order_by(ESP32Device.registered_at.desc().nullslast())
+            .all()
+        )
 
     def get_device_names_for_owner(self, owner_id: int, exclude_device_id: int) -> set[str]:
         return {

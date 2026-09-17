@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from app.orm_models.auth import User, Role, UserRoles
 
 
@@ -7,7 +7,10 @@ class UserRepository:
         self.db = db
 
     def list_all(self) -> list[User]:
-        return self.db.query(User).all()
+        # UserOut.roles forces Pydantic to touch .roles for every row —
+        # selectinload (not joinedload: roles is many-to-many, a JOIN would
+        # multiply/duplicate user rows before SQLAlchemy de-dupes them).
+        return self.db.query(User).options(selectinload(User.roles)).all()
 
     def get_by_id(self, user_id: int) -> User | None:
         return self.db.query(User).filter(User.id == user_id).first()

@@ -19,7 +19,6 @@ exceptiongroup==1.3.1
 fastapi==0.128.0
 greenlet==3.1.1
 gtfs-realtime-bindings==2.0.0
-gunicorn==20.1.0
 h11==0.14.0
 idna==3.10
 importlib_resources==6.5.2
@@ -40,7 +39,7 @@ pydantic-settings==2.12.0
 pydantic_core==2.33.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.1
-python-jose==3.3.0
+python-jose==3.5.0
 python-multipart==0.0.22
 qrcode[pil]==7.4.2
 reportlab==4.2.5

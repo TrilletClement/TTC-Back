@@ -28,12 +28,28 @@ class FirmwareStorage:
         os.makedirs(self.firmware_dir, exist_ok=True)
         return os.path.join(self.firmware_dir, filename)
 
+    def _safe_filename(self, original: str) -> str:
+        # The client-supplied filename flows straight into os.path.join()
+        # via _path() — without this, a name like "../../etc/cron.d/x" (or
+        # the backslash equivalent, which plain os.path.basename() would NOT
+        # catch on a Linux host) would write outside firmware_dir. Kept
+        # human-readable (packages are looked up/displayed by filename, and
+        # a re-upload of the same name is meant to replace the existing
+        # package) — just strips path separators and traversal segments
+        # instead of randomizing the name away like the blog uploads do.
+        name = os.path.basename((original or "").replace("\\", "/")).lstrip(".")
+        if not name:
+            raise ValidationError("Invalid filename")
+        return name
+
     def exists(self, filename: str) -> bool:
         return bool(filename) and os.path.isfile(self._path(filename))
 
-    def save(self, file: UploadFile, filename: str) -> None:
-        with open(self._path(filename), "wb") as out:
+    def save(self, file: UploadFile, filename: str) -> str:
+        safe_name = self._safe_filename(filename)
+        with open(self._path(safe_name), "wb") as out:
             shutil.copyfileobj(file.file, out)
+        return safe_name
 
     def delete(self, filename: str) -> None:
         path = self._path(filename)
@@ -118,7 +134,7 @@ class AdminOtaService:
     def upload_firmware(self, file: UploadFile) -> dict:
         filename = file.filename or ""
         self.storage.validate_suffix(filename)
-        self.storage.save(file, filename)
+        filename = self.storage.save(file, filename)
 
         pkg = self.repo.get_by_filename(filename)
         if pkg:

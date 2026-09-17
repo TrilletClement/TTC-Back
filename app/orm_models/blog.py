@@ -1,25 +1,30 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.orm_models.db import Base
 
 class BlogPost(Base):
     __tablename__ = "blog_post"
-    
+
     id = Column(Integer, primary_key=True)
     slug = Column(String(255), unique=True, nullable=False, index=True)
     title = Column(String(255), nullable=False)
     description = Column(String(500))
-    content = Column(Text, nullable=False)  # Contenu HTML
+    content = Column(Text, nullable=False)  # Contenu HTML (rendu de `blocks` quand il existe)
+    # Document de l'éditeur par blocs : liste de {id, kind, data}. NULL pour un
+    # article en HTML libre (historique ou embed d'artifact).
+    blocks = Column(JSONB, nullable=True)
+    accent_color = Column(String(7), nullable=True)  # #RRGGBB
     cover_image_url = Column(String(500), nullable=True)
     author_id = Column(Integer, ForeignKey("user.id"), nullable=False)
     published = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # Relations
     author = relationship("User", backref="blog_posts")
-    
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -27,6 +32,8 @@ class BlogPost(Base):
             "title": self.title,
             "description": self.description,
             "content": self.content,
+            "blocks": self.blocks,
+            "accent_color": self.accent_color,
             "cover_image_url": self.cover_image_url,
             "author": {
                 "id": self.author.id,
@@ -36,7 +43,7 @@ class BlogPost(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
-    
+
     def to_list_dict(self):
         """Version sans le contenu complet pour les listings"""
         return {
@@ -44,7 +51,7 @@ class BlogPost(Base):
             "title": self.title,
             "description": self.description,
             "cover_image_url": self.cover_image_url,
+            "accent_color": self.accent_color,
             "date": self.created_at.strftime("%Y-%m-%d") if self.created_at else None,
             "author": self.author.email if self.author else None
         }
-

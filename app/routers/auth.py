@@ -1,3 +1,5 @@
+import hmac
+import secrets
 import urllib.parse
 import logging
 
@@ -127,20 +129,43 @@ async def resend_confirmation(request: Request, payload: ResendConfirmRequest, s
     return await svc.resend_confirmation(payload.email)
 
 
+_OAUTH_STATE_COOKIE = "oauth_state"
+
+
 @router.get("/auth/google")
 def google_login():
+    state = secrets.token_urlsafe(24)
     params = {
         "client_id":     settings.GOOGLE_CLIENT_ID,
         "redirect_uri":  settings.GOOGLE_REDIRECT_URI,
         "response_type": "code",
         "scope":         "openid email profile",
         "access_type":   "offline",
+        "state":         state,
     }
-    return RedirectResponse(f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}")
+    response = RedirectResponse(f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}")
+    # Login-CSRF guard: google_callback refuses to proceed unless the `state`
+    # Google echoes back matches this cookie. An attacker can start their own
+    # consent flow and obtain a valid `code`, but can't also plant this
+    # cookie in a victim's browser — replaying that code against the victim
+    # (to log them into the attacker's Google-linked account) fails
+    # validation instead of succeeding. samesite="lax" (not "strict") because
+    # the cookie must still be sent on the top-level GET redirect Google
+    # sends the browser back to our callback with.
+    response.set_cookie(
+        _OAUTH_STATE_COOKIE, state,
+        max_age=600, httponly=True, samesite="lax",
+        secure=settings.ENV != "local",
+    )
+    return response
 
 
 @router.get("/auth/google/callback")
-async def google_callback(code: str, svc: AuthService = Depends(get_service)):
+async def google_callback(code: str, state: str, request: Request, svc: AuthService = Depends(get_service)):
+    expected_state = request.cookies.get(_OAUTH_STATE_COOKIE)
+    if not expected_state or not hmac.compare_digest(state, expected_state):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(GOOGLE_TOKEN_URL, data={
             "code":          code,
@@ -164,8 +189,10 @@ async def google_callback(code: str, svc: AuthService = Depends(get_service)):
         raise HTTPException(status_code=400, detail="Email non fourni par Google")
 
     user = svc.get_or_create_google_user(email, google_id)
-    code = svc.create_oauth_handoff(user)
-    return RedirectResponse(f"{settings.FRONTEND_URL}/auth/callback?code={code}")
+    handoff_code = svc.create_oauth_handoff(user)
+    response = RedirectResponse(f"{settings.FRONTEND_URL}/auth/callback?code={handoff_code}")
+    response.delete_cookie(_OAUTH_STATE_COOKIE)
+    return response
 
 
 @router.post("/auth/google/exchange")

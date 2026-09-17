@@ -28,9 +28,26 @@ def _generate_slug(title: str) -> str:
 # DOM/cookies, navigate the parent, or open popups.
 _TAGS = deepcopy(nh3.ALLOWED_TAGS)
 _TAGS.add("iframe")
+# Balises structurelles utilisées par le rendu des blocs d'article
+# (ArticleRenderService) — nh3 les retirerait sinon, aplatissant la mise en page.
+_TAGS.update({"header", "nav", "section", "figure", "figcaption", "main", "aside", "hr"})
 
 _ATTRIBUTES = deepcopy(nh3.ALLOWED_ATTRIBUTES)
 _ATTRIBUTES["iframe"] = {"src", "width", "height", "title", "loading"}
+
+# L'éditeur par blocs rend du HTML tout en styles inline : `style` doit
+# survivre à l'assainissement, sinon l'article publié perd sa mise en page.
+# Autorisé uniquement sur les balises que notre renderer produit — jamais sur
+# <iframe> (dont la géométrie reste fixée par ses propres attributs).
+_STYLABLE = {
+    "div", "section", "header", "nav", "aside", "figure", "figcaption",
+    "h1", "h2", "h3", "h4", "p", "span", "ol", "ul", "li", "img",
+    "blockquote", "footer", "hr", "strong", "em", "a",
+}
+for _tag in _STYLABLE:
+    _ATTRIBUTES.setdefault(_tag, set()).add("style")
+# <img> vient du même renderer : sans src/alt il n'y a pas d'image.
+_ATTRIBUTES.setdefault("img", set()).update({"src", "alt", "loading"})
 
 # Forced unconditionally regardless of what the editor typed — nh3 applies
 # these last, so an editor-supplied sandbox="allow-scripts allow-same-origin"
@@ -67,6 +84,28 @@ def _sanitize_content(content: str) -> str:
 
 def _is_editor(user: User) -> bool:
     return any(role.id in (1, 2) for role in user.roles)
+
+
+def _sanitize_blocks(blocks: Optional[list[dict]]) -> Optional[list[dict]]:
+    """`blocks` is stored as-is (see BlogPostCreate/Update docstring) — every
+    block kind except `richtext` only carries plain strings that
+    ArticleRenderService HTML-escapes at render time, so they're safe even
+    unsanitized at rest. `richtext.data.html` is the one field that holds raw
+    HTML, so it needs the same treatment as `content` before persisting —
+    otherwise it round-trips unsanitized straight into the block editor's own
+    live preview (bypassSecurityTrustHtml, no user interaction required),
+    letting any editor-authored draft run script in the session of whichever
+    admin/editor next opens it to review or publish it."""
+    if not blocks:
+        return blocks
+    sanitized = []
+    for block in blocks:
+        if isinstance(block, dict) and block.get("kind") == "richtext":
+            data = block.get("data")
+            if isinstance(data, dict) and isinstance(data.get("html"), str):
+                block = {**block, "data": {**data, "html": _sanitize_content(data["html"])}}
+        sanitized.append(block)
+    return sanitized
 
 
 _SRC_RE = re.compile(r'src="([^"]+)"')
@@ -291,6 +330,8 @@ class BlogService:
         author: User,
         published: bool = False,
         cover_image_url: Optional[str] = None,
+        blocks: Optional[list[dict]] = None,
+        accent_color: Optional[str] = None,
     ) -> BlogPost:
         if not _is_editor(author):
             raise BusinessError("Only editors can create blog posts")
@@ -304,6 +345,8 @@ class BlogService:
             title=title,
             description=description,
             content=_sanitize_content(content),
+            blocks=_sanitize_blocks(blocks),
+            accent_color=accent_color,
             author_id=author.id,
             published=published,
             cover_image_url=cover_image_url or None,
@@ -319,6 +362,9 @@ class BlogService:
         content: Optional[str] = None,
         published: Optional[bool] = None,
         cover_image_url: Optional[str] = None,
+        blocks: Optional[list[dict]] = None,
+        accent_color: Optional[str] = None,
+        blocks_provided: bool = False,
     ) -> BlogPost:
         post = self.repo.get_by_slug(slug, published_only=False)
         if not post:
@@ -335,6 +381,14 @@ class BlogService:
             post.description = description
         if content:
             post.content = _sanitize_content(content)
+        # blocks_provided distingue « le client n'a pas parlé de blocs »
+        # (PATCH partiel, ex. publication) de « l'article est repassé en mode
+        # HTML » (blocks=None explicite) — sans quoi publier un article
+        # effacerait son document de blocs.
+        if blocks_provided:
+            post.blocks = _sanitize_blocks(blocks) or None
+        if accent_color:
+            post.accent_color = accent_color
         if published is not None:
             post.published = published
         if cover_image_url is not None:
