@@ -16,7 +16,8 @@ from app.domain.exceptions import BusinessError, ValidationError
 from app.orm_models.auth import User
 from app.orm_models.db import get_db
 from app.repositories.auth_repo import AuthRepository
-from app.schemas.auth import (ForgotPasswordRequest, GoogleExchangeRequest,
+from app.repositories.newsletter_repo import NewsletterRepository
+from app.schemas.auth import (DeleteAccountRequest, ForgotPasswordRequest, GoogleExchangeRequest,
                                LoginRequest, PreferencesUpdate, RegisterRequest,
                                ResendConfirmRequest, ResetPasswordRequest)
 from app.services.authService import AuthService
@@ -104,6 +105,22 @@ def update_preferences(
 ):
     try:
         return svc.update_preferences(current_user, payload.preferred_agency, payload.alert_display_pref)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/user/delete-account", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("5/minute")
+def delete_account(
+    request: Request,
+    payload: DeleteAccountRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    svc: AuthService = Depends(get_service),
+):
+    """Irreversible: anonymises the account (see AuthService.delete_account)."""
+    try:
+        svc.delete_account(current_user, payload.confirm_email, payload.password, NewsletterRepository(db))
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

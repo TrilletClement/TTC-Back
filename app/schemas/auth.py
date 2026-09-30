@@ -60,5 +60,12 @@ class PreferencesUpdate(BaseModel):
     alert_display_pref: str | None = None
 
 
+class DeleteAccountRequest(BaseModel):
+    # Typing one's own email is the explicit confirmation; the password is
+    # also required for accounts that have one (not Google-only accounts).
+    confirm_email: str
+    password: str | None = None
+
+
 class GoogleExchangeRequest(BaseModel):
     code: str

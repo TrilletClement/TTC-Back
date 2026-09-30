@@ -26,3 +26,8 @@ class AuthRepository:
 
     def commit(self) -> None:
         self.db.commit()
+
+    def archive_boards_of(self, user_id: int) -> None:
+        # Imported here: the board model pulls in the GTFS models.
+        from app.orm_models.board import Board
+        self.db.query(Board).filter(Board.owner_id == user_id).update({Board.archived: True})

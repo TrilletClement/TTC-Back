@@ -383,14 +383,23 @@ trunk from Sclessin Standard, then Coronmeuse OR Liège Expo). How it works:
 - Aucune donnée n'est envoyée à l'ESP pendant le provisioning : le
   propriétaire vient déjà de l'association MAC ↔ commande dans l'admin.
 - Pas de connexion Google dans l'app (Google bloque l'OAuth en WebView).
-- Ligne préférée : étoile sur une ligne de `/app/board/:id`
-  (`FavoriteLineService`, localStorage `ttc_favorite_line`). Affichée en
-  direct sur l'accueil `/app` et envoyée à l'app par
-  `EspProv.setFavoriteLine(boardId, stripId)` pour le **widget Android**, qui
-  relit `GET /api/boards/{id}` avec le jeton de l'app (toutes les 15 min via
-  WorkManager, minimum Android, + bouton actualiser). Le widget lit
-  `ledStrips[].leds[].isOn/ledColor`, `line.shortName/terminus0Name/terminus1Name`,
-  `color/textColor` : garder ces champs stables.
+- Lignes favorites (jusqu'à 8) : étoile sur une ligne de `/app/board/:id`
+  (`FavoriteLineService`, localStorage `ttc_favorite_lines`, migre l'ancien
+  `ttc_favorite_line`). Une carte compacte par favori sur l'accueil `/app`
+  (rendu backend + nombre de véhicules via `X-Leds-On`). La liste est envoyée
+  à l'app par `EspProv.setFavoriteLines(json)` ; chaque **widget Android**
+  affiche sa propre ligne (choisie à l'ajout : `pinWidget(kind, boardId,
+  stripId)` depuis l'app, ou écran de choix natif depuis le launcher) et relit
+  `…/render.png` avec le jeton de l'app (15 min via WorkManager + bouton).
+  Épingler une ligne propose le widget dans une notification (`app-mobile-toast`),
+  pas de carte permanente sur l'accueil.
+- `/app/profile` : email, date d'inscription, langue, widgets, aide, liens
+  légaux (ouverts dans le navigateur), déconnexion, **suppression du compte**
+  (`POST /api/user/delete-account`, exigence Google Play).
+- `/app/register` (hors garde d'auth, dans `PUBLIC_ROUTES`) : création de
+  compte dans l'app, mêmes règles et Turnstile que `/register`. L'app l'ouvre
+  en mode inscription (`WebAppActivity.registrationIntent`) : seul
+  `EspProv.registrationDone(email)` y est accepté.
 - Assistant d'ajout de ligne : `LedStripModalComponent.compact` (mis par
   `/app`) remplace la colonne d'étapes par une barre de progression et fixe
   les boutons en bas ; `app-autocomplete [sheet]` ouvre un sélecteur plein
@@ -435,6 +444,17 @@ HSTS, `nosniff`, `Referrer-Policy`, `X-Frame-Options: SAMEORIGIN`,
 main sur 192.168.14.150) et dans `stibFront/nginx.conf`. Pas encore de CSP
 sur le site : à introduire d'abord en `Content-Security-Policy-Report-Only`
 (Bootstrap CDN, Turnstile, Stripe, GTM, Google Fonts).
+
+## Suppression de compte — added 2026-09-30
+
+`POST /api/user/delete-account` (`AuthService.delete_account`), confirmation
+par l'email + le mot de passe (sauf comptes Google). La ligne `user` ne peut
+pas être supprimée (commandes gardées pour la comptabilité, tickets, articles
+la référencent) : on **anonymise** — email `deleted-<id>-<hex>@deleted.invalid`,
+mot de passe / google_id / jetons effacés, `active=False`, nouveau
+`fs_uniquifier` — ce qui invalide tout JWT existant (lookup par email +
+contrôle `active`). Boards archivées, abonnement newsletter supprimé.
+Tests : `tests/test_delete_account.py`.
 
 ## What NOT to do
 

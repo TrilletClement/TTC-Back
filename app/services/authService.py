@@ -80,7 +80,44 @@ class AuthService:
             "roleName":          [role.name for role in user.roles],
             "preferredAgency":   user.preferred_agency,
             "alertDisplayPref":  user.alert_display_pref,
+            "createdAt":         user.created_at.isoformat() if user.created_at else None,
+            "hasPassword":       user.password is not None,
         }
+
+    def delete_account(self, user: User, confirm_email: str, password: Optional[str],
+                       newsletter_repo: NewsletterRepository) -> None:
+        """Irreversible account deletion (Google Play requirement for apps
+        that create accounts).
+
+        The user row can't be removed: orders (kept for accounting), support
+        tickets and blog posts reference it. So every personal field is wiped
+        and the account deactivated — get_current_user rejects inactive users
+        and looks users up by email, so every issued token dies at once. Owned
+        boards are archived and the newsletter subscription is erased.
+        """
+        if confirm_email.strip().lower() != (user.email or "").lower():
+            raise ValidationError("L'email de confirmation ne correspond pas au compte.")
+        if user.password is not None and not (password and verify_password(password, user.password)):
+            raise ValidationError("Mot de passe incorrect.")
+
+        subscriber = newsletter_repo.get_by_email(user.email)
+        if subscriber is not None:
+            newsletter_repo.delete(subscriber)
+
+        self.repo.archive_boards_of(user.id)
+
+        user.email = f"deleted-{user.id}-{secrets.token_hex(8)}@deleted.invalid"
+        user.password = None
+        user.google_id = None
+        user.active = False
+        user.fs_uniquifier = str(uuid.uuid4())
+        user.preferred_agency = None
+        user.alert_display_pref = None
+        user.reset_token = user.reset_token_expiry = None
+        user.confirmation_token = user.confirmation_token_expiry = None
+        user.oauth_handoff_token = user.oauth_handoff_token_expiry = None
+        self.repo.commit()
+        logger.info("Account %s deleted (anonymised)", user.id)
 
     def update_preferences(self, user: User, preferred_agency: Optional[str],
                             alert_display_pref: Optional[str] = None) -> dict:
