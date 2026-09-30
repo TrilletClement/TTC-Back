@@ -402,6 +402,40 @@ trunk from Sclessin Standard, then Coronmeuse OR Liège Expo). How it works:
   si pas d'API locale), `adb reverse tcp:4200 tcp:4200`, puis
   `./gradlew installDebug -PwebviewUrl=http://localhost:4200/` dans TTC-App.
 
+## Rendu unique d'une ligne (strip) — added 2026-09-30
+
+- **Un seul générateur** : `board_svg_service._build_strip` (celui de
+  l'export physique). `build_strip_svg(board, strip_id, lit)` le réutilise tel
+  quel pour une seule bande, recadrée ; `lit` (led id → couleur) allume les
+  LED pour les vues en direct. `lit=None` = rendu d'impression inchangé.
+- Servi par `StripRenderService` (droits : propriétaire ou admin, sinon 404 ;
+  état des LED = mêmes règles que `GET /boards/{id}/status`) :
+  - `GET /api/boards/{id}/strips/{sid}/render.svg?live=` → pages `/app`
+    (`app-strip-render`, affiché en `<img>` via object URL, jamais injecté
+    en HTML) ;
+  - `GET …/render.png?live=&width=200..1600` → widgets Android (cairosvg,
+    cache LRU par hash du SVG).
+  En-tête `X-Leds-On` (nombre de LED allumées), CSP stricte sur le SVG,
+  `Cache-Control: private, no-store` en direct, rate limit 120/60 par minute.
+- **Ne pas redessiner une ligne ailleurs** (TS, Kotlin…) : consommer ces
+  routes. Exception connue : l'éditeur interactif du site
+  (`led-visualization`) reste un rendu TS séparé (édition des libellés).
+- Police : `fastapi-server/app/assets/fonts/brusseline-bold.{woff2,ttf}`.
+  Le woff2 est embarqué dans le SVG ; le ttf (famille renommée
+  "Brusseline"/Bold pour fontconfig) est installé par le Dockerfile pour
+  cairosvg, qui ignore `@font-face`. Avant, la police était lue dans
+  `doc/`, hors du contexte Docker : l'export de prod retombait sur Arial.
+- Tests : `cd fastapi-server && PYTHONPATH=. ../venv/bin/python -m pytest tests`
+  (`tests/test_strip_render.py`, ORM en mémoire, pas de base).
+
+## En-têtes de sécurité — added 2026-09-30
+
+HSTS, `nosniff`, `Referrer-Policy`, `X-Frame-Options: SAMEORIGIN`,
+`Permissions-Policy` dans `apache/transport-le-ssl.conf` (à redéployer à la
+main sur 192.168.14.150) et dans `stibFront/nginx.conf`. Pas encore de CSP
+sur le site : à introduire d'abord en `Content-Security-Policy-Report-Only`
+(Bootstrap CDN, Turnstile, Stripe, GTM, Google Fonts).
+
 ## What NOT to do
 
 - Do not add `SENDCLOUD_SANDBOX` or `SENDCLOUD_SHIPPING_OPTION_CODE` env vars — removed intentionally.

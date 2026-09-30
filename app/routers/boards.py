@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -11,12 +11,35 @@ from app.repositories.board_repo import BoardRepository
 from app.schemas.board import BoardCreate, BoardRename
 from app.services.boardService import BoardService
 from app.services.board_svg_service import build_export_svg, load_board_for_export
+from app.services.strip_render_service import StripRenderService
+from app.core.rate_limit import limiter
+from app.domain.exceptions import NotFoundError, ValidationError
 
 router = APIRouter(prefix="/api/boards", tags=["boards"])
 
 
 def get_service(db: Session = Depends(get_db)) -> BoardService:
     return BoardService(BoardRepository(db))
+
+
+def get_render_service(db: Session = Depends(get_db)) -> StripRenderService:
+    return StripRenderService(db, BoardService(BoardRepository(db)))
+
+
+# A rendered strip only ever contains our own drawing: forbid everything else
+# should the SVG be opened directly in a browser tab.
+_SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; font-src data:"
+
+
+def _render_headers(live: bool, leds_on: int) -> dict[str, str]:
+    return {
+        # Live renders change every poll; static ones only when the strip is edited.
+        "Cache-Control": "private, no-store" if live else "private, max-age=300",
+        "X-Content-Type-Options": "nosniff",
+        # Lets the widgets show "N vehicles approaching" without a second call.
+        "X-Leds-On": str(leds_on),
+        "Access-Control-Expose-Headers": "X-Leds-On",
+    }
 
 
 @router.get("/types")
@@ -74,6 +97,52 @@ def get_board_status(board_id: int, current_user: User, svc: BoardService = Depe
     avoids re-sending the whole board on each tick.
     """
     return svc.get_board_status(board_id, current_user)
+
+
+@router.get("/{board_id}/strips/{strip_id}/render.svg")
+@limiter.limit("120/minute")
+@require_user
+def render_strip_svg(
+    request: Request,
+    board_id: int,
+    strip_id: int,
+    current_user: User,
+    live: bool = Query(True),
+    svc: StripRenderService = Depends(get_render_service),
+):
+    """One strip drawn exactly like the physical board (same generator as the
+    export), with the LEDs currently on when `live`. Used by the app pages."""
+    try:
+        svg, leds_on = svc.render_svg(board_id, strip_id, live, current_user)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    headers = _render_headers(live, leds_on) | {"Content-Security-Policy": _SVG_CSP}
+    return Response(content=svg, media_type="image/svg+xml", headers=headers)
+
+
+@router.get("/{board_id}/strips/{strip_id}/render.png")
+@limiter.limit("60/minute")
+@require_user
+def render_strip_png(
+    request: Request,
+    board_id: int,
+    strip_id: int,
+    current_user: User,
+    live: bool = Query(True),
+    width: int = Query(800),
+    svc: StripRenderService = Depends(get_render_service),
+):
+    """PNG of the same render, for the Android home-screen widgets (which
+    can't draw SVG). `width` in pixels, 200–1600."""
+    try:
+        png, leds_on = svc.render_png(board_id, strip_id, live, width, current_user)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return Response(content=png, media_type="image/png", headers=_render_headers(live, leds_on))
 
 
 @router.get("/{board_id}/export")

@@ -11,7 +11,11 @@ from xml.sax.saxutils import escape as _esc
 from sqlalchemy.orm import Session, joinedload
 
 # Brusseline Bold font embedded as base64 so the SVG is self-contained.
-_FONT_PATH = Path(__file__).parent.parent.parent.parent / "doc" / "brusseline-bold-webfont.woff2"
+# Lives inside the API package so it ships in the Docker image (the repo-root
+# doc/ folder is outside the build context). The .ttf twin, family renamed
+# "Brusseline"/Bold, is installed system-wide by the Dockerfile for the PNG
+# rasterizer, which ignores @font-face.
+_FONT_PATH = Path(__file__).parent.parent / "assets" / "fonts" / "brusseline-bold.woff2"
 try:
     _BRUSSELINE_B64: str | None = base64.b64encode(_FONT_PATH.read_bytes()).decode()
 except Exception:
@@ -237,7 +241,10 @@ def _terminus_box(
 def _build_strip(
     strip: LedStrip, rail_y: float, bgx: float, dims: dict,
     max_led: int, db: Session, name_w: float,
+    lit: dict[int, str] | None = None,
 ) -> str:
+    """`lit` (led id → colour) draws those LEDs switched on, for the live
+    renders; None (the physical export) keeps every station white."""
     leds = sorted(strip.leds, key=lambda l: (l.ledstrip_index or 0))
     if not leds:
         return ""
@@ -352,6 +359,13 @@ def _build_strip(
             continue
         x       = led_x(led.ledstrip_index or 1)
         central = led.type in ("c_left", "c_right")
+        led_on  = lit.get(led.id) if lit else None
+        if led_on:
+            # Halo of the lit LED, behind the station ring(s).
+            parts.append(
+                f'<circle cx="{_p(x)}" cy="{_p(rail_y)}" r="{_p(R_OUTER + 1.5)}" '
+                f'fill="{led_on}" fill-opacity="0.35"/>'
+            )
         if central:
             parts.append(
                 f'<circle cx="{_p(x)}" cy="{_p(rail_y)}" r="{_p(R_OUTER)}" '
@@ -359,7 +373,7 @@ def _build_strip(
             )
         parts.append(
             f'<circle cx="{_p(x)}" cy="{_p(rail_y)}" r="{_p(R)}" '
-            f'fill="white" stroke="{s_stroke}" stroke-width="{_p(R_SW)}"/>'
+            f'fill="{led_on or "white"}" stroke="{led_on or s_stroke}" stroke-width="{_p(R_SW)}"/>'
         )
 
     # ── Terminus data (needed for both top boxes and integrated badges) ──────────
@@ -552,6 +566,26 @@ def _frame(bgx: float, bgy: float, dims: dict) -> str:
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
+def _terminus_name_w(max_led: int) -> float:
+    """Fixed terminus name-box width — sized for the longest possible shortened
+    label (17 chars + "..." = 20 chars, see _shorten). Clamped to half the
+    available strip width so left/right boxes never overlap."""
+    est_strip_w = (max_led - 1) * LED_PITCH_MM
+    half_avail  = max(10.0, (est_strip_w - 2 * (ROUTE_SZ + TB_GAP)) / 2)
+    return min(20 * _CHAR_W + _NAME_PAD, half_avail)
+
+
+def _font_defs() -> str:
+    if not _BRUSSELINE_B64:
+        return ""
+    return (
+        f'<defs><style>'
+        f'@font-face{{font-family:"Brusseline";font-weight:700;'
+        f'src:url("data:font/woff2;base64,{_BRUSSELINE_B64}") format("woff2");}}'
+        f'</style></defs>'
+    )
+
+
 def build_export_svg(board: Board, with_frame: bool, db: Session) -> str:
     bt = board.board_type
     if not bt:
@@ -566,32 +600,17 @@ def build_export_svg(board: Board, with_frame: bool, db: Session) -> str:
     bgx = bgy = MARGIN_MM
 
     bottom_rail_y = bgy + dims["max_height_mm"] - dims["delta_y_mm"]
-
-    # Fixed terminus name-box width — sized for the longest possible shortened
-    # label (17 chars + "..." = 20 chars, see _shorten).
-    # Clamped to half the available strip width so left/right boxes never overlap.
-    _est_strip_w  = (max_led - 1) * LED_PITCH_MM
-    _half_avail   = max(10.0, (_est_strip_w - 2 * (ROUTE_SZ + TB_GAP)) / 2)
-    _name_w       = min(20 * _CHAR_W + _NAME_PAD, _half_avail)
+    _name_w = _terminus_name_w(max_led)
 
     strips_by_slot: dict[int, LedStrip] = {}
     for s in board.led_strips:
         strips_by_slot[s.order_index or 1] = s
 
-    font_defs = ""
-    if _BRUSSELINE_B64:
-        font_defs = (
-            f'<defs><style>'
-            f'@font-face{{font-family:"Brusseline";font-weight:700;'
-            f'src:url("data:font/woff2;base64,{_BRUSSELINE_B64}") format("woff2");}}'
-            f'</style></defs>'
-        )
-
     out: list[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'width="{canvas_w}mm" height="{canvas_h}mm" '
         f'viewBox="0 0 {canvas_w} {canvas_h}">',
-        font_defs,
+        _font_defs(),
         f'<rect width="{_p(canvas_w)}" height="{_p(canvas_h)}" fill="white"/>',
         f'<rect x="{_p(bgx)}" y="{_p(bgy)}" '
         f'width="{_p(dims["max_width_mm"])}" height="{_p(dims["max_height_mm"])}" '
@@ -614,3 +633,53 @@ def build_export_svg(board: Board, with_frame: bool, db: Session) -> str:
 
     out.append("</svg>")
     return "\n".join(out)
+
+
+# ── Single-strip render (app, widget) ─────────────────────────────────────────
+# Horizontal room kept right of the last LED: its label leans right (-60°).
+_STRIP_RIGHT_OVERHANG_MM = 24.0
+_STRIP_LEFT_PAD_MM       = 3.0
+# The longest tilted labels reach the strip's own top edge.
+_STRIP_TOP_PAD_MM        = 3.0
+
+
+def build_strip_svg(board: Board, strip_id: int, lit: dict[int, str] | None, db: Session) -> str:
+    """One strip of `board`, drawn by the very same `_build_strip` as the
+    physical export (same geometry, font, colours, labels, arrows, terminus
+    boxes), cropped to that strip. `lit` (led id → colour) lights LEDs up for
+    live views. This is the single source of the line visual shown by the
+    website, the Android app and its widgets.
+
+    Raises LookupError if the strip isn't on the board, ValueError if the
+    board has no board type (same as the export).
+    """
+    bt = board.board_type
+    if not bt:
+        raise ValueError("Board has no board type")
+    strip = next((s for s in board.led_strips if s.id == strip_id), None)
+    if strip is None:
+        raise LookupError(f"Strip {strip_id} not on board {board.id}")
+
+    dims    = _dims(bt)
+    max_led = bt.max_led or 12
+    rail_y  = STRIP_H_MM + _STRIP_TOP_PAD_MM
+
+    last_idx = max([max_led] + [l.ledstrip_index or 0 for l in strip.leds])
+    first_x  = dims["delta_x_mm"]
+    last_x   = first_x + (last_idx - 1) * LED_PITCH_MM
+    x0 = first_x - R_OUTER - _STRIP_LEFT_PAD_MM
+    x1 = last_x + _STRIP_RIGHT_OVERHANG_MM
+    y0 = 0.0
+    y1 = rail_y + R_OUTER + 2.0
+    w, h = x1 - x0, y1 - y0
+
+    body = _build_strip(strip, rail_y, 0.0, dims, max_led, db, _terminus_name_w(max_led), lit=lit)
+    return "\n".join([
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{_p(w)}mm" height="{_p(h)}mm" '
+        f'viewBox="{_p(x0)} {_p(y0)} {_p(w)} {_p(h)}">',
+        _font_defs(),
+        f'<rect x="{_p(x0)}" y="{_p(y0)}" width="{_p(w)}" height="{_p(h)}" fill="white"/>',
+        body,
+        "</svg>",
+    ])
