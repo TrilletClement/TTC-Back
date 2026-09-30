@@ -354,6 +354,54 @@ trunk from Sclessin Standard, then Coronmeuse OR Liège Expo). How it works:
 - Ne pas stocker de largeur en pixels dans un bloc : les articles doivent
   reflow sur mobile.
 
+## Pages de l'app Android (`/app`) — added 2026-09-26
+
+- L'app Android (repo `TTC-App`, fork d'esp-idf-provisioning-android) affiche
+  le site dans une WebView, mais **uniquement** les routes `/app/**`. Tout
+  autre lien s'ouvre dans le navigateur du téléphone.
+- **Le login est un écran natif Android** (`LoginActivity`, écran de
+  lancement) qui appelle `POST /api/token` comme le site. L'app dépose le
+  jeton dans le localStorage (`access_token`) avant d'ouvrir `/app`. Si le site
+  navigue vers `/login` (jeton expiré ou refusé), l'app efface le jeton et
+  réaffiche son écran natif. Inscription et mot de passe oublié s'ouvrent
+  dans le navigateur. Garder `/api/token` et le message « non confirmé »
+  (`AuthService.login`) stables : l'app les lit.
+- `/app` (liste des boards) et `/app/board/:id` (lignes + appareil lié) ont
+  leur propre header compact (`app-mobile-header`) ; `app.ts` masque
+  navbar/footer pour tout le préfixe `/app`. Ne pas y ajouter la
+  visualisation, l'aperçu, l'export ou le panier : ils restent sur le site.
+- Détection : l'app ajoute `TTCApp/<versionCode>` au user agent
+  (`NativeAppService.isNativeApp()`). Dans l'app, `/` redirige vers `/app`
+  (`nativeAppHomeRedirect`).
+- Pont JS : `window.EspProv.startProvisioning()` lance l'écran natif de scan
+  du QR code (Wi-Fi BLE). Au retour, l'app appelle
+  `window.onEspProvEvent({type: 'provisioningClosed'})`, et les pages
+  rechargent l'état des appareils. Le succès se lit côté serveur
+  (`last_connected`), pas dans l'app. L'app n'accepte ces appels que depuis
+  `/app/**`. `window.EspProv.logout()` termine la session de l'app (bouton
+  « Se déconnecter » de `/app`).
+- Aucune donnée n'est envoyée à l'ESP pendant le provisioning : le
+  propriétaire vient déjà de l'association MAC ↔ commande dans l'admin.
+- Pas de connexion Google dans l'app (Google bloque l'OAuth en WebView).
+- Ligne préférée : étoile sur une ligne de `/app/board/:id`
+  (`FavoriteLineService`, localStorage `ttc_favorite_line`). Affichée en
+  direct sur l'accueil `/app` et envoyée à l'app par
+  `EspProv.setFavoriteLine(boardId, stripId)` pour le **widget Android**, qui
+  relit `GET /api/boards/{id}` avec le jeton de l'app (toutes les 15 min via
+  WorkManager, minimum Android, + bouton actualiser). Le widget lit
+  `ledStrips[].leds[].isOn/ledColor`, `line.shortName/terminus0Name/terminus1Name`,
+  `color/textColor` : garder ces champs stables.
+- Assistant d'ajout de ligne : `LedStripModalComponent.compact` (mis par
+  `/app`) remplace la colonne d'étapes par une barre de progression et fixe
+  les boutons en bas ; `app-autocomplete [sheet]` ouvre un sélecteur plein
+  écran au lieu du menu déroulant. Le site garde l'affichage desktop.
+- Pas de bandeau Klaro dans l'app (`index.html` : `klaroConfig.noAutoLoad`
+  si user agent `TTCApp/`). Le seul service optionnel (GTM) n'est injecté
+  qu'après consentement Klaro, donc il reste désactivé.
+- Test sans déployer : `ng serve --host 0.0.0.0` (proxy `/api` vers la prod
+  si pas d'API locale), `adb reverse tcp:4200 tcp:4200`, puis
+  `./gradlew installDebug -PwebviewUrl=http://localhost:4200/` dans TTC-App.
+
 ## What NOT to do
 
 - Do not add `SENDCLOUD_SANDBOX` or `SENDCLOUD_SHIPPING_OPTION_CODE` env vars — removed intentionally.
