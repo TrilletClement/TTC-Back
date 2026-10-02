@@ -267,8 +267,11 @@ The production server's `.env` is never transferred by `deploy.sh` — it is man
 ### Build and deploy
 
 ```bash
-# Deploy the API (builds stib-api:latest itself)
-./deploy.sh
+# Deploy the API only (builds stib-api:latest itself)
+./deploy.sh            # add --import for a clean DB + GTFS reimport
+
+# Deploy API then frontend in one go (needs ../TTC-Front)
+./deploy-all.sh
 
 # Frontend: see TTC-Front (its own ./deploy.sh). On a compose/runtime-env change,
 # deploy TTC-Back first — it ships docker-compose.yml and /root/frontend/runtime-env.js.
