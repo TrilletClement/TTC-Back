@@ -93,7 +93,8 @@ class AuthService:
         tickets and blog posts reference it. So every personal field is wiped
         and the account deactivated — get_current_user rejects inactive users
         and looks users up by email, so every issued token dies at once. Owned
-        boards are archived and the newsletter subscription is erased.
+        boards are archived; the newsletter subscription, phones (push tokens)
+        and departure alerts are erased.
         """
         if confirm_email.strip().lower() != (user.email or "").lower():
             raise ValidationError("L'email de confirmation ne correspond pas au compte.")
@@ -105,6 +106,7 @@ class AuthService:
             newsletter_repo.delete(subscriber)
 
         self.repo.archive_boards_of(user.id)
+        self.repo.delete_push_data_of(user.id)
 
         user.email = f"deleted-{user.id}-{secrets.token_hex(8)}@deleted.invalid"
         user.password = None

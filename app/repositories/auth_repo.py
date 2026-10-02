@@ -27,6 +27,12 @@ class AuthRepository:
     def commit(self) -> None:
         self.db.commit()
 
+    def delete_push_data_of(self, user_id: int) -> None:
+        """Phones (FCM tokens) and departure alerts: personal, nothing to keep."""
+        from app.orm_models.departure_alert import DepartureAlert, PushDevice
+        self.db.query(PushDevice).filter(PushDevice.user_id == user_id).delete(synchronize_session=False)
+        self.db.query(DepartureAlert).filter(DepartureAlert.user_id == user_id).delete(synchronize_session=False)
+
     def archive_boards_of(self, user_id: int) -> None:
         # Imported here: the board model pulls in the GTFS models.
         from app.orm_models.board import Board

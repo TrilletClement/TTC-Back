@@ -4,6 +4,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.routines.gtfs_import import refresh_active_intervals
+from app.routines.departure_alerts import send_departure_alerts
 from app.routines.stib_import import _operator as stib_operator
 from app.routines.tec_import import _operator as tec_operator
 from app.routines.delijn_import import _operator as delijn_operator
@@ -118,6 +119,16 @@ def start():
         CronTrigger(second='5,25,45'),
         id='refresh_active_intervals',
         name='Refresh active_incoming_intervals (every 20s, 24h/24)',
+        replace_existing=True, max_instances=1, coalesce=True,
+    )
+
+    # ===== DEPARTURE ALERTS ("time to leave" push notifications) =====
+    # +5 s after each matview refresh, so alerts read the freshest intervals.
+    scheduler.add_job(
+        send_departure_alerts,
+        CronTrigger(second='10,30,50'),
+        id='send_departure_alerts',
+        name='Send due departure alerts (every 20s, 24h/24)',
         replace_existing=True, max_instances=1, coalesce=True,
     )
 

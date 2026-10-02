@@ -390,6 +390,36 @@ mot de passe / google_id / jetons effacés, `active=False`, nouveau
 contrôle `active`). Boards archivées, abonnement newsletter supprimé.
 Tests : `tests/test_delete_account.py`.
 
+## Alertes de départ (notifications push) — added 2026-10-02
+
+« Il est temps de partir » dans l'app Android. Tables `push_device` (jeton FCM
+par téléphone + langue), `departure_alert`, `departure_alert_sent` (une
+notification par alerte et par véhicule = `raw_trip_id` + `service_date`).
+
+- **Ancrage** : une alerte = `led_strip_id` + `stop_keys` (tous les
+  `[stop_id, agency]` d'une station = une LED ; la STIB a un stop_id par quai)
+  + `direction` (NULL = les deux). **Jamais** `led_id` : modifier une ligne
+  supprime et recrée ses LEDs. Station disparue → l'alerte ne sonne plus,
+  l'API renvoie `stop_on_board: false`.
+- **Déclencheurs** (lus dans `active_incoming_intervals`, la vue des LEDs) :
+  `minutes` = `led_on_until - now <= minutes_before*60` ; `led` =
+  `led_on_from <= now <= led_on_until`. `rt_only` du strip respecté.
+- **Plages** : JSON `[{days: [0..6] (lundi=0), start, end}]`, heure de
+  Bruxelles, `end < start` passe minuit, `[]` = toujours.
+  Règles pures + tests : `services/departure_alert_rules.py`,
+  `tests/test_departure_alerts.py`.
+- **Envoi** : job scheduler `send_departure_alerts` (:10/:30/:50, juste après
+  le refresh de la vue) → `DepartureAlertService.evaluate` →
+  `push_sender` (firebase-admin). Jetons morts supprimés automatiquement.
+- **Secret** : `FIREBASE_CREDENTIALS_FILE` → compte de service Firebase,
+  monté depuis `./secrets/firebase-admin.json` (gitignoré) dans `api` et
+  `scheduler`. Vide/absent = envoi désactivé (log), rien ne plante.
+- API : `/api/push-devices` (+ `/unregister`, `/test`),
+  `/api/departure-alerts` (CRUD, `/strips/{id}/stations`,
+  `PUT /strips/{id}/enabled` = cloche du widget). Distinct de `/api/alerts`
+  (perturbations des opérateurs).
+- Suppression de compte : téléphones et alertes effacés.
+
 ## What NOT to do
 
 - Do not add `SENDCLOUD_SANDBOX` or `SENDCLOUD_SHIPPING_OPTION_CODE` env vars — removed intentionally.

@@ -35,3 +35,5 @@ data/
 firmware_packages/
 ecosystem.ignore.config.js
 ca-config.tar.gz
+# Firebase service-account key (push notifications) — see docker-compose.yml
+secrets/

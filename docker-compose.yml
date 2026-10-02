@@ -25,6 +25,7 @@ services:
       - DB_HOST=db
       - DB_PORT=5432
       - PYTHONPATH=/app
+      - FIREBASE_CREDENTIALS_FILE=/run/secrets/firebase-admin.json
     # Port 8000 exposed to host — Apache on 192.168.14.150 proxies to it.
     ports:
       - "8000:8000"
@@ -35,6 +36,8 @@ services:
       # Created by ca/setup-ca.sh; never committed to git.
       - ./ca/intermediate/private/inter.key:/etc/device-ca/inter.key:ro
       - ./ca/intermediate/certs/inter.crt:/etc/device-ca/inter.crt:ro
+      # Firebase service account (push notifications); never committed to git.
+      - ./secrets/firebase-admin.json:/run/secrets/firebase-admin.json:ro
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 
   scheduler:
@@ -47,8 +50,11 @@ services:
       - DB_HOST=db
       - DB_PORT=5432
       - PYTHONPATH=/app
+      - FIREBASE_CREDENTIALS_FILE=/run/secrets/firebase-admin.json
     volumes:
       - ./firmware_packages:/data/firmware
+      # Push notifications (departure alerts): Firebase service account.
+      - ./secrets/firebase-admin.json:/run/secrets/firebase-admin.json:ro
     command: python -m app.routines.scheduler
 
   frontend:

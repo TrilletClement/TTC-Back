@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # missing it (prod 503, 2026-08-17).
     OPENAI_API_KEY: str = ""
 
+    # Firebase service-account JSON (a secret, never committed) used by the
+    # scheduler to send push notifications. Empty = pushes are a logged no-op.
+    FIREBASE_CREDENTIALS_FILE: str = ""
+
     # Mail
     MAIL_USERNAME: str = Field(...)
     MAIL_PASSWORD: str = Field(...)

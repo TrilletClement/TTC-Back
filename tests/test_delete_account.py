@@ -11,10 +11,14 @@ from app.services.authService import AuthService
 class _FakeAuthRepo:
     def __init__(self):
         self.archived_for: list[int] = []
+        self.push_deleted_for: list[int] = []
         self.commits = 0
 
     def archive_boards_of(self, user_id: int) -> None:
         self.archived_for.append(user_id)
+
+    def delete_push_data_of(self, user_id: int) -> None:
+        self.push_deleted_for.append(user_id)
 
     def commit(self) -> None:
         self.commits += 1
@@ -58,6 +62,7 @@ def test_deletes_and_anonymises_everything_personal():
     assert user.preferred_agency is None and user.alert_display_pref is None
     assert user.reset_token is None and user.confirmation_token is None and user.oauth_handoff_token is None
     assert repo.archived_for == [42] and repo.commits == 1
+    assert repo.push_deleted_for == [42]
     assert len(news.deleted) == 1
 
 

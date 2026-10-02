@@ -10,7 +10,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.routines import scheduler
-from app.routers import payments, auth, boards, devices, ledstrips, orders, line, blog, update, adminOta, adminUsers, adminDevices, adminPrices, adminOrders, shipping, provisioning, adminSettings, adminShipping, adminGtfs, public, gifts, support, adminSupport, alerts, newsletter, adminNewsletter
+from app.routers import payments, auth, boards, devices, ledstrips, orders, line, blog, update, adminOta, adminUsers, adminDevices, adminPrices, adminOrders, shipping, provisioning, adminSettings, adminShipping, adminGtfs, public, gifts, support, adminSupport, alerts, newsletter, adminNewsletter, departure_alerts
 from app.core.config import settings
 from app.core.rate_limit import limiter
 from app.core.security.jwt import get_current_user
@@ -106,6 +106,7 @@ app.include_router(support.router)
 app.include_router(adminSupport.router)
 app.include_router(newsletter.router)
 app.include_router(adminNewsletter.router)
+app.include_router(departure_alerts.router)
 
 # Static bundle files embedded in blog posts via <iframe> (see BlogEditorComponent's
 # "Artifact" toolbar button + BlogEmbedStorage.save). Framing is re-opened for
