@@ -14,7 +14,7 @@ services:
 
   api:
     build:
-      context: ./fastapi-server
+      context: .
       dockerfile: Dockerfile
     image: stib-api:latest
     restart: always
@@ -50,15 +50,13 @@ services:
     command: python -m app.routines.scheduler
 
   frontend:
+    # Image built and shipped by the TTC-Front repo (its own deploy.sh).
     image: server-stib-frontend:latest
-    build:
-      context: ./stibFront
-      dockerfile: Dockerfile
     restart: always
     ports:
       - "4200:80"
     volumes:
       - ./env.js:/usr/share/nginx/html/assets/env.js
-      - ./stibFront/public/runtime-env.js:/usr/share/nginx/html/runtime-env.js
+      - ./frontend/runtime-env.js:/usr/share/nginx/html/runtime-env.js
     depends_on:
       - api

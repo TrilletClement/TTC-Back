@@ -2,40 +2,32 @@
 .env
 .env.local
 .env.prod
-fastapi-server/.env
 
 venv/
 sqlite-accounts/
 __pycache__/
 d2/*.db
 d2/*.sql
-flask-web-server/logs/*.log
-flask-web-server/logs/*.err
-fastapi-server/logs/*.log
-fastapi-server/logs/*.err
-flask-web-server/app/api/packages/*.bin
+logs/*.log
+logs/*.err
 
-stibFront/node_modules/*
 node_modules/
 **/node_modules/
 .vscode/
 logs/
 
-stibFront/public/runtime-env.js
 test-data/
 ecosystem.local.config.js
-flask-web-server/alembic.ini
-fastapi-server/app/routines/missed_buses/
+app/routines/missed_buses/
 ecosystem.antoinelaptop.config.js
 ecosystem.antoinepc.config.js
 .ven/
 docker-compose.local.yml
 
-fastapi-server/static/orders/
-fastapi-server/static/packages/
+static/orders/
+static/packages/
 # Large downloaded artifact (must not be committed)
-fastapi-server/**/tec_gtfs.zip
-# stibFront/public/runtime-env.js
+**/tec_gtfs.zip
 api.tar.gz
 front.tar.gz
 postgres_data/

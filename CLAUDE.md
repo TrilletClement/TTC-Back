@@ -1,33 +1,44 @@
-# CLAUDE.md — server-STIB
+# CLAUDE.md — TTC-Back
 
 Working guidelines for AI assistants in this repo.
 Edit freely — both humans and AI should keep this up to date.
+
+> Ce repo est le **backend seul**. Le frontend Angular vit dans le repo frère
+> `TTC-Front` (ancien monorepo `server-STIB`, archivé). Les sections ci-dessous
+> qui parlent de pages/composants décrivent le **contrat côté API** ; le détail
+> côté Angular est dans le `CLAUDE.md` de TTC-Front.
+> Côte à côte en local : `~/projets/TTC-Back` et `~/projets/TTC-Front`.
 
 ---
 
 ## Project layout
 
 ```
-server-STIB/
-├── fastapi-server/        Python backend (FastAPI + SQLAlchemy + Alembic)
-│   ├── app/
-│   │   ├── core/          Config, JWT, auth decorators, mail
-│   │   ├── domain/        Pure exceptions (NotFoundError, BusinessError, ValidationError)
-│   │   ├── orm_models/    SQLAlchemy table definitions
-│   │   ├── repositories/  DB queries — one file per aggregate, no business logic
-│   │   ├── schemas/       Pydantic request/response models
-│   │   ├── services/      Business logic — called by routers, use repos + ORM
-│   │   ├── routers/       FastAPI route handlers — thin, delegate to services
-│   │   └── routines/      APScheduler background jobs
-│   └── migrations/versions/  Alembic migrations (named YYYYMMDD_NN_description.py)
-└── stibFront/             Angular 17+ standalone frontend
-    └── src/app/
-        ├── Components/    One folder per component (*.ts / *.html / *.scss)
-        ├── services/      Angular injectable services — one per domain
-        ├── models/        Plain TS interfaces shared across components
-        ├── config/        Runtime config (API base URL, etc.)
-        └── pages/         Route-level page components (if separate from Components)
+TTC-Back/                  (racine = ancien fastapi-server/)
+├── app/
+│   ├── core/              Config, JWT, auth decorators, mail
+│   ├── domain/            Pure exceptions (NotFoundError, BusinessError, ValidationError)
+│   ├── orm_models/        SQLAlchemy table definitions
+│   ├── repositories/      DB queries — one file per aggregate, no business logic
+│   ├── schemas/           Pydantic request/response models
+│   ├── services/          Business logic — called by routers, use repos + ORM
+│   ├── routers/           FastAPI route handlers — thin, delegate to services
+│   └── routines/          APScheduler background jobs (scheduler, GTFS imports)
+├── migrations/versions/   Alembic migrations (named YYYYMMDD_NN_description.py)
+├── tests/                 pytest (ORM en mémoire)
+├── Dockerfile             Image `stib-api:latest` (api + scheduler)
+├── docker-compose.yml     Stack de prod : db, api, scheduler, frontend (image seule)
+├── deploy.sh              Build + déploiement api/scheduler/db/migrations
+├── apache/ nginx/ ca/     Reverse proxy, CA des devices
+├── ecosystem*.config.js   PM2 (prod / dev local)
+└── doc/ scripts/          Docs, backup DB
 ```
+
+**Déploiement** : `./deploy.sh` ne construit/envoie que l'image API.
+L'image frontend (`server-stib-frontend:latest`) est livrée par le `deploy.sh`
+de TTC-Front ; `docker-compose.yml` (ici) ne fait que la référencer. Les deux
+repos partagent `/root/docker-compose.yml` sur le serveur Docker : ce fichier
+est la propriété de TTC-Back.
 
 ---
 
@@ -86,7 +97,7 @@ except (BusinessError, ValidationError) as e:
 - File naming: `YYYYMMDD_NN_short_description.py`
 - Set `revision`, `down_revision` manually — do not rely on autogenerate.
 - Always implement `downgrade()`.
-- Run with `alembic upgrade head` from `fastapi-server/` with the venv active.
+- Run with `alembic upgrade head` from the repo root with the venv active.
 
 ### Config
 
@@ -94,87 +105,10 @@ All env vars live in `app/core/config.py` as a Pydantic `Settings` class.
 Never read `os.environ` directly elsewhere.
 
 ---
-
 ## Frontend conventions
 
-### Standalone components
-
-All components are standalone (no NgModules). Declare imports in the `@Component` decorator:
-
-```typescript
-@Component({
-  standalone: true,
-  imports: [CommonModule, FormsModule, TranslateModule, RouterModule, MyChildComponent],
-  ...
-})
-```
-
-### Interfaces and models
-
-**Before creating any interface, check `models/` first.** The canonical model files are:
-
-| File | What lives there |
-|------|-----------------|
-| `models/order.ts` | `Order`, `OrderItem`, `AdminOrder`, `AdminOrderItem`, `OrderAddress`, `OrderStatus`, `OrderPatch`, `DeviceSelectOption` |
-| `models/shipping.ts` | `ShippingOption`, `AvailableShippingOption` |
-| `models/device-admin.ts` | `DeviceAdminOut`, `DeviceBoardOut`, `DeviceFirmwareOut`, `DeviceHardwareOut`, `DeviceOrderOut`, `BoardListOut` |
-| `models/ota.ts` | `FirmwarePackage`, `HardwareConfig`, `DeviceOverride`, `OtaData`, all settings types |
-| `models/admin-user.ts` | `RoleInfo`, `UserAdminOut` |
-| `models/autocomplete.ts` | `AutocompleteOption` |
-| `models/led.ts` | `Led`, `LedTripStop` (not `TripStop` — that's the GTFS model in `models/tripStop.ts`) |
-| `models/article-block.ts` | `BlockKind`, `ArticleBlock`, `ArticleDoc`, per-block `*Data` interfaces, `ImageValue`/`ImageRatio` — blog block editor |
-
-**Layering rule — dependency direction:**
-```
-models/ → services/ → Components/
-```
-- Services import from `models/`, never from `Components/`.
-- Components import from `models/` directly (preferred) or from services (acceptable).
-- **Never** import from a component file in a service.
-
-**Where to put a new interface:**
-- Used by more than one file → `models/`
-- Only used inside one service and its direct component → can stay in the service file
-- Local UI view-model (e.g. a draft row, a preview state) → stays in the component
-
-**Re-exporting from services for backward compat:**
-When moving a type out of a service to `models/`, keep a re-export shim in the service so existing callers don't break. Use `export type` (required by `isolatedModules`):
-```typescript
-import { MyType } from '../models/my-model';
-export type { MyType };  // NOT export { MyType } — isolatedModules requires export type for interfaces
-```
-
-### Services
-
-- One service per backend domain (`shipping.service.ts`, `order.service.ts`, …).
-- Admin-only services are prefixed `admin-` (`admin-orders.service.ts`).
-- Use `HttpClient` directly; no wrapper layer.
-- Do not define interfaces that are already in `models/` — import them instead.
-
-### Translations
-
-All user-facing strings go through `TranslateModule` (`| translate` pipe).
-Translation files: `stibFront/public/assets/i18n/en.json` and `fr.json`.
-Always add keys to **both** files when adding new UI text.
-
-### Autocomplete / country picker
-
-Use `app-autocomplete` with `CountryService.getAllOptions()` for any country input —
-it returns options localised to the current UI language, so users can type in French,
-Dutch, English, etc.
-
-```typescript
-this.countryOptions = this.countryService.getAllOptions();
-```
-
-```html
-<app-autocomplete
-  [options]="countryOptions"
-  placeholder="Search country…"
-  [(ngModel)]="selectedCode"
-  (selectionChange)="onSelect($event)"
-></app-autocomplete>
-```
+Voir `TTC-Front/CLAUDE.md` (standalone components, `models/`, services,
+traductions, autocomplete pays).
 
 ---
 
@@ -429,19 +363,19 @@ trunk from Sclessin Standard, then Coronmeuse OR Liège Expo). How it works:
 - **Ne pas redessiner une ligne ailleurs** (TS, Kotlin…) : consommer ces
   routes. Exception connue : l'éditeur interactif du site
   (`led-visualization`) reste un rendu TS séparé (édition des libellés).
-- Police : `fastapi-server/app/assets/fonts/brusseline-bold.{woff2,ttf}`.
+- Police : `app/assets/fonts/brusseline-bold.{woff2,ttf}`.
   Le woff2 est embarqué dans le SVG ; le ttf (famille renommée
   "Brusseline"/Bold pour fontconfig) est installé par le Dockerfile pour
   cairosvg, qui ignore `@font-face`. Avant, la police était lue dans
   `doc/`, hors du contexte Docker : l'export de prod retombait sur Arial.
-- Tests : `cd fastapi-server && PYTHONPATH=. ../venv/bin/python -m pytest tests`
+- Tests : `PYTHONPATH=. venv/bin/python -m pytest tests`
   (`tests/test_strip_render.py`, ORM en mémoire, pas de base).
 
 ## En-têtes de sécurité — added 2026-09-30
 
 HSTS, `nosniff`, `Referrer-Policy`, `X-Frame-Options: SAMEORIGIN`,
 `Permissions-Policy` dans `apache/transport-le-ssl.conf` (à redéployer à la
-main sur 192.168.14.150) et dans `stibFront/nginx.conf`. Pas encore de CSP
+main sur 192.168.14.150) et dans `TTC-Front/nginx.conf`. Pas encore de CSP
 sur le site : à introduire d'abord en `Content-Security-Policy-Report-Only`
 (Bootstrap CDN, Turnstile, Stripe, GTM, Google Fonts).
 

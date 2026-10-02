@@ -1,6 +1,8 @@
-# Server STIB
+# TTC-Back
 
-Angular + FastAPI + PostgreSQL application for STIB transit LED board management and ordering.
+FastAPI + PostgreSQL backend for STIB transit LED board management and ordering.
+The Angular frontend lives in the sibling repo **TTC-Front** (clone it next to this one:
+`~/projets/TTC-Back` and `~/projets/TTC-Front`).
 
 ## Table of Contents
 
@@ -17,23 +19,20 @@ Angular + FastAPI + PostgreSQL application for STIB transit LED board management
 ## Architecture
 
 ```
-server-STIB/
-├── fastapi-server/            # FastAPI backend + scheduler
-│   ├── app/
-│   │   ├── core/config.py     # Pydantic settings — reads root .env
-│   │   ├── routers/
-│   │   ├── services/
-│   │   └── orm_models/
-│   └── migrations/            # Alembic migration files
-├── stibFront/                 # Angular frontend
-│   ├── public/runtime-env.js  # auto-generated (gitignored)
-│   └── Dockerfile
+TTC-Back/
+├── app/
+│   ├── core/config.py         # Pydantic settings — reads .env
+│   ├── routers/
+│   ├── services/
+│   └── orm_models/
+├── migrations/                # Alembic migration files
+├── Dockerfile                 # image stib-api:latest (api + scheduler)
 ├── .env                       # gitignored — copy from .env.example
 ├── .env.example               # committed template with all variable names
-├── ecosystem.local.config.js  # PM2 local dev config (gitignored)
+├── ecosystem.local.config.js  # PM2 local dev config (starts ../TTC-Front too)
 ├── ecosystem.config.js        # PM2 production config
-├── docker-compose.yml         # Docker production config
-└── deploy.sh                  # Production deployment script
+├── docker-compose.yml         # Docker production config (shared with TTC-Front)
+└── deploy.sh                  # Production deployment (API image, DB, migrations)
 ```
 
 **PM2 services (local dev):**
@@ -52,7 +51,7 @@ server-STIB/
 | `db`        | 5434  | PostgreSQL 15            |
 | `api`       | 8000  | FastAPI + Uvicorn        |
 | `scheduler` | —     | Background task runner   |
-| `frontend`  | 4200  | Angular served by Nginx  |
+| `frontend`  | 4200  | Angular served by Nginx (image shipped by TTC-Front) |
 
 ---
 
@@ -66,8 +65,9 @@ sudo apt install -y nodejs
 # PM2
 sudo npm install -g pm2
 
-# Angular CLI
-cd stibFront && sudo npm install && sudo npm install -g @angular/cli && cd ..
+# Angular CLI + frontend deps (sibling repo)
+git clone git@github.com:TrilletClement/TTC-Front.git ../TTC-Front
+cd ../TTC-Front && sudo npm install && sudo npm install -g @angular/cli && cd ../TTC-Back
 
 # Python 3.10+ venv + build tools
 sudo apt install python3.10-venv libpq-dev python3-dev build-essential -y
@@ -102,7 +102,8 @@ Key variables to set:
 | `STRIPE_WEBHOOK_SECRET`| from `stripe listen` output| from Stripe dashboard               |
 
 `FRONTEND_URL` controls Stripe redirect URLs and auth email links.  
-`API_BASE_URL` is injected into `stibFront/public/runtime-env.js` automatically at PM2 startup.
+`API_BASE_URL` is injected into `../TTC-Front/public/runtime-env.js` automatically at PM2 startup
+(set `FRONT_DIR` to use another location).
 
 ---
 
@@ -115,7 +116,7 @@ Key variables to set:
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-pip install -r fastapi-server/requirements.txt
+pip install -r requirements.txt
 
 # 2. Local PostgreSQL (if not already running)
 sudo service postgresql start
@@ -123,7 +124,7 @@ sudo -u postgres psql -c "CREATE USER mylocaldb WITH PASSWORD 'mylocaldb';"
 sudo -u postgres psql -c "CREATE DATABASE mylocaldb OWNER mylocaldb;"
 
 # 3. Run migrations
-cd fastapi-server && python -m alembic upgrade head && cd ..
+python -m alembic upgrade head
 
 # 4. Stripe CLI — authenticate once (opens browser)
 stripe login
@@ -136,7 +137,7 @@ pm2 start ecosystem.local.config.js
 pm2 save
 ```
 
-This also auto-generates `stibFront/public/runtime-env.js` from `API_BASE_URL` in `.env`.
+This also auto-generates `../TTC-Front/public/runtime-env.js` from `API_BASE_URL` in `.env`.
 
 ### First-time Stripe webhook secret
 
@@ -188,20 +189,19 @@ The production server's `.env` is never transferred by `deploy.sh` — it is man
 ### Build and deploy
 
 ```bash
-# Build Docker images locally
-docker build -t stib-api:latest ./fastapi-server
-docker build -t server-stib-frontend:latest ./stibFront
-
-# Deploy
+# Deploy the API (builds stib-api:latest itself)
 ./deploy.sh
+
+# Frontend: see TTC-Front (its own ./deploy.sh). On a compose/runtime-env change,
+# deploy TTC-Back first — it ships docker-compose.yml and /root/frontend/runtime-env.js.
 ```
 
 **What `deploy.sh` does:**
 
-1. Saves Docker images as gzip tarballs
-2. Transfers images + `docker-compose.yml` to the server via SCP
-3. On server: reads `API_BASE_URL` from `/root/.env` → writes `runtime-env.js`
-4. Loads images, runs `docker compose up -d`
+1. Builds the API image and saves it as a gzip tarball
+2. Transfers the image + `docker-compose.yml` to the server via SCP
+3. On server: reads `API_BASE_URL` from `/root/.env` → writes `/root/frontend/runtime-env.js`
+4. Loads the image, runs `docker compose up -d`
 5. Waits for DB readiness, runs `alembic upgrade head`
 6. Cleans up tarballs and dangling images
 
@@ -210,7 +210,7 @@ docker build -t server-stib-frontend:latest ./stibFront
 ```bash
 docker compose ps
 docker compose logs -f api
-docker compose up -d --build api    # rebuild and restart only the API
+docker compose up -d --build api    # rebuild and restart only the API (local)
 docker compose down                  # stop containers, keep DB volume
 docker compose down -v               # stop containers AND delete DB volume (full reset)
 docker compose exec db psql -U mylocaldb -d mylocaldb
@@ -225,7 +225,6 @@ All Alembic commands run inside the `api` container in production, or directly w
 **Local:**
 ```bash
 source venv/bin/activate
-cd fastapi-server
 python -m alembic upgrade head
 python -m alembic current
 python -m alembic history
@@ -241,7 +240,7 @@ docker compose exec api sh -c "cd /app && python -m alembic <command>"
 ```bash
 # After modifying SQLAlchemy models:
 python -m alembic revision --autogenerate -m "describe your change"
-# Review the generated file in fastapi-server/migrations/versions/
+# Review the generated file in migrations/versions/
 python -m alembic upgrade head
 ```
 
@@ -297,7 +296,8 @@ ssh-keygen -t ed25519 -C "your.email@example.com"
 eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
 cat ~/.ssh/id_ed25519.pub         # paste into GitHub → Settings → SSH keys
 ssh -T git@github.com             # verify
-git clone git@github.com:a-trillet/server-STIB.git
+git clone git@github.com:TrilletClement/TTC-Back.git
+git clone git@github.com:TrilletClement/TTC-Front.git
 ```
 
 ### Troubleshooting

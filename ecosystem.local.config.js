@@ -39,7 +39,7 @@ const env = loadEnv(path.join(__dirname, '.env'));
 // ---------------------------------------------------------------------------
 const PROJECT_ROOT = __dirname;
 const VENV_BIN     = path.join(PROJECT_ROOT, 'venv/bin');
-const FASTAPI_ROOT = path.join(PROJECT_ROOT, 'fastapi-server');
+const FASTAPI_ROOT = PROJECT_ROOT;
 const LOGS_DIR     = path.join(PROJECT_ROOT, 'logs');
 
 const backendEnv = {
@@ -54,7 +54,9 @@ const backendEnv = {
 // Auto-generate runtime-env.js so the Angular dev server picks up API_BASE_URL
 // without requiring a manual "node scripts/gen-runtime-env.js" step.
 // ---------------------------------------------------------------------------
-const runtimeEnvPath = path.join(PROJECT_ROOT, 'stibFront/public/runtime-env.js');
+// Frontend lives in the sibling repo TTC-Front (override with FRONT_DIR).
+const FRONT_ROOT = process.env.FRONT_DIR || path.join(PROJECT_ROOT, '..', 'TTC-Front');
+const runtimeEnvPath = path.join(FRONT_ROOT, 'public/runtime-env.js');
 fs.writeFileSync(
   runtimeEnvPath,
   `window.__env = ${JSON.stringify({ API_BASE_URL: env.API_BASE_URL })};\n`,
@@ -68,7 +70,7 @@ module.exports = {
   apps: [
     {
       name:        'stib-frontend',
-      cwd:         path.join(PROJECT_ROOT, 'stibFront'),
+      cwd:         FRONT_ROOT,
       script:      path.join('scripts', 'start-frontend.js'),
       args:        ['serve', '--port', '4200', '--proxy-config', 'proxy.conf.json'],
       interpreter: 'node',

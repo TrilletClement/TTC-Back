@@ -4,7 +4,7 @@
 DOCKER_SERVER_IP="192.168.14.14"
 DOCKER_SERVER_USER="clement"
 API_IMAGE="stib-api:latest"
-FRONT_IMAGE="server-stib-frontend:latest"
+# The frontend image is built and shipped by TTC-Front/deploy.sh.
 
 CLEAN_IMPORT=false
 if [ "$1" == "--import" ] || [ "$1" == "-i" ]; then
@@ -15,11 +15,11 @@ fi
 echo "0. Pull des derniers commits..."
 git pull --rebase
 
-echo "1. Build des images Docker (sans cache pour garantir le code à jour)..."
-docker compose build --no-cache
+echo "1. Build de l'image API (sans cache pour garantir le code à jour)..."
+# Only `api` has a build section — the frontend image comes from TTC-Front.
+docker compose build --no-cache api
 
-echo "2. Sauvegarde et compression des images Docker..."
-docker save $FRONT_IMAGE | gzip > front.tar.gz
+echo "2. Sauvegarde et compression de l'image API..."
 docker save $API_IMAGE   | gzip > api.tar.gz
 
 echo "3. Compression des fichiers de configuration CA..."
@@ -32,14 +32,14 @@ tar czf ca-config.tar.gz \
 
 echo "4. Transfert vers le serveur Docker ($DOCKER_SERVER_IP)..."
 # .env is NOT transferred — the server keeps its own prod .env.
-scp front.tar.gz api.tar.gz docker-compose.yml \
+scp api.tar.gz docker-compose.yml \
     ca-config.tar.gz \
     scripts/db-backup.sh \
     $DOCKER_SERVER_USER@$DOCKER_SERVER_IP:/tmp/
 
 echo "5. Installation sur le serveur Docker..."
 ssh -t $DOCKER_SERVER_USER@$DOCKER_SERVER_IP "su - root -c '
-    mv /tmp/front.tar.gz /tmp/api.tar.gz /tmp/docker-compose.yml /root/
+    mv /tmp/api.tar.gz /tmp/docker-compose.yml /root/
 
     echo \"--- Installation du script de backup automatique ---\"
     mkdir -p /root/scripts
@@ -56,14 +56,13 @@ ssh -t $DOCKER_SERVER_USER@$DOCKER_SERVER_IP "su - root -c '
     rm /tmp/ca-config.tar.gz
 
     echo \"--- Configuration de l environnement frontend ---\"
-    mkdir -p /root/stibFront/public
+    mkdir -p /root/frontend
     API_URL=\$(grep \"^API_BASE_URL=\" /root/.env 2>/dev/null | cut -d= -f2-)
     API_URL=\${API_URL:-https://transport.trillet.be}
-    echo \"window.__env = {\\\"API_BASE_URL\\\":\\\"\${API_URL}\\\"};\" > /root/stibFront/public/runtime-env.js
+    echo \"window.__env = {\\\"API_BASE_URL\\\":\\\"\${API_URL}\\\"};\" > /root/frontend/runtime-env.js
     echo \"  runtime-env.js → API_BASE_URL=\${API_URL}\"
 
     echo \"--- Chargement des images ---\"
-    docker load < front.tar.gz
     docker load < api.tar.gz
 
     echo \"--- Initialisation de la CA (si premiere fois) ---\"
@@ -116,15 +115,15 @@ ssh -t $DOCKER_SERVER_USER@$DOCKER_SERVER_IP "su - root -c '
         docker compose exec -T api sh -c \"python -m app.routines.sncb_import\"
     fi
     echo \"--- Nettoyage ---\"
-    rm front.tar.gz api.tar.gz
+    rm api.tar.gz
     docker image prune -f
     echo \"Serveur Docker: deploiement termine !\"
 '"
 
 echo "6. Nettoyage local..."
-rm -f front.tar.gz api.tar.gz ca-config.tar.gz
+rm -f api.tar.gz ca-config.tar.gz
 
 echo ""
 echo "=== Deploiement termine ==="
 echo "  API:      https://transport.trillet.be/api/"
-echo "  Frontend: https://transport.trillet.be/"
+echo "  Frontend: https://transport.trillet.be/  (déployé par TTC-Front/deploy.sh)"

@@ -39,7 +39,7 @@ const env = loadEnv(path.join(__dirname, '.env'));
 // ---------------------------------------------------------------------------
 const PROJECT_ROOT = __dirname;
 const VENV_BIN     = path.join(PROJECT_ROOT, 'venv/bin');
-const FASTAPI_ROOT = path.join(PROJECT_ROOT, 'fastapi-server');
+const FASTAPI_ROOT = PROJECT_ROOT;
 const LOGS_DIR     = path.join(PROJECT_ROOT, 'logs');
 
 const backendEnv = {
