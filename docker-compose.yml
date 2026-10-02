@@ -23,6 +23,7 @@ services:
     env_file: .env
     environment:
       - DB_HOST=db
+      - DB_PORT=5432
       - PYTHONPATH=/app
     # Port 8000 exposed to host — Apache on 192.168.14.150 proxies to it.
     ports:
@@ -44,6 +45,7 @@ services:
     env_file: .env
     environment:
       - DB_HOST=db
+      - DB_PORT=5432
       - PYTHONPATH=/app
     volumes:
       - ./firmware_packages:/data/firmware

@@ -133,7 +133,7 @@ def assert_clean_text(value: str | None, field_key: str, max_length: int) -> Non
     max_length should match the target DB column's length so an overlong
     value is rejected up front instead of erroring (or silently truncating)
     on insert. field_key is a stable identifier, not display text — the
-    frontend maps it to a translated label (see stibFront
+    frontend maps it to a translated label (see TTC-Front
     ERRORS.CONTENT_NOT_ALLOWED / ERRORS.TEXT_TOO_LONG /
     ERRORS.INVALID_CHARACTERS / ERRORS.FIELD_*), since this detail is shown
     directly to end users.

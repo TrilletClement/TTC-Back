@@ -10,7 +10,7 @@ import sys
 # Ensure app package on path
 MIGRATIONS_DIR = os.path.dirname(__file__)
 FASTAPI_ROOT = os.path.abspath(os.path.join(MIGRATIONS_DIR, ".."))
-REPO_ROOT = os.path.abspath(os.path.join(MIGRATIONS_DIR, "..", ".."))
+REPO_ROOT = FASTAPI_ROOT
 sys.path.append(FASTAPI_ROOT)
 sys.path.append(REPO_ROOT)
 

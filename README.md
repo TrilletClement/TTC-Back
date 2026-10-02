@@ -6,8 +6,8 @@ The Angular frontend lives in the sibling repo **TTC-Front** (clone it next to t
 
 ## Table of Contents
 
-1. [Architecture](#architecture)
-2. [Prerequisites](#prerequisites)
+1. [Quick start (nouveau collaborateur)](#quick-start-nouveau-collaborateur)
+2. [Architecture](#architecture)
 3. [Environment Setup](#environment-setup)
 4. [Local Development (PM2)](#local-development-pm2)
 5. [Production Deployment (Docker)](#production-deployment-docker)
@@ -16,16 +16,98 @@ The Angular frontend lives in the sibling repo **TTC-Front** (clone it next to t
 
 ---
 
+## Quick start (nouveau collaborateur)
+
+Objectif : API sur http://localhost:8000 et site sur http://localhost:4200.
+Les deux repos se clonent **côte à côte** :
+
+```bash
+mkdir -p ~/projets && cd ~/projets
+git clone git@github.com:TrilletClement/TTC-Back.git
+git clone git@github.com:TrilletClement/TTC-Front.git
+```
+
+**Outils requis** : Git, Docker (+ Compose), Python 3.10+ (3.11 en prod/Docker),
+Node.js 20+ (22 dans le Dockerfile du front). Sous Debian/Ubuntu :
+`sudo apt install python3-venv libpq-dev python3-dev build-essential libcairo2 fontconfig`
+(cairo/fontconfig : rendu PNG des lignes pour l'app Android).
+
+### 1. Backend
+
+```bash
+cd ~/projets/TTC-Back
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env     # puis éditer, voir « Environment Setup »
+```
+
+### 2. Base de données
+
+Le plus simple : le service `db` du compose (PostgreSQL 15, publié sur le port **5434**,
+identifiants = `POSTGRES_*` du `.env`) :
+
+```bash
+docker compose up -d db
+# dans .env : DB_PORT=5434
+```
+
+(Alternative : un PostgreSQL local sur 5432 — voir « Local Development (PM2) ».)
+
+**Base vide** — les migrations Alembic ne se rejouent *pas* depuis zéro (les premières
+supposent des tables existantes). On crée le schéma depuis les modèles, puis on
+marque la base comme à jour :
+
+```bash
+PYTHONPATH=. python scripts/create_all_tables.py
+PYTHONPATH=. python -m alembic stamp head
+```
+
+**Base existante** (dump de prod, etc.) : `python -m alembic upgrade head`.
+
+### 3. Données de transport (optionnel mais nécessaire pour voir des lignes)
+
+```bash
+PYTHONPATH=. python -m app.routines.stib_import     # STIB (clé STIB_API_KEY requise)
+PYTHONPATH=. python -m app.routines.tec_import      # TEC — peut être long
+```
+
+De Lijn / SNCB : `delijn_import`, `sncb_import`.
+
+### 4. Lancer l'API et le scheduler
+
+```bash
+PYTHONPATH=. uvicorn app.main:app --reload --port 8000     # terminal 1
+PYTHONPATH=. python -m app.routines.scheduler              # terminal 2 (temps réel, matview…)
+```
+
+Vérification : `curl localhost:8000/` → `{"message":"API is running"}`.
+Tests : `PYTHONPATH=. python -m pytest tests` (sans base de données).
+
+### 5. Frontend
+
+```bash
+cd ~/projets/TTC-Front
+npm install
+npm start                # http://localhost:4200, /api proxifié vers localhost:8000
+```
+
+Voir le README de TTC-Front. Pour tout lancer d'un coup avec PM2 : « Local Development (PM2) ».
+
+---
+
 ## Architecture
 
 ```
 TTC-Back/
 ├── app/
-│   ├── core/config.py         # Pydantic settings — reads .env
+│   ├── core/config.py         # Pydantic settings — lit .env à la racine du repo
 │   ├── routers/
 │   ├── services/
-│   └── orm_models/
+│   ├── orm_models/
+│   └── routines/              # scheduler + imports GTFS
 ├── migrations/                # Alembic migration files
+├── scripts/                   # create_all_tables, backup DB, …
 ├── Dockerfile                 # image stib-api:latest (api + scheduler)
 ├── .env                       # gitignored — copy from .env.example
 ├── .env.example               # committed template with all variable names
@@ -39,7 +121,7 @@ TTC-Back/
 
 | Name              | What it runs                              | URL                    |
 |-------------------|-------------------------------------------|------------------------|
-| `stib-frontend`   | Angular dev server                        | http://localhost:4200  |
+| `stib-frontend`   | Angular dev server (from `../TTC-Front`)  | http://localhost:4200  |
 | `stib-api`        | FastAPI + uvicorn --reload                | http://localhost:8000  |
 | `stib-scheduler`  | Background import/sync scheduler          | —                      |
 | `stib-stripe`     | Stripe CLI webhook tunnel (local testing) | —                      |
@@ -55,76 +137,71 @@ TTC-Back/
 
 ---
 
-## Prerequisites
-
-```bash
-# Node.js 20+ (use NodeSource)
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# PM2
-sudo npm install -g pm2
-
-# Angular CLI + frontend deps (sibling repo)
-git clone git@github.com:TrilletClement/TTC-Front.git ../TTC-Front
-cd ../TTC-Front && sudo npm install && sudo npm install -g @angular/cli && cd ../TTC-Back
-
-# Python 3.10+ venv + build tools
-sudo apt install python3.10-venv libpq-dev python3-dev build-essential -y
-
-# Stripe CLI (for local payment testing)
-curl -s https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public \
-  | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg > /dev/null
-echo "deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main" \
-  | sudo tee /etc/apt/sources.list.d/stripe.list
-sudo apt update && sudo apt install stripe
-```
-
----
-
 ## Environment Setup
 
-**All configuration lives in a single `.env` at the project root.** It is gitignored — never commit it.
+**All configuration lives in a single `.env` at the repo root.** It is gitignored — never commit it.
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in real values (see comments inside)
 ```
 
-Key variables to set:
+Variables **obligatoires** (l'API refuse de démarrer sans elles — des valeurs bidon
+conviennent en local) : `JWT_SECRET_KEY` (≥ 32 caractères), `DEPLOY_SECRET`,
+`STIB_API_KEY`, `TURNSTILE_SECRET_KEY`, `MAIL_USERNAME`, `MAIL_PASSWORD`,
+`MAIL_FROM`, `MAIL_SERVER`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+`FRONTEND_URL`. Les autres (Google, SendCloud, OpenAI, TEC…) sont optionnelles ;
+les fonctionnalités correspondantes sont simplement désactivées si vides.
+`DATABASE_URL` n'existe pas : elle est dérivée de `POSTGRES_*`, `DB_HOST` et `DB_PORT`.
 
 | Variable               | Local dev value            | Production value                    |
 |------------------------|----------------------------|-------------------------------------|
 | `FRONTEND_URL`         | `http://localhost:4200`    | `https://transport.trillet.be`      |
 | `API_BASE_URL`         | `http://localhost:8000`    | `https://transport.trillet.be`      |
-| `DATABASE_URL`         | local PostgreSQL URL       | built by docker-compose from POSTGRES_* |
+| `DB_PORT`              | `5434` (compose) ou `5432` (PostgreSQL local) | fixé à 5432 par docker-compose |
+| `FIRMWARE_DIR` / `BLOG_EMBEDS_DIR` | `./data/...` (dossiers locaux) | `/data/firmware`, `/data/blog-embeds` (volumes Docker) |
 | `STRIPE_SECRET_KEY`    | `sk_test_...`              | `sk_live_...` (when going live)     |
 | `STRIPE_WEBHOOK_SECRET`| from `stripe listen` output| from Stripe dashboard               |
 
-`FRONTEND_URL` controls Stripe redirect URLs and auth email links.  
-`API_BASE_URL` is injected into `../TTC-Front/public/runtime-env.js` automatically at PM2 startup
-(set `FRONT_DIR` to use another location).
+`FRONTEND_URL` controls Stripe redirect URLs and auth email links.
+`API_BASE_URL` is injected into `../TTC-Front/public/runtime-env.js` by the PM2 local config
+(set `FRONT_DIR` to use another location). Avec `npm start` dans TTC-Front, ce n'est pas
+nécessaire (le proxy gère `/api`).
 
 ---
 
 ## Local Development (PM2)
 
+PM2 démarre front + API + scheduler + Stripe CLI d'un coup. Prérequis supplémentaires :
+
+```bash
+sudo npm install -g pm2
+# Stripe CLI (test des paiements en local)
+curl -s https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public \
+  | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main" \
+  | sudo tee /etc/apt/sources.list.d/stripe.list
+sudo apt update && sudo apt install stripe
+# Frontend deps (repo frère)
+cd ../TTC-Front && npm install && cd ../TTC-Back
+```
+
 ### First-time setup
 
 ```bash
-# 1. Python environment
+# 1. Python environment (see Quick start)
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# 2. Local PostgreSQL (if not already running)
+# 2. PostgreSQL local sur 5432 (ou `docker compose up -d db` + DB_PORT=5434 dans .env)
 sudo service postgresql start
 sudo -u postgres psql -c "CREATE USER mylocaldb WITH PASSWORD 'mylocaldb';"
 sudo -u postgres psql -c "CREATE DATABASE mylocaldb OWNER mylocaldb;"
 
-# 3. Run migrations
-python -m alembic upgrade head
+# 3. Schema — base vide : create_all + stamp (les migrations ne se rejouent pas depuis zéro)
+PYTHONPATH=. python scripts/create_all_tables.py && python -m alembic stamp head
+#    base existante : python -m alembic upgrade head
 
 # 4. Stripe CLI — authenticate once (opens browser)
 stripe login
@@ -178,7 +255,8 @@ cp .env.example .env
 # Set production values:
 #   FRONTEND_URL=https://transport.trillet.be
 #   API_BASE_URL=https://transport.trillet.be
-#   DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+#   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB (DB_HOST/DB_PORT are set by docker-compose)
+#   FIRMWARE_DIR=/data/firmware  BLOG_EMBEDS_DIR=/data/blog-embeds   (volumes mounted by compose)
 #   STRIPE_SECRET_KEY=sk_live_...     (when going live)
 #   STRIPE_WEBHOOK_SECRET=whsec_...   (from Stripe dashboard → Webhooks)
 #   ... all other production secrets
@@ -247,8 +325,9 @@ python -m alembic upgrade head
 ### Fresh database (first-time)
 
 ```bash
-# Start the stack (SQLAlchemy creates tables on startup)
+# Start the stack, then create the schema from the models (the API does NOT do it on startup)
 docker compose up -d --build
+docker compose exec api sh -c "cd /app && python scripts/create_all_tables.py"
 
 # Stamp Alembic at head so future migrations work cleanly
 docker compose exec api sh -c "cd /app && python -m alembic stamp head"

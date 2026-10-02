@@ -24,7 +24,7 @@ Step 4 — Once you've done steps 1–3, I'll create the config file and update 
 
 Bash Find PM2 ecosystem config or stib-sendcloud process details
 IN
-cat /home/trillet/projects/server-STIB/ecosystem.config.js 2>/dev/null || cat /home/trillet/projects/server-STIB/ecosystem.config.cjs 2>/dev/null || pm2 show stib-sendcloud 2>&1 | grep "script\|args\|cwd"
+cat /home/trillet/projects/TTC-Back/ecosystem.config.js 2>/dev/null || cat /home/trillet/projects/TTC-Back/ecosystem.config.cjs 2>/dev/null || pm2 show stib-sendcloud 2>&1 | grep "script\|args\|cwd"
 
 OUT
 /**
@@ -68,7 +68,7 @@ const env = loadEnv(path.join(__dirname, '.env'));
 // ---------------------------------------------------------------------------
 const PROJECT_ROOT = __dirname;
 const VENV_BIN     = path.join(PROJECT_ROOT, 'venv/bin');
-const FASTAPI_ROOT = path.join(PROJECT_ROOT, 'fastapi-server');
+const FASTAPI_ROOT = PROJECT_ROOT;
 const LOGS_DIR     = path.join(PROJECT_ROOT, 'logs');
 
 const backendEnv = {

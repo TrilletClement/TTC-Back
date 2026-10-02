@@ -6,7 +6,7 @@ from pathlib import Path
 from sqlalchemy.engine.url import make_url
 from sqlalchemy import text
 
-FASTAPI_DIR = Path(__file__).resolve().parents[1]  # fastapi-server/
+FASTAPI_DIR = Path(__file__).resolve().parents[1]  # repo root
 if str(FASTAPI_DIR) not in sys.path:
     sys.path.insert(0, str(FASTAPI_DIR))
 

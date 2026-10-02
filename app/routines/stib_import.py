@@ -15,7 +15,7 @@ scheduler.py uses: from app.routines.stib_import import _operator as stib_operat
 
 if __name__ == "__main__":
     import sys, os
-    BASE_DIR    = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../'))
+    BASE_DIR    = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
     FASTAPI_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
     sys.path.insert(0, BASE_DIR)
     sys.path.insert(0, FASTAPI_DIR)

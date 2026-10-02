@@ -7,8 +7,8 @@ from typing import Any, Iterable, List, Set, Tuple
 
 
 def _default_dir() -> Path:
-    # server-STIB/fastapi-server/scripts -> server-STIB
-    server_root = Path(__file__).resolve().parents[2]
+    # scripts -> repo root
+    server_root = Path(__file__).resolve().parents[1]
     return server_root / "logs" / "missed_buses"
 
 

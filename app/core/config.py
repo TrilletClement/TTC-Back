@@ -3,9 +3,9 @@ from pydantic import Field, computed_field
 from typing import List
 from pathlib import Path
 
-# Project root is three levels up from this file:
-# config.py → core → app → fastapi-server → PROJECT_ROOT
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+# Project root is two levels above this file's directory:
+# config.py → core → app → PROJECT_ROOT (repo root, where .env lives)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -25,13 +25,14 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = "mylocaldb"
     POSTGRES_DB: str = "mylocaldb"
     DB_HOST: str = "localhost"   # override to "db" inside Docker
+    DB_PORT: int = 5432          # compose publishes the db container on 5434 on the host
 
     @computed_field  # type: ignore[misc]
     @property
     def DATABASE_URL(self) -> str:
         return (
             f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
-            f"@{self.DB_HOST}:5432/{self.POSTGRES_DB}"
+            f"@{self.DB_HOST}:{self.DB_PORT}/{self.POSTGRES_DB}"
         )
 
     # Security / JWT

@@ -1,1 +1,1 @@
-# Fichier vide pour faire de fastapi-server un package Python
+# Marks the repo root as a Python package (kept for historical reasons).
